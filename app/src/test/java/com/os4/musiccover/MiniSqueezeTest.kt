@@ -5,6 +5,16 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class MiniSqueezeTest {
+    @Test fun smallIslandOnTheLeftHasTheMirroredContactOfOneOnTheRight() {
+        fun mirror(b: CoverMorphMotion.Box) = box(400f - b.x - b.w, b.y, b.w, b.h)
+        val row = box(101f, 0f, 230f, 72f)
+        val small = box(259f, -10f, 72f, 72f)
+        val r = MiniSqueeze.targets(row, left, right, 8f, true, small)
+        val l = MiniSqueeze.targets(mirror(row), mirror(right), mirror(left), 8f, true, mirror(small), true)
+        for ((a, b) in listOf(0 to 1, 1 to 0, 2 to 3, 3 to 2, 4 to 5, 5 to 4))
+            assertEquals(r[a], l[b], 0.0001f)
+    }
+
     private fun box(x: Float, y: Float, w: Float, h: Float) = CoverMorphMotion.Box(x, y, w, h)
 
     private val left = box(21f, 0f, 72f, 72f)

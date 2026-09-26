@@ -5,25 +5,31 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class MiniPlayerGeometryTest {
-    @Test fun adaptiveWidthExpandsTowardTheMissingShortcut() {
-        val leftOnly = MiniPlayerGeometry.adaptiveRoom(400, 12, 100f, null, 8)!!
-        assertEquals(248f, leftOnly.centerX, 0f)
-        assertEquals(280, leftOnly.width)
-        val rightOnly = MiniPlayerGeometry.adaptiveRoom(400, 12, null, 300f, 8)!!
-        assertEquals(152f, rightOnly.centerX, 0f)
-        assertEquals(280, rightOnly.width)
+    @Test fun singleShortcutKeepsThePillCentredAndPutsTheSmallIslandInTheVacantSlot() {
+        val leftOnly = MiniPlayerGeometry.singleShortcutLayout(1200, 36, 1080, 162, 24,
+            true, 117f, 198f, null, true)
+        assertEquals(600f, leftOnly.pillCenterX, 0f)
+        assertEquals(756, leftOnly.pillWidth)
+        assertEquals(1083f, leftOnly.smallCenterX, 0f)
+        val rightOnly = MiniPlayerGeometry.singleShortcutLayout(1200, 36, 1080, 162, 24,
+            false, 1083f, 1002f, null, true)
+        assertEquals(600f, rightOnly.pillCenterX, 0f)
+        assertEquals(756, rightOnly.pillWidth)
+        assertEquals(117f, rightOnly.smallCenterX, 0f)
         val neither = MiniPlayerGeometry.adaptiveRoom(400, 12, null, null, 8)!!
         assertEquals(200f, neither.centerX, 0f)
         assertEquals(376, neither.width)
     }
 
-    @Test fun adaptivePillAndSmallIslandRespectTheShortcutTouchBoundary() {
-        val room = MiniPlayerGeometry.adaptiveRoom(400, 12, 100f, null, 8)!!
-        val pill = MiniPlayerGeometry.pillBesideIslandPx(room.width, room.width, 54, 8, 140)
-        val groupWidth = pill + 54 + 8
-        assertEquals(108f, room.centerX - groupWidth / 2f, 0f)
-        assertEquals(388f, room.centerX + groupWidth / 2f, 0f)
-        assertEquals(null, MiniPlayerGeometry.adaptiveRoom(400, 12, 300f, 200f, 8))
+    @Test fun returningSmallIslandDoesNotShiftThePillAndRespectsTouchMargins() {
+        for (hasSmall in listOf(false, true)) {
+            val layout = MiniPlayerGeometry.singleShortcutLayout(1200, 36, 1080, 162, 24,
+                true, 117f, 250f, 1050f, hasSmall)
+            assertEquals(600f, layout.pillCenterX, 0f)
+            assertTrue(layout.pillCenterX - layout.pillWidth / 2f >= 274f)
+            if (hasSmall) assertTrue(layout.smallCenterX - 81f -
+                (layout.pillCenterX + layout.pillWidth / 2f) >= 24f)
+        }
     }
 
     @Test fun ordinaryNotificationBelowTheOldIslandPositionIsStillVisible() {

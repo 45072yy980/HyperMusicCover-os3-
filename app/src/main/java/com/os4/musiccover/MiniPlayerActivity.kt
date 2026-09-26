@@ -82,7 +82,7 @@ private fun MiniPlayerPage(blur: Boolean, onBack: () -> Unit) {
                     MiniSlider("封面圆角", MiniPlayerConfig.ART_RADIUS,
                         config, alive, 0f, 60f, ::push)
                     SwitchPreference(title = "快捷方式隐藏时自适应宽度",
-                        summary = "一侧或两侧快捷方式隐藏时，向空出的区域展开",
+                        summary = "单侧隐藏时大岛居中，小按钮使用空出的快捷位置；双侧隐藏时加宽",
                         checked = config.optBoolean(MiniPlayerConfig.ADAPTIVE_WIDTH), enabled = alive,
                         onCheckedChange = { push(MiniPlayerConfig.ADAPTIVE_WIDTH, it) })
                 }

@@ -2217,7 +2217,8 @@ private class MiniPlayerController(
         }
         // The camera pushing on the row takes the small island back first: it is the row's end.
         val d = discDiameter().toFloat()
-        val tx = smallRest[0] - fw / 2f - v.left - squeeze.rowGivePx(1) + smallDx + smallNudgeX() +
+        val edgeGive = if (smallRest[0] < host.width / 2f) squeeze.rowGivePx(0) else -squeeze.rowGivePx(1)
+        val tx = smallRest[0] - fw / 2f - v.left + edgeGive + smallDx + smallNudgeX() +
             squeeze.smallShift() * d
         val ty = smallRest[1] - fh / 2f - v.top + smallNudgeY()
         // Flattened by the pill, by its shape - a scale would draw its edge jagged - when nothing
@@ -2741,7 +2742,8 @@ private class MiniPlayerController(
     /** Where an emerging small island starts: its centre under the pill's end. */
     private fun emergeDx(): Float {
         val d = discDiameter().toFloat()
-        return -(d * 0.8f + dp(MiniPlayerGeometry.DISC_GAP_DP))
+        val distance = d * 0.8f + dp(MiniPlayerGeometry.DISC_GAP_DP)
+        return if (smallRest[0] < host.width / 2f) distance else -distance
     }
 
     /** Lowest in the row: under the small island, which is under the pill. */
@@ -8407,7 +8409,8 @@ private class MiniPlayerController(
     }
 
     /** The pill at rest: its size, and the centre of the row it is laid out in. */
-    private class PillRest(val width: Int, val height: Int, val centerX: Float, val centerY: Float)
+    private class PillRest(val width: Int, val height: Int, val centerX: Float, val centerY: Float,
+                           val separateSmallX: Float? = null)
 
     /**
      * Where the pill rests with a small island beside it ([small]) or alone - the row's own
@@ -8435,6 +8438,16 @@ private class MiniPlayerController(
         val margin = dp(12f)
         val gap = dp(MiniPlayerGeometry.DISC_GAP_DP)
         val adaptive = config.getBoolean(MiniPlayerConfig.ADAPTIVE_WIDTH) && (l == null || r == null)
+        if (adaptive && (leftAnchor != null) != (rightAnchor != null)) {
+            val onLeft = leftAnchor != null
+            val present = leftAnchor ?: rightAnchor!!
+            val missing = (if (onLeft) right else left)?.takeIf {
+                it.isAttachedToWindow && it.width > 0 && it.height > 0
+            }?.let { restCentre(it)[0] }?.takeIf { if (onLeft) it > host.width / 2f else it < host.width / 2f }
+            val fixed = MiniPlayerGeometry.singleShortcutLayout(host.width, margin, dp(360f), height,
+                gap, onLeft, restCentre(present)[0], shortcutInnerEdge(present, onLeft, height), missing, small)
+            return PillRest(fixed.pillWidth, height, fixed.pillCenterX, centerY, fixed.smallCenterX)
+        }
         val room = if (adaptive) MiniPlayerGeometry.adaptiveRoom(host.width, margin,
             leftAnchor?.let { shortcutInnerEdge(it, true, height) },
             rightAnchor?.let { shortcutInnerEdge(it, false, height) }, gap) else null
@@ -8489,9 +8502,9 @@ private class MiniPlayerController(
         val centerY = rest.centerY
         val gap = dp(MiniPlayerGeometry.DISC_GAP_DP)
         val group = pillWidth + if (small) gap + height else 0
-        val groupLeft = rest.centerX - group / 2f
+        val groupLeft = rest.centerX - (if (rest.separateSmallX != null) pillWidth else group) / 2f
         if (small) {
-            smallRest[0] = groupLeft + pillWidth + gap + height / 2f
+            smallRest[0] = rest.separateSmallX ?: (groupLeft + pillWidth + gap + height / 2f)
             smallRest[1] = centerY
         }
         // The asked-for size, not view.width: a morph resizes the frame while this still runs.

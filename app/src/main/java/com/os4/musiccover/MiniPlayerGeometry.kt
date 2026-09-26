@@ -13,6 +13,28 @@ internal object MiniPlayerGeometry {
 
     data class RowRoom(val centerX: Float, val width: Int)
 
+    data class PinnedIslandLayout(val pillCenterX: Float, val pillWidth: Int, val smallCenterX: Float)
+
+    /** Keep the big island centred; the small one occupies the absent shortcut's own slot. */
+    fun singleShortcutLayout(hostWidth: Int, margin: Int, maxPillWidth: Int, islandSize: Int,
+                             gap: Int, shortcutOnLeft: Boolean, shortcutCenter: Float,
+                             shortcutInnerEdge: Float, missingCenter: Float?, hasSmall: Boolean): PinnedIslandLayout {
+        val center = hostWidth / 2f
+        val radius = islandSize / 2f
+        val safe = min(hostWidth / 2f, margin + radius)
+        val small = (missingCenter ?: (hostWidth - shortcutCenter)).coerceIn(safe, hostWidth - safe)
+        var left = margin.toFloat()
+        var right = (hostWidth - margin).toFloat()
+        if (shortcutOnLeft) left = max(left, shortcutInnerEdge + gap)
+        else right = min(right, shortcutInnerEdge - gap)
+        if (hasSmall) {
+            if (shortcutOnLeft) right = min(right, small - radius - gap)
+            else left = max(left, small + radius + gap)
+        }
+        val width = min(maxPillWidth, (2f * min(center - left, right - center)).toInt()).coerceAtLeast(1)
+        return PinnedIslandLayout(center, width, small)
+    }
+
     /** The whole island group fits between screen margins and the remaining shortcut touch area. */
     fun adaptiveRoom(hostWidth: Int, margin: Int, leftInnerEdge: Float?, rightInnerEdge: Float?,
                      gap: Int): RowRoom? {

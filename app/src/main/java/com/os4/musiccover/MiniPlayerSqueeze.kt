@@ -302,6 +302,7 @@ internal class MiniSqueeze(private val gapPx: Float, private val onFrame: () -> 
     private val smallShaped = Jelly(SHAPE_RESPONSE, SHAPE_DAMPING)
     private var smallSquash = 0f
     private var pillBack = 0f
+    private var smallDirection = 1f
 
     /** The row's width this frame - the pill's, or the pill and its small island's together. */
     private var rowWidth = 0f
@@ -350,18 +351,21 @@ internal class MiniSqueeze(private val gapPx: Float, private val onFrame: () -> 
         val l = left?.let { scaled(it, discSwell(0), discSwell(0)) }
         val r = right?.let { scaled(it, discSwell(1), discSwell(1)) }
         val sm = if (p != null) small?.let { scaled(it, smallSwell(), smallSwell()) } else null
-        // With a small island the row runs from the pill's left end to the small island's right.
+        val smallOnLeft = p != null && sm != null && sm.cx() < p.cx()
+        smallDirection = if (smallOnLeft) -1f else 1f
         val row = if (p != null && sm != null) {
-            CoverMorphMotion.Box(p.x, p.y, max(p.w, sm.x + sm.w - p.x), p.h)
+            val start = min(p.x, sm.x)
+            CoverMorphMotion.Box(start, p.y, max(p.x + p.w, sm.x + sm.w) - start, p.h)
         } else p
-        val t = targets(row, l, r, gapPx, pillGives, sm)
+        val t = targets(row, l, r, gapPx, pillGives, sm, smallOnLeft)
         rowWidth = row?.w ?: 0f
         // The pill and the small island, pushed together: the small island takes most of it
         // as flattening, the pill's end the rest, as a disc and the pill share a push.
         var flat = 0f
         pillBack = 0f
         if (p != null && sm != null && sm.w > 0f) {
-            val into = ramp(p.x + p.w + gapPx - sm.x, gapPx * (1f - CONTACT_SHARE)) *
+            val overlap = if (smallOnLeft) sm.x + sm.w + gapPx - p.x else p.x + p.w + gapPx - sm.x
+            val into = ramp(overlap, gapPx * (1f - CONTACT_SHARE)) *
                 verticalOverlap(p, sm)
             if (into > 0f) {
                 pillBack = if (pillGives) min(into * (1f - DISC_SHARE), MAX_GIVE * p.w) else 0f
@@ -447,7 +451,7 @@ internal class MiniSqueeze(private val gapPx: Float, private val onFrame: () -> 
         else pillPressScale() * (1f - (rowGivePx(0) + rowGivePx(1) + pillBack) / widthPx)
 
     /** The pill's centre, in pixels, pushed away from whichever side pressed. */
-    fun pillShiftPx() = (rowGivePx(0) - rowGivePx(1) - pillBack) / 2f
+    fun pillShiftPx() = (rowGivePx(0) - rowGivePx(1) - smallDirection * pillBack) / 2f
 
     /** The small island under a finger, as a scale: it sinks, as the super island's does. */
     fun smallSwell() = 1f - (1f - DISC_PRESSED) * smallPress.value
@@ -461,7 +465,7 @@ internal class MiniSqueeze(private val gapPx: Float, private val onFrame: () -> 
      * How far the small island's centre moves off the pill, in shares of its diameter: its
      * flattened side is the pill's, so the far side stays where the finger has it.
      */
-    fun smallShift() = smallSquash / 2f
+    fun smallShift() = smallDirection * smallSquash / 2f
 
     fun atRest() = allAtRest()
 
@@ -580,7 +584,7 @@ internal class MiniSqueeze(private val gapPx: Float, private val onFrame: () -> 
          */
         fun targets(pill: CoverMorphMotion.Box?, left: CoverMorphMotion.Box?,
                     right: CoverMorphMotion.Box?, gap: Float, pillGives: Boolean,
-                    end: CoverMorphMotion.Box? = null): FloatArray {
+                    end: CoverMorphMotion.Box? = null, endOnLeft: Boolean = false): FloatArray {
             val out = FloatArray(6)
             if (pill == null) return out
             val share = if (pillGives) DISC_SHARE else 1f
@@ -605,9 +609,12 @@ internal class MiniSqueeze(private val gapPx: Float, private val onFrame: () -> 
                 out[squashAt] = flat / w
                 if (pillGives) out[squashAt + 2] = give / pill.w
             }
-            left?.let { disc(it.x + it.w + gap - pill.x, it, 0, 4) }
+            left?.let {
+                val e = if (endOnLeft) end ?: pill else pill
+                disc(it.x + it.w + gap - e.x, it, 0, 4, e)
+            }
             right?.let {
-                val e = end ?: pill
+                val e = if (endOnLeft) pill else end ?: pill
                 disc(e.x + e.w + gap - it.x, it, 1, 5, e)
             }
             return out
