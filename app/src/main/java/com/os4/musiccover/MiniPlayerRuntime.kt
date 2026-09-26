@@ -5571,6 +5571,14 @@ private class MiniPlayerController(
             MiniPlayerRuntime.noteTouch("open: ${key.takeLast(6)} turned out on its way home")
             return
         }
+        val moving = noteMorphKey
+        if (moving != null && moving != key && morph != null) {
+            val inPill = selectedIsland == key
+            if (!inPill && smallKey != key) return
+            val x = adoptNote(moving) ?: return
+            requestUp(x, key, inPill, cover = false)
+            return
+        }
         if (noteMorphKey != null || morph != null || exchange != null) return
         // Another island is out as its card: this one goes out in its stead, together.
         if (expandedKey()?.let { it != key } == true) {
@@ -6112,7 +6120,22 @@ private class MiniPlayerController(
     }
 
     fun beginNoteDrag(key: String, fromSmall: Boolean, startY: Float): Boolean {
-        if (noteMorphKey != null || morph != null || exchange != null) return false
+        val moving = noteMorphKey
+        if (moving != null && moving != key && morph != null) {
+            if ((if (fromSmall) smallKey else selectedIsland) != key) return false
+            val x = adoptNote(moving) ?: return false
+            requestUp(x, key, !fromSmall, cover = false)
+            switchPull = SwitchPull(x, key, startY)
+            return true
+        }
+        exchange?.let { x ->
+            val seats = x.seats ?: return false
+            if ((if (fromSmall) seats.small else seats.big) != key || x.pending != null) return false
+            requestUp(x, key, !fromSmall, cover = false)
+            switchPull = SwitchPull(x, key, startY)
+            return true
+        }
+        if (noteMorphKey != null || morph != null) return false
         val view = player ?: return false
         if (view.visibility != View.VISIBLE) return false
         if (fromSmall && key != smallKey) return false
@@ -6142,7 +6165,30 @@ private class MiniPlayerController(
         return true
     }
 
+    private class SwitchPull(val owner: Switch, val key: String, val startY: Float) {
+        var grab: MiniCardMorph.Grab? = null
+        var baseY = startY
+        var span = 1f
+    }
+    private var switchPull: SwitchPull? = null
+
     fun noteDragMove(y: Float, nudgeX: Float = 0f) { android.os.Trace.beginSection("MC t.noteDragMove"); try {
+        switchPull?.let { pull ->
+            if (exchange !== pull.owner) { switchPull = null; return }
+            val mover = pull.owner.movers[pull.key] ?: return
+            val running = mover.morph ?: return
+            if (pull.grab == null) {
+                pull.grab = running.grab() ?: return
+                pull.baseY = y
+                val end = moverEnd(mover)
+                val xy = IntArray(2).also(mover.native::getLocationOnScreen)
+                pull.span = kotlin.math.abs((end?.y ?: pull.startY) - xy[1]).coerceAtLeast(dp(160f).toFloat())
+            }
+            val grab = pull.grab ?: return
+            running.drag((grab.progress + (pull.baseY - y) / pull.span).coerceIn(0f, 1f),
+                grab.nudge, grab.nudgeX + nudgeX)
+            return
+        }
         val drag = noteDrag ?: return
         drag.y = y
         drag.nudgeX = nudgeX
@@ -6156,6 +6202,16 @@ private class MiniPlayerController(
      * was once flung hundreds of times too fast (filmed 2026-09-25).
      */
     fun noteDragEnd(velocityY: Float, cancelled: Boolean) {
+        switchPull?.let { pull ->
+            switchPull = null
+            if (exchange === pull.owner && pull.grab != null) {
+                // The requested island remains selected; release the held animation from
+                // its current position, without rebuilding either notification row.
+                pull.owner.movers[pull.key]?.morph?.release(true,
+                    if (cancelled) 0f else -velocityY / pull.span)
+            }
+            return
+        }
         val drag = noteDrag ?: return
         drag.ended = true
         val speed = if (drag.opening) -velocityY else velocityY
@@ -7211,8 +7267,16 @@ private class MiniPlayerController(
 
     /** A morph moving on its springs under this point - the switch's, or a scene's. */
     /** A notification's morph is not the music's to catch: its drag engine would drive it wrong. */
+    private fun otherIslandAt(x: Float, y: Float): Boolean {
+        val moving = noteMorphKey ?: return false
+        val key = if (smallIslandAt(x, y)) smallKey else selectedIsland
+        return key != null && key != moving && pillMorph() == null &&
+            touchTarget(x, y, allowTransition = true) != null
+    }
+
     fun catchableAt(x: Float, y: Float): Boolean = !MiniPlayerScene.aodActive &&
-        !Main.bouncerShown() && !editButtonUp() && noteDrag == null && morph?.catchableAt(x, y) == true
+        !Main.bouncerShown() && !editButtonUp() && noteDrag == null &&
+        !otherIslandAt(x, y) && morph?.catchableAt(x, y) == true
 
     /** Whether the running morph belongs to a cover or lyrics entry or exit. */
     fun morphIsScene(): Boolean = morph != null && morphScene
@@ -7409,7 +7473,8 @@ private class MiniPlayerController(
         val refused = when {
             view.visibility != View.VISIBLE -> "hidden"
             !view.isAttachedToWindow -> "detached"
-            morph != null && !allowTransition -> "morph running"
+            morph != null && !allowTransition &&
+                (pillMorph() != null || (if (onSmall) smallKey else selectedIsland) == noteMorphKey) -> "morph running"
             !view.acceptsTouch() && !allowTransition -> "not interactive (canShow=${canShow()} " +
                 "aod=${MiniPlayerScene.aodActive})"
             else -> null
