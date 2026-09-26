@@ -1584,6 +1584,7 @@ private class MiniPlayerController(
         }
         updateDiscs()
         traceScene()
+        gateBouncerOverlays()
         true
     } finally { android.os.Trace.endSection() } }
 
@@ -1626,6 +1627,30 @@ private class MiniPlayerController(
     }
 
     private val followRelative = Matrix()
+    private val bouncerHiddenViews = WeakHashMap<View, Int>()
+
+    /** Includes flights, ghosts and discs; they are siblings of the keypad's container. */
+    private fun gateBouncerOverlays() {
+        if (Main.bouncerShown()) {
+            for (i in 0 until host.childCount) {
+                val child = host.getChildAt(i)
+                if (child !is MiniPlayerView && child !is ShortcutDisc) continue
+                val visibility = child.visibility
+                if (visibility == View.VISIBLE) {
+                    bouncerHiddenViews[child] = visibility
+                    child.visibility = View.INVISIBLE
+                } else if (visibility != View.INVISIBLE && child in bouncerHiddenViews) {
+                    // A flight recycled while hidden must stay GONE when the keypad leaves.
+                    bouncerHiddenViews[child] = visibility
+                }
+            }
+        } else if (bouncerHiddenViews.isNotEmpty()) {
+            for ((view, visibility) in bouncerHiddenViews) {
+                if (view.parent === host && view.visibility == View.INVISIBLE) view.visibility = visibility
+            }
+            bouncerHiddenViews.clear()
+        }
+    }
     private val followHost = Matrix()
     private var followRoot: WeakReference<View>? = null
     private var rowHeldOff = false
@@ -8208,11 +8233,12 @@ private class MiniPlayerController(
         val current = controller
         // Any island at all: the music, or a notification.
         val sessionUsable = islandKeys.isNotEmpty()
+        val bouncerShowing = Main.bouncerShown()
         // Unlocking, the keyguard says it is going away on the first frame of its fade-out.
         // Handing the card back then showed the whole OEM card through that fade - the
         // artwork flashing on every unlock. Until the lock screen is actually off the screen,
         // it keeps what it had; the pill fades with it (followShortcuts).
-        if (enabled && sessionUsable && MiniPlayerScene.keyguardGoingAway && Main.onKeyguardNow()) {
+        if (!bouncerShowing && enabled && sessionUsable && MiniPlayerScene.keyguardGoingAway && Main.onKeyguardNow()) {
             player?.setInteractionsEnabled(false)
             return
         }
@@ -8237,8 +8263,8 @@ private class MiniPlayerController(
         // The discs stay while any island is out as its row: the last notification pulled out
         // of a row with no music left the row empty, and the torch and camera lost their glass
         // with it (2026-09-25) - where the music, out as its card, still counts as an island.
-        discsWanted = keyguardOwned || enabled && !MiniPlayerScene.keyguardGoingAway &&
-            Main.keyguardLocked() && LockIslands.releasedKeys().isNotEmpty()
+        discsWanted = !bouncerShowing && (keyguardOwned || enabled && !MiniPlayerScene.keyguardGoingAway &&
+            Main.keyguardLocked() && LockIslands.releasedKeys().isNotEmpty())
         val controlCenterOpen = keyguardOwned &&
             (MiniPlayerScene.controlCenterIsActive || Main.miniPlayerControlCenterUp())
         val nativeRequested = MiniPlayerRuntime.nativeRequested(current?.sessionToken)
@@ -8261,6 +8287,7 @@ private class MiniPlayerController(
                 nativeSceneOverride = keyguardOwned && Main.coverSceneActive(),
                 transitionActive = transition,
                 controlCenterOpen = controlCenterOpen,
+                bouncerShowing = bouncerShowing,
             ),
         )
         // An exchange keeps the row up - out of the cover, the row went for its frames and every
@@ -8274,7 +8301,7 @@ private class MiniPlayerController(
         val shown = presentation.showMini && sceneLandedAt == 0L
         // The stack leaves the notifications out only while the row is there to show them.
         // ...and not while the media card's morph has the rows turning into islands or back.
-        val active = shown && keyguardOwned && !rowsHeld()
+        val active = (shown || bouncerShowing && lastActive) && keyguardOwned && !rowsHeld()
         if (active != lastActive) {
             // Which input turned the row off or on, and who asked: leaving the cover the row
             // went and came back within 10ms, each a whole list rebuild (2026-09-25).
@@ -8317,7 +8344,7 @@ private class MiniPlayerController(
         val log = "nativeRequested=$nativeRequested " +
             "showMini=${presentation.showMini} suppressNative=${presentation.suppressNative} " +
             "keyguardOwned=$keyguardOwned sceneVisible=$sceneVisible center=$controlCenterOpen " +
-            "sceneOverride=${Main.coverSceneActive()} transition=${morph != null}"
+            "sceneOverride=${Main.coverSceneActive()} transition=${morph != null} bouncer=$bouncerShowing"
         if (log != lastPresentationLog) {
             lastPresentationLog = log
             Xp.log("MCMini: presentation $log")

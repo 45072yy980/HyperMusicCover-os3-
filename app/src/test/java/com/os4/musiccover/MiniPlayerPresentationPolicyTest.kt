@@ -15,6 +15,7 @@ class MiniPlayerPresentationPolicyTest {
         nativeSceneOverride: Boolean = false,
         transitionActive: Boolean = false,
         controlCenterOpen: Boolean = false,
+        bouncerShowing: Boolean = false,
     ) = MiniPlayerPresentationPolicy.evaluate(
         MiniPlayerPresentationInput(
             enabled,
@@ -25,8 +26,18 @@ class MiniPlayerPresentationPolicyTest {
             nativeSceneOverride,
             transitionActive,
             controlCenterOpen,
+            bouncerShowing,
         ),
     )
+
+    @Test fun keypadHidesIslandsEvenDuringTransitionsWithoutResettingTheMediaChoice() {
+        assertFalse(presentation(bouncerShowing = true).showMini)
+        assertFalse(presentation(bouncerShowing = true, transitionActive = true).showMini)
+        assertFalse(presentation(bouncerShowing = true, controlCenterOpen = true).showMini)
+        assertTrue(presentation(bouncerShowing = true).suppressNative)
+        assertTrue(presentation(bouncerShowing = false).showMini)
+        assertFalse(presentation(bouncerShowing = false, nativeRequested = true).showMini)
+    }
 
     @Test fun dynamicNativeChoiceSurvivesUpdatesWithinTheSameSession() {
         val selection = MiniPlayerSessionSelection()
