@@ -5,6 +5,20 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class MiniPlayerGeometryTest {
+    @Test fun ordinaryNotificationBelowTheOldIslandPositionIsStillVisible() {
+        assertTrue(MiniPlayerGeometry.rowIntersectsViewport(2016f, 994, 0f, 2608f))
+        assertTrue(MiniPlayerGeometry.rowIntersectsViewport(1700f, 557, 0f, 2536f))
+        assertTrue(!MiniPlayerGeometry.rowIntersectsViewport(2608f, 994, 0f, 2608f))
+        assertTrue(!MiniPlayerGeometry.rowIntersectsViewport(-994f, 994, 0f, 2608f))
+        assertTrue(!MiniPlayerGeometry.rowIntersectsViewport(2016f, 0, 0f, 2608f))
+    }
+
+    @Test fun notificationViewportUsesTheSameScreenCoordinatesAsTheRow() {
+        assertTrue(!MiniPlayerGeometry.rowIntersectsViewport(10f, 50, 100f, 900f))
+        assertTrue(MiniPlayerGeometry.rowIntersectsViewport(80f, 50, 100f, 900f))
+        assertTrue(!MiniPlayerGeometry.rowIntersectsViewport(900f, 50, 100f, 900f))
+    }
+
     @Test fun missingShortcutsAnchorToScreenBottomOnTheReportedDevice() {
         // 1200x2608 device, 54dp island and 12dp margin at density 3.
         val center = MiniPlayerGeometry.bottomCenterY(2608, 0, 36, 162)

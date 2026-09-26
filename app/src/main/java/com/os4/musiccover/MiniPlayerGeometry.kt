@@ -21,6 +21,11 @@ internal object MiniPlayerGeometry {
             .coerceIn(half, hostHeight - half)
     }
 
+    /** A notification may extend below the viewport while its upper portion is visible. */
+    fun rowIntersectsViewport(rowTop: Float, rowHeight: Int, viewportTop: Float, viewportBottom: Float): Boolean =
+        rowHeight > 0 && viewportBottom > viewportTop &&
+            rowTop < viewportBottom && rowTop + rowHeight > viewportTop
+
     fun widthPx(requestedPx: Int, hostWidth: Int, centerX: Float, marginPx: Int): Int {
         if (hostWidth <= 0) return 0
         val margin = marginPx.coerceIn(0, (hostWidth - 1) / 2)

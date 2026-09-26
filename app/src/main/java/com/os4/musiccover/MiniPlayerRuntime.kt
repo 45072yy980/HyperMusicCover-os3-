@@ -6287,7 +6287,7 @@ private class MiniPlayerController(
 
     /**
      * Whether a row is there to be landed on: shown, drawn at least half there, and inside the
-     * screen above the row of islands. Not the stack's folded state: it read true with the row
+     * screen viewport. Not the stack's folded state: it read true with the row
      * plainly drawn (alpha 1, 2026-09-25), and the tap went back into its island - it is only
      * logged now.
      */
@@ -6311,7 +6311,7 @@ private class MiniPlayerController(
         val parent = row.parent as? View
         return "${shortName(row)} v=${row.visibility} shown=${row.isShown} a=${"%.2f".format(row.alpha)} " +
             "ta=${"%.2f".format(row.transitionAlpha)} parentA=${parent?.let { "%.2f".format(drawnAlpha(it)) }} " +
-            "y=${xy[1]} h=${row.height} laid=${row.isLaidOut} bottom=${player?.restBoxOnScreen()?.y?.toInt()} " +
+            "y=${xy[1]} h=${row.height} laid=${row.isLaidOut} viewportBottom=${viewportBottomOnScreen()} " +
             "folded=${stackFolded()} lead=${stackLead()?.let(::shortKey)} hiddenBy=" + hiddenAncestors(row) +
             (findRow(stackLead() ?: "")?.second?.takeIf { it !== row }?.let { top ->
                 " group: v=${top.visibility} a=${"%.2f".format(top.alpha)} ta=${"%.2f".format(top.transitionAlpha)} " +
@@ -6326,9 +6326,16 @@ private class MiniPlayerController(
         val parent = row.parent as? View ?: return false
         if (!row.isShown || drawnAlpha(parent) < 0.5f) return false
         val xy = IntArray(2).also(row::getLocationOnScreen)
-        val bottom = player?.restBoxOnScreen()?.y ?: host.height.toFloat()
-        return xy[1] + row.height > 0 && xy[1] < bottom
+        val hostXY = IntArray(2).also(host::getLocationOnScreen)
+        // The island's position is not a viewport boundary. With hidden shortcuts it used to
+        // sit at y=1223, rejecting visible ordinary rows at y=2016 until the open timed out.
+        // Both positions are screen coordinates, including a host that starts below y=0.
+        return MiniPlayerGeometry.rowIntersectsViewport(xy[1].toFloat(), row.height,
+            hostXY[1].toFloat(), hostXY[1] + host.height - bottomSafeInset().toFloat())
     }
+
+    private fun viewportBottomOnScreen(): Float =
+        IntArray(2).also(host::getLocationOnScreen)[1] + host.height - bottomSafeInset().toFloat()
 
     /**
      * The stack folded into its "N notifications" count (KeyguardNotificationState.NUMBER),
