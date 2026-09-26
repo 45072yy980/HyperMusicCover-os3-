@@ -1495,6 +1495,7 @@ private class MiniPlayerController(
     private var cachedCover: Bitmap? = null
     private var refreshPosted = false
     private var positionPosted = false
+    private var destroyed = false
     private var configuredHeightDp = 72f
     private var config = JSONObject(MiniPlayerConfig.defaultJson())
     private var forceHeaderRefresh = true
@@ -3221,20 +3222,25 @@ private class MiniPlayerController(
     }
 
     /**
-     * With two islands or more a switch can come at any tap: the views it takes are made while
+     * Even one island can open into a card: its flight is made while
      * the thread is idle, bound to an island so their material is on, and laid out, not on the
      * tap's frame.
      */
     private fun prewarmSpares() {
-        if (prewarmPosted || spareViews.size >= SPARE_VIEWS || islandKeys.size < 2) return
+        val wanted = min(islandKeys.size, SPARE_VIEWS)
+        if (destroyed || prewarmPosted || spareViews.size >= wanted) return
         prewarmPosted = true
         android.os.Looper.myQueue().addIdleHandler {
             prewarmPosted = false
-            if (exchange == null && islandKeys.size >= 2 && spareViews.size < SPARE_VIEWS) {
+            if (!destroyed && host.isAttachedToWindow && exchange == null &&
+                spareViews.size < min(islandKeys.size, SPARE_VIEWS)) {
                 val key = islandKeys.firstOrNull()
-                traced("MC sv.prewarm") { key?.let(::prepareSmallView) }?.let(::recycleSmallView)
-                // One a pass: the next idle makes the other.
-                if (spareViews.size < SPARE_VIEWS) prewarmSpares()
+                val warmed = traced("MC sv.prewarm") { key?.let(::prepareSmallView) }
+                if (warmed != null) {
+                    recycleSmallView(warmed)
+                    // One a pass; don't keep retrying an island whose content is unavailable.
+                    prewarmSpares()
+                }
             }
             false
         }
@@ -3506,6 +3512,7 @@ private class MiniPlayerController(
     /** One of those rows on its way out from under the island: its own spring, 0 there, 1 in the stack. */
     private class PileRow(val row: View) {
         val out = Jelly(PILE_RESPONSE, PILE_DAMPING)
+        val matrix = Matrix()
         /** Its turn, from the lead: 1 the nearest to it. */
         var turn = 1
     }
@@ -3534,7 +3541,7 @@ private class MiniPlayerController(
      * version before scrolled the rows through the stack's own calculator, followed the lead's
      * progress with none of their own, and came up alone at the card's place before the card.
      */
-    private fun pileStack(progress: Float, from: CoverMorphMotion.Box?) {
+    private fun pileStack(progress: Float, from: CoverMorphMotion.Box?) = traced("MC pileLookup") {
         Choreographer.getInstance().removeFrameCallback(pileSettle)
         if (from != null) pileFrom = from
         pileAt = progress
@@ -3546,21 +3553,27 @@ private class MiniPlayerController(
         // frame at most - each look walks the stack's rows by reflection (2026-09-26, frames
         // dropped pulling the stack island down).
         val now = android.os.SystemClock.uptimeMillis()
-        if (now - pileFoundAt < PILE_FIND_MS && !pileTraceNext) return
+        if (now - pileFoundAt < PILE_FIND_MS && !pileTraceNext) return@traced
         pileFoundAt = now
-        val lead = stackLead() ?: return
-        val keep = findRow(lead)?.first ?: return
+        val lead = stackLead() ?: return@traced
+        val stack = notificationStack() ?: return@traced
+        val children = (0 until stack.childCount).map { stack.getChildAt(it) }
+            .filter { it.javaClass.name.contains("ExpandableNotificationRow") }
+        val index = MiniPlayerRowIndex.build(children, ::rowKey, ::childRows,
+            kept.filterValues { it.row.isAttachedToWindow }.mapValues { it.value.row })
+        val keep = index[lead] ?: return@traced
         val rows = LockIslands.stackMembers.asSequence().filter { it != lead }
-            .mapNotNull { wholeRowFor(it, keep) }
+            .mapNotNull { index[it] }
             .filter { it !== keep && !isInside(keep, it) }.distinct().toList()
         if (pileTraceNext) trace("pile p=${"%.2f".format(progress)} lead=${shortKey(lead)} keep=${shortName(keep)}" +
             "@${(keep.translationY).toInt()} members=${LockIslands.stackMembers.joinToString(",") { shortKey(it) }} " +
             "rows=${rows.joinToString(",") { shortName(it) + "@" + it.translationY.toInt() }} " +
-            "missing=${LockIslands.stackMembers.filter { it != lead && findRow(it) == null }.joinToString(",") { shortKey(it) }}")
-        if (rows.isEmpty()) return
+            "missing=${LockIslands.stackMembers.filter { it != lead && it !in index }.joinToString(",") { shortKey(it) }}")
+        if (rows.isEmpty()) return@traced
         // Their turns: the nearest to the lead in the stack first.
         val at = stackTargetY(keep) + keep.top
-        rows.sortedBy { kotlin.math.abs(stackTargetY(it) + it.top - at) }.forEachIndexed { i, row ->
+        rows.map { it to kotlin.math.abs(stackTargetY(it) + it.top - at) }
+            .sortedBy { it.second }.forEachIndexed { i, (row, _) ->
             val pile = piles.getOrPut(row) {
                 // First seen where the lead is: nothing moves at once.
                 PileRow(row).also { it.out.value = pileTarget(progress, i + 1) }
@@ -3644,7 +3657,8 @@ private class MiniPlayerController(
             val h = rowHeight(row) * s
             val native = CoverMorphMotion.Box(xy[0] + row.left + mx, xy[1] + row.top + my, w, h)
             val island = pileFrom
-            val m = Matrix()
+            val m = pile.matrix
+            m.reset()
             if (island != null && u < 1f - 0.0005f || u > 1f + 0.0005f) {
                 // Out from under the island at its width, centred on it.
                 val k0 = if (island != null && w > 0f) island.w / w else 1f
@@ -6787,6 +6801,7 @@ private class MiniPlayerController(
     }
 
     fun destroy() {
+        destroyed = true
         prefs.unregisterOnSharedPreferenceChangeListener(prefListener)
         runCatching { host.viewTreeObserver.removeOnPreDrawListener(preDraw) }
         runCatching { sessions?.removeOnActiveSessionsChangedListener(sessionListener) }
