@@ -3,6 +3,8 @@ package com.os4.musiccover
 import android.graphics.Matrix
 import android.graphics.Outline
 import android.os.SystemClock
+import android.text.Spanned
+import android.text.SpannedString
 import android.view.Choreographer
 import android.view.View
 import android.view.ViewOutlineProvider
@@ -99,6 +101,7 @@ internal class MiniCardMorph(
         val ownColor = (view as? TextView)?.currentTextColor ?: 0
         val ownText: CharSequence? = (view as? TextView)?.text
         var tookText = false
+        var textWriteFailed = false
     }
 
     private val motion = CoverMorphMotion()
@@ -475,9 +478,27 @@ internal class MiniCardMorph(
                     val nt = n as TextView
                     val colour = androidx.core.graphics.ColorUtils.blendARGB(piece.ownColor, nt.currentTextColor, mix)
                     if (tv.currentTextColor != colour) tv.setTextColor(colour)
-                    if (mix >= 0.5f && !android.text.TextUtils.equals(tv.text, nt.text)) {
-                        tv.text = nt.text
-                        piece.tookText = true
+                    if (mix >= 0.5f && !piece.textWriteFailed &&
+                        !android.text.TextUtils.equals(tv.text, nt.text)) {
+                        // PrecomputedText carries the source TextView's layout metrics. Give the
+                        // destination an independent CharSequence so it can measure the same
+                        // words with its own size, typeface and line-breaking settings.
+                        val source = nt.text
+                        val copied = if (source is Spanned) SpannedString(source) else source.toString()
+                        try {
+                            tv.text = copied
+                            piece.tookText = true
+                        } catch (_: IllegalArgumentException) {
+                            // Keep an unexpected span-related TextView failure inside this frame;
+                            // plain text has no source spans or precomputed layout to reject.
+                            try {
+                                tv.text = source.toString()
+                                piece.tookText = true
+                            } catch (fallbackError: IllegalArgumentException) {
+                                piece.textWriteFailed = true
+                                Xp.log("MCMini: morph text handoff skipped: $fallbackError")
+                            }
+                        }
                     }
                 }
             }
