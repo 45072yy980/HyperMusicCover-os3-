@@ -1320,6 +1320,8 @@ object MiniPlayerRuntime {
 
     @JvmStatic fun nativeScrollDebug(): String = live().joinToString { it.lastScrollGate }
 
+    @JvmStatic fun releaseNativeScrollPin() = live().forEach { it.releaseNativeScrollPin() }
+
     /**
      * That row folds back into the row of islands, following the finger from [ev] on as the
      * media card does when it is pulled down into the pill.
@@ -4366,6 +4368,13 @@ private class MiniPlayerController(
         observePin(native)
         // Placed now, in the frame the morph lets go of it; the callback carries on from there.
         pinFrame.doFrame(0L)
+    }
+
+    /** A landed lead must scroll with the other rows as soon as the user drags the list. */
+    fun releaseNativeScrollPin() {
+        if (pinned?.get() == null || pinnedAt != null) return
+        MiniPlayerRuntime.noteTouch("pin released for native scroll")
+        unpinCard()
     }
 
     /** [keep]: the card stays drawn where the pin had it, for a morph taking it this frame. */

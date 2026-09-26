@@ -7707,6 +7707,7 @@ public class Main extends XposedModule {
     private static final int SWIPE_NONE = 0, SWIPE_FIRED = 1, SWIPE_HELD = 2;
     private static boolean sCardSwipeFired;
     private static final MiniPlayerCollapseGesture sCardCollapseGesture = new MiniPlayerCollapseGesture();
+    private static boolean sCardScrollTarget, sCardScrollPinReleased;
     /**
      * The fired swipe is the keyguard's too: it goes on reaching the stack, which folds its
      * notifications away under the same pull, as it did before there was a pill to go back to.
@@ -7727,14 +7728,16 @@ public class Main extends XposedModule {
                 sCardSwipeFired = false;
                 sCardSwipeShared = false;
                 sCardSwipeRow = null;
+                sCardScrollPinReleased = false;
                 boolean atTop = MiniPlayerRuntime.nativeStackAtTop(true);
-                boolean armed = atTop && MiniPlayerRuntime.wantsNativeCardSwipe()
+                boolean mediaTarget = MiniPlayerRuntime.wantsNativeCardSwipe()
                         && !sGestureOnCentre && !sGestureOnCharge
                         && cardRectContains(ev.getRawX(), ev.getRawY());
-                if (!armed && atTop && !sGestureOnCentre && !sGestureOnCharge) {
+                if (!mediaTarget && !sGestureOnCentre && !sGestureOnCharge) {
                     sCardSwipeRow = MiniPlayerRuntime.releasedRowAt(ev.getRawX(), ev.getRawY());
-                    armed = sCardSwipeRow != null;
                 }
+                sCardScrollTarget = mediaTarget || sCardSwipeRow != null;
+                boolean armed = atTop && sCardScrollTarget;
                 sCardCollapseGesture.start(armed);
                 sCardSwipeX = ev.getRawX();
                 sCardSwipeY = ev.getRawY();
@@ -7754,9 +7757,14 @@ public class Main extends XposedModule {
                     MiniPlayerRuntime.dragMove(ev);
                     return sCardSwipeShared ? SWIPE_NONE : SWIPE_HELD;
                 }
-                if (!sCardCollapseGesture.getArmed()) return SWIPE_NONE;
                 float dx = ev.getRawX() - sCardSwipeX, dy = ev.getRawY() - sCardSwipeY;
                 float slop = android.view.ViewConfiguration.get(sAppCtx).getScaledTouchSlop();
+                if (sCardScrollTarget && !sCardScrollPinReleased
+                        && Math.abs(dy) > slop && Math.abs(dy) > Math.abs(dx)) {
+                    sCardScrollPinReleased = true;
+                    MiniPlayerRuntime.releaseNativeScrollPin();
+                }
+                if (!sCardCollapseGesture.getArmed()) return SWIPE_NONE;
                 if (sCardCollapseGesture.move(dx, dy, slop, MiniPlayerRuntime.nativeStackAtTop())) {
                     sCardSwipeFired = true;
                     sArtSwallow = false;
@@ -7804,6 +7812,7 @@ public class Main extends XposedModule {
                 }
                 sCardCollapseGesture.reset();
                 sCardSwipeFired = sCardSwipeShared = false;
+                sCardScrollTarget = sCardScrollPinReleased = false;
                 return held ? SWIPE_HELD : SWIPE_NONE;
             }
             default:
