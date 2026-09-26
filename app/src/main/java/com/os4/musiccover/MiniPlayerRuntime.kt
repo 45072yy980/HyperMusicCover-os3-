@@ -5623,10 +5623,12 @@ private class MiniPlayerController(
         // Back where it came out of: the pill it was in, or the small island. The music, out
         // as its card since before any pull, comes back into the pill - the super island's
         // expanded island folds into its big one.
-        flightHome = if (rowEmpty || key in releasedFromPill ||
-            key == MUSIC_ISLAND && key !in releasedFromSmall) HOME_PILL else HOME_SMALL
+        flightHome = if (MiniPlayerReturnPolicy.returnsToPill(rowEmpty, key == MUSIC_ISLAND,
+                selectedIsland == MUSIC_ISLAND, key in releasedFromPill, key in releasedFromSmall))
+            HOME_PILL else HOME_SMALL
+        if (flightHome == HOME_SMALL) preferredSmall = key
         MiniPlayerRuntime.noteTouch("collapse home=${if (flightHome == HOME_PILL) "pill" else "small"} " +
-            "empty=$rowEmpty")
+            "empty=$rowEmpty key=${shortKey(key)} big=${selectedIsland?.let(::shortKey)}")
         if (rowEmpty) {
             // The row comes back with this notification in the pill - out of sight under the
             // flight until it lands there.
