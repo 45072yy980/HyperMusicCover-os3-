@@ -104,6 +104,19 @@ object MiniPlayerRuntime {
                 result
             }
         }.onFailure { Xp.log("MCMini: shortcut hook unavailable, no mini player: $it") }
+        runCatching {
+            val cls = Xp.findClass("com.android.systemui.statusbar.notification.stack.NotificationStackScrollLayout", classLoader)
+            Xp.hookAll(cls, "onScrollTouch") { chain ->
+                val result = chain.proceed()
+                val event = chain.args.firstOrNull() as? MotionEvent
+                val stack = chain.thisObject as? View
+                if (event?.actionMasked == MotionEvent.ACTION_MOVE && stack != null &&
+                    runCatching { Xp.getObjectField(stack, "mIsBeingDragged") == true }.getOrDefault(false)) {
+                    live().forEach { it.onNativeListScroll(stack) }
+                }
+                result
+            }
+        }.onFailure { Xp.log("MCMini: native scroll handoff unavailable: $it") }
         // A row given back to its island ahead of its morph home is left to the stack as a
         // transient view: laid out no more, drawn still. The stack takes it away when its own
         // animation ends; the morph's rows are kept until the morph has landed (holdTransient).
@@ -4351,8 +4364,11 @@ private class MiniPlayerController(
      * [from]: the stack translation the morph let go of it at, when that was not where the stack
      * is settling it - a card come back down out of a turned-round exchange lands where it left.
      */
-    private fun pinCard(native: View, leaving: Collection<String>, from: Float? = null) {
+    private fun pinCard(key: String, native: View, leaving: Collection<String>, from: Float? = null) {
         unpinCard()
+        // A LIST is already placed by SystemUI. Holding just its lead makes it lag behind
+        // the rest during scrolling, even after the opening morph has finished.
+        if (key == STACK_ISLAND) return
         pinned = WeakReference(native)
         pinnedLeaving = leaving
         pinnedSince = android.os.SystemClock.uptimeMillis()
@@ -4375,6 +4391,21 @@ private class MiniPlayerController(
         if (pinned?.get() == null || pinnedAt != null) return
         MiniPlayerRuntime.noteTouch("pin released for native scroll")
         unpinCard()
+    }
+
+    /** Called by NSSL itself, including gestures starting between rows and early scrolling. */
+    fun onNativeListScroll(stack: View) {
+        if (stack !== notificationStack() || !LockIslands.isReleased(STACK_ISLAND)) return
+        val opening = morph?.takeIf { noteMorphKey == STACK_ISLAND && it.toNative }
+        val moving = exchange?.movers?.get(STACK_ISLAND)?.morph?.takeIf { it.toNative }
+        if (opening != null || moving != null || piles.isNotEmpty() || pinned?.get() != null) {
+            MiniPlayerRuntime.noteTouch("native list owns row positions")
+            // Listener cleanup hands the real row back; it remains released in the native list.
+            opening?.cancel()
+            moving?.cancel()
+            finishPile(true)
+            unpinCard()
+        }
     }
 
     /** [keep]: the card stays drawn where the pin had it, for a morph taking it this frame. */
@@ -5214,7 +5245,7 @@ private class MiniPlayerController(
             // Turned round, the card that came back up lands where it left, the rows that went
             // up on their way back out of the stack under it: held the same (2026-09-25).
             // Where the stack has it: the rows going home are out of its layout already.
-            pinCard(m.native, x.homeKeys())
+            pinCard(key, m.native, x.homeKeys())
         } else {
             releasedFromPill -= key
             releasedFromSmall -= key
@@ -5340,7 +5371,7 @@ private class MiniPlayerController(
         x.expanded?.takeIf { it !in x.movers }?.let { out ->
             val held = pinned?.get()
             val at = pinnedAt
-            if (held != null && at != null && held === nativeFor(out)) pinCard(held, listOf(key), from = at)
+            if (held != null && at != null && held === nativeFor(out)) pinCard(out, held, listOf(key), from = at)
             else unpinCard()
         }
         x.movers.remove(key)?.let { m ->
@@ -5866,7 +5897,7 @@ private class MiniPlayerController(
                 refresh()
                 if (!flew) startSwap(null, oldSmall)
                 // Held where it landed until the stack has it there too.
-                nativeFor(key)?.let { pinCard(it, emptyList()) }
+                nativeFor(key)?.let { pinCard(key, it, emptyList()) }
             } else {
                 // Back in the row as the small island it landed as: the stack lets go of its row.
                 // The morph has just put the row's alpha back, and the stack takes most of a
