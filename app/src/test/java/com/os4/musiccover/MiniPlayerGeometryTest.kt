@@ -21,14 +21,19 @@ class MiniPlayerGeometryTest {
         assertEquals(376, neither.width)
     }
 
-    @Test fun returningSmallIslandDoesNotShiftThePillAndRespectsTouchMargins() {
+    @Test fun adaptiveLayoutUsesNativeOuterMarginsAndKeepsPairedIslandsCentred() {
         for (hasSmall in listOf(false, true)) {
             val layout = MiniPlayerGeometry.singleShortcutLayout(1200, 36, 1080, 162, 24,
                 true, 117f, 250f, 1050f, hasSmall)
-            assertEquals(600f, layout.pillCenterX, 0f)
             assertTrue(layout.pillCenterX - layout.pillWidth / 2f >= 274f)
-            if (hasSmall) assertTrue(layout.smallCenterX - 81f -
-                (layout.pillCenterX + layout.pillWidth / 2f) >= 24f)
+            if (hasSmall) {
+                assertEquals(600f, layout.pillCenterX, 0f)
+                assertTrue(layout.smallCenterX - 81f -
+                    (layout.pillCenterX + layout.pillWidth / 2f) >= 24f)
+            } else {
+                assertEquals(274f, layout.pillCenterX - layout.pillWidth / 2f, 0f)
+                assertEquals(1131f, layout.pillCenterX + layout.pillWidth / 2f, 0f)
+            }
         }
     }
 
