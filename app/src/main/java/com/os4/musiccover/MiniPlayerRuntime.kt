@@ -8501,7 +8501,7 @@ private class MiniPlayerController(
         val margin = dp(12f)
         val gap = dp(MiniPlayerGeometry.DISC_GAP_DP)
         val adaptive = config.getBoolean(MiniPlayerConfig.ADAPTIVE_WIDTH) && (l == null || r == null)
-        if (adaptive && (leftAnchor != null) != (rightAnchor != null)) {
+        if (adaptive && small && (leftAnchor != null) != (rightAnchor != null)) {
             val onLeft = leftAnchor != null
             val present = leftAnchor ?: rightAnchor!!
             val missing = (if (onLeft) right else left)?.takeIf {
