@@ -7705,7 +7705,8 @@ public class Main extends XposedModule {
      * getLeft()/getTop() sidesteps the artwork's matrix while still picking up every ancestor's.
      */
     private static final int SWIPE_NONE = 0, SWIPE_FIRED = 1, SWIPE_HELD = 2;
-    private static boolean sCardSwipeArmed, sCardSwipeFired;
+    private static boolean sCardSwipeFired;
+    private static final MiniPlayerCollapseGesture sCardCollapseGesture = new MiniPlayerCollapseGesture();
     /**
      * The fired swipe is the keyguard's too: it goes on reaching the stack, which folds its
      * notifications away under the same pull, as it did before there was a pill to go back to.
@@ -7726,19 +7727,21 @@ public class Main extends XposedModule {
                 sCardSwipeFired = false;
                 sCardSwipeShared = false;
                 sCardSwipeRow = null;
-                sCardSwipeArmed = MiniPlayerRuntime.wantsNativeCardSwipe()
+                boolean atTop = MiniPlayerRuntime.nativeStackAtTop();
+                boolean armed = atTop && MiniPlayerRuntime.wantsNativeCardSwipe()
                         && !sGestureOnCentre && !sGestureOnCharge
                         && cardRectContains(ev.getRawX(), ev.getRawY());
-                if (!sCardSwipeArmed && !sGestureOnCentre && !sGestureOnCharge) {
+                if (!armed && atTop && !sGestureOnCentre && !sGestureOnCharge) {
                     sCardSwipeRow = MiniPlayerRuntime.releasedRowAt(ev.getRawX(), ev.getRawY());
-                    sCardSwipeArmed = sCardSwipeRow != null;
+                    armed = sCardSwipeRow != null;
                 }
+                sCardCollapseGesture.start(armed);
                 sCardSwipeX = ev.getRawX();
                 sCardSwipeY = ev.getRawY();
                 // For `op mini`: why a pull on the card did or did not take. A pull down in the
                 // cover once did nothing until the player was restarted (2026-09-25), and nothing
                 // said which of these it was.
-                MiniPlayerRuntime.noteTouch("card down armed=" + sCardSwipeArmed
+                MiniPlayerRuntime.noteTouch("card down armed=" + armed + " stackTop=" + atTop
                         + " want=" + MiniPlayerRuntime.wantsNativeCardSwipe()
                         + " centre=" + sGestureOnCentre + " charge=" + sGestureOnCharge
                         + " cover=" + sCoverMode + " card=" + describeCardRect()
@@ -7750,22 +7753,20 @@ public class Main extends XposedModule {
                     MiniPlayerRuntime.dragMove(ev);
                     return sCardSwipeShared ? SWIPE_NONE : SWIPE_HELD;
                 }
-                if (!sCardSwipeArmed) return SWIPE_NONE;
+                if (!sCardCollapseGesture.getArmed()) return SWIPE_NONE;
                 float dx = ev.getRawX() - sCardSwipeX, dy = ev.getRawY() - sCardSwipeY;
                 float slop = android.view.ViewConfiguration.get(sAppCtx).getScaledTouchSlop();
-                if (Math.abs(dx) > slop && Math.abs(dx) >= Math.abs(dy)) {
-                    sCardSwipeArmed = false;
-                    return SWIPE_NONE;
-                }
-                if (dy > slop && dy > Math.abs(dx) * 1.2f) {
-                    sCardSwipeArmed = false;
+                if (sCardCollapseGesture.move(dx, dy, slop, MiniPlayerRuntime.nativeStackAtTop())) {
                     sCardSwipeFired = true;
                     sArtSwallow = false;
                     if (sCardSwipeRow != null) {
                         // A notification the row of islands let out goes back into it.
                         String key = sCardSwipeRow;
                         sCardSwipeRow = null;
-                        MiniPlayerRuntime.collapseRow(key, ev);
+                        if (!MiniPlayerRuntime.collapseRow(key, ev)) {
+                            sCardSwipeFired = false;
+                            return SWIPE_NONE;
+                        }
                         return SWIPE_FIRED;
                     }
                     // With notifications to fold, the pull is not cancelled out from under the
@@ -7800,7 +7801,8 @@ public class Main extends XposedModule {
                     MiniPlayerRuntime.dragEnd(ev,
                             ev.getActionMasked() == MotionEvent.ACTION_CANCEL);
                 }
-                sCardSwipeArmed = sCardSwipeFired = sCardSwipeShared = false;
+                sCardCollapseGesture.reset();
+                sCardSwipeFired = sCardSwipeShared = false;
                 return held ? SWIPE_HELD : SWIPE_NONE;
             }
             default:

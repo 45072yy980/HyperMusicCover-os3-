@@ -1314,6 +1314,9 @@ object MiniPlayerRuntime {
     @JvmStatic fun releasedRowAt(x: Float, y: Float): String? =
         live().firstNotNullOfOrNull { it.releasedRowAt(x, y) }
 
+    /** Unknown scroll state leaves the gesture with SystemUI. Read on DOWN and before taking it. */
+    @JvmStatic fun nativeStackAtTop(): Boolean = live().any { it.nativeStackAtTop() }
+
     /**
      * That row folds back into the row of islands, following the finger from [ev] on as the
      * media card does when it is pulled down into the pill.
@@ -6106,6 +6109,18 @@ private class MiniPlayerController(
     }
 
     /** The lock screen's notification stack, found once in the window. */
+    private fun nativeScrollY(): Int? {
+        val stack = notificationStack() ?: return null
+        // NSSL uses mOwnScrollY, not View.scrollY (verified on the installed 7da817a4 APK).
+        return (runCatching { Xp.callMethod(stack, "getOwnScrollY") }.getOrNull() as? Number)?.toInt()
+            ?: (runCatching { Xp.getObjectField(stack, "mOwnScrollY") }.getOrNull() as? Number)?.toInt()
+    }
+
+    fun nativeStackAtTop(): Boolean {
+        val scrollY = nativeScrollY() ?: return false
+        return scrollY <= 0 && notificationStack()?.canScrollVertically(-1) != true
+    }
+
     private fun notificationStack(): ViewGroup? {
         (stackRef?.get() as? ViewGroup)?.takeIf { it.isAttachedToWindow }?.let { return it }
         val queue = ArrayDeque<View>()
@@ -6934,7 +6949,7 @@ private class MiniPlayerController(
             (if (h == null) "none" else "v=${h.visibility} a=${h.alpha} ta=${h.transitionAlpha}") +
             " placement=${if (usableButton(left) != null || usableButton(right) != null) "shortcut" else "screen-bottom"}" +
             " host=${host.width}x${host.height} bottomArea=${bottomArea?.width}x${bottomArea?.height}" +
-            " bottomInset=${bottomSafeInset()} fallbackY=${fallbackCenterY(v.height)}" +
+            " bottomInset=${bottomSafeInset()} fallbackY=${fallbackCenterY(v.height)} scrollY=${nativeScrollY()}" +
             " last=[$lastPresentationLog] || land: " + landTrace.joinToString(" ; ") +
             " || doze: " + dozeTrace.joinToString(" ; ") + " || scene: " + sceneTrace.joinToString(" ; ")
     }
