@@ -7354,7 +7354,9 @@ private class MiniPlayerController(
         // tap there was the camera's - and opened it (filmed 2026-09-25). Taken here, the whole
         // gesture is the row's and the button never hears of it.
         val onSmall = smallIslandAt(x, y)
-        if (!onSmall && (!inside || onButton(left, x, y) || onButton(right, x, y))) return null
+        val onPill = x >= xy[0] && x < xy[0] + view.width &&
+            y >= xy[1] && y < xy[1] + view.height
+        if (!onSmall && !onPill && (!inside || onButton(left, x, y) || onButton(right, x, y))) return null
         val refused = when {
             view.visibility != View.VISIBLE -> "hidden"
             !view.isAttachedToWindow -> "detached"
@@ -8457,7 +8459,11 @@ private class MiniPlayerController(
                 it.isAttachedToWindow && it.width > 0 && it.height > 0
             }?.let { restCentre(it)[0] }?.takeIf { if (onLeft) it > host.width / 2f else it < host.width / 2f }
             val fixed = MiniPlayerGeometry.singleShortcutLayout(host.width, margin, dp(360f), height,
-                gap, onLeft, restCentre(present)[0], shortcutInnerEdge(present, onLeft, height), missing, small)
+                gap, onLeft, restCentre(present)[0],
+                // Reserve the visible disc plus a 16dp touch halo. The OEM wrapper extends
+                // much farther into the empty middle than the shortcut itself.
+                restCentre(present)[0] + (height / 2f + dp(16f)) * (if (onLeft) 1f else -1f),
+                missing, small)
             return PillRest(fixed.pillWidth, height, fixed.pillCenterX, centerY, fixed.smallCenterX)
         }
         val room = if (adaptive) MiniPlayerGeometry.adaptiveRoom(host.width, margin,
