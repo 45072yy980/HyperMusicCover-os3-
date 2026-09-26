@@ -2896,13 +2896,27 @@ private class MiniPlayerController(
 
     private var smallWide = false
 
+    /** Keep the actual frame and its centre in the same animation frame as the new size. */
+    private fun resizeSmallIsland(small: ShortcutDisc, width: Int, height: Int) {
+        if (small.layoutParams.width != width || small.layoutParams.height != height) {
+            small.layoutParams = small.layoutParams.apply { this.width = width; this.height = height }
+        }
+        if (small.width != width || small.height != height) {
+            val cx = small.x + small.width / 2f
+            val cy = small.y + small.height / 2f
+            small.measure(View.MeasureSpec.makeMeasureSpec(width, View.MeasureSpec.EXACTLY),
+                View.MeasureSpec.makeMeasureSpec(height, View.MeasureSpec.EXACTLY))
+            small.layout(small.left, small.top, small.left + width, small.top + height)
+            small.translationX = cx - small.left - width / 2f
+            small.translationY = cy - small.top - height / 2f
+        }
+    }
+
     private fun restoreSmallIslandShape() {
         val small = smallIsland ?: return
         val d = discDiameter()
         val frame = discFrame(d)
-        if (smallWide && (small.layoutParams.width != frame || small.layoutParams.height != frame)) {
-            small.layoutParams = small.layoutParams.apply { width = frame; height = frame }
-        }
+        if (smallWide) resizeSmallIsland(small, frame, frame)
         smallWide = false
         small.setShape(d, d, 0)
         small.setIconAlpha(1f)
@@ -5990,10 +6004,8 @@ private class MiniPlayerController(
         val h = maxOf(discFrame(discDiameter()), (box.h + pad).roundToInt())
         // Only ever widened while landing: the shape shrinks inside the room it was given.
         if (landingBox == null || small.layoutParams.width < w || small.layoutParams.height < h) {
-            small.layoutParams = small.layoutParams.apply {
-                width = maxOf(width, w)
-                height = maxOf(height, h)
-            }
+            resizeSmallIsland(small, maxOf(small.layoutParams.width, w),
+                maxOf(small.layoutParams.height, h))
             smallWide = true
         }
         landingBox = box
