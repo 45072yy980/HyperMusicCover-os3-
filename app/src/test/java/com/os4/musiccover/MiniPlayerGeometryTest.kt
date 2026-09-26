@@ -5,6 +5,27 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class MiniPlayerGeometryTest {
+    @Test fun adaptiveWidthExpandsTowardTheMissingShortcut() {
+        val leftOnly = MiniPlayerGeometry.adaptiveRoom(400, 12, 100f, null, 8)!!
+        assertEquals(248f, leftOnly.centerX, 0f)
+        assertEquals(280, leftOnly.width)
+        val rightOnly = MiniPlayerGeometry.adaptiveRoom(400, 12, null, 300f, 8)!!
+        assertEquals(152f, rightOnly.centerX, 0f)
+        assertEquals(280, rightOnly.width)
+        val neither = MiniPlayerGeometry.adaptiveRoom(400, 12, null, null, 8)!!
+        assertEquals(200f, neither.centerX, 0f)
+        assertEquals(376, neither.width)
+    }
+
+    @Test fun adaptivePillAndSmallIslandRespectTheShortcutTouchBoundary() {
+        val room = MiniPlayerGeometry.adaptiveRoom(400, 12, 100f, null, 8)!!
+        val pill = MiniPlayerGeometry.pillBesideIslandPx(room.width, room.width, 54, 8, 140)
+        val groupWidth = pill + 54 + 8
+        assertEquals(108f, room.centerX - groupWidth / 2f, 0f)
+        assertEquals(388f, room.centerX + groupWidth / 2f, 0f)
+        assertEquals(null, MiniPlayerGeometry.adaptiveRoom(400, 12, 300f, 200f, 8))
+    }
+
     @Test fun ordinaryNotificationBelowTheOldIslandPositionIsStillVisible() {
         assertTrue(MiniPlayerGeometry.rowIntersectsViewport(2016f, 994, 0f, 2608f))
         assertTrue(MiniPlayerGeometry.rowIntersectsViewport(1700f, 557, 0f, 2536f))

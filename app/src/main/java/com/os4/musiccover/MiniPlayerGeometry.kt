@@ -11,6 +11,19 @@ internal object MiniPlayerGeometry {
     /** However close the buttons, the pill keeps this width and presses on the discs instead. */
     const val MIN_PILL_DP = 140f
 
+    data class RowRoom(val centerX: Float, val width: Int)
+
+    /** The whole island group fits between screen margins and the remaining shortcut touch area. */
+    fun adaptiveRoom(hostWidth: Int, margin: Int, leftInnerEdge: Float?, rightInnerEdge: Float?,
+                     gap: Int): RowRoom? {
+        if (hostWidth <= 0) return null
+        val edge = margin.coerceIn(0, hostWidth / 2).toFloat()
+        val start = max(edge, leftInnerEdge?.plus(gap.coerceAtLeast(0)) ?: edge)
+        val end = min(hostWidth - edge, rightInnerEdge?.minus(gap.coerceAtLeast(0)) ?: (hostWidth - edge))
+        if (end - start < 1f) return null
+        return RowRoom((start + end) / 2f, (end - start).toInt())
+    }
+
     fun heightDp(radiusDp: Float): Float = (radiusDp.coerceIn(10f, 60f) * 2f).coerceAtLeast(48f)
 
     /** Bottom placement is independent of the OEM bottom area's possibly full-screen bounds. */

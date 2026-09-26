@@ -8354,7 +8354,6 @@ private class MiniPlayerController(
         val rightAnchor = usableButton(right)
         val l = leftAnchor?.let { restCentre(it) }
         val r = rightAnchor?.let { restCentre(it) }
-        val centerX = if (l != null && r != null) (l[0] + r[0]) / 2f else host.width / 2f
         val config = this.config
         val requestedWidth = dp(config.getDouble(MiniPlayerConfig.WIDTH).toFloat())
         val height = dp(MiniPlayerConfig.visibleHeightDp(config.toString()))
@@ -8365,12 +8364,15 @@ private class MiniPlayerController(
             else -> fallbackCenterY(height)
         }
         val margin = dp(12f)
-        val adaptive = config.getBoolean(MiniPlayerConfig.ADAPTIVE_WIDTH) && l == null && r == null
-        val widthLimit = if (adaptive) {
-            min(dp(360f), host.width - 2 * margin).coerceAtLeast(1)
-        } else {
-            min(requestedWidth, (host.width * .64f).toInt())
-        }
+        val gap = dp(MiniPlayerGeometry.DISC_GAP_DP)
+        val adaptive = config.getBoolean(MiniPlayerConfig.ADAPTIVE_WIDTH) && (l == null || r == null)
+        val room = if (adaptive) MiniPlayerGeometry.adaptiveRoom(host.width, margin,
+            leftAnchor?.let { shortcutInnerEdge(it, true, height) },
+            rightAnchor?.let { shortcutInnerEdge(it, false, height) }, gap) else null
+        val centerX = room?.centerX
+            ?: if (l != null && r != null) (l[0] + r[0]) / 2f else host.width / 2f
+        val widthLimit = room?.let { min(dp(360f), it.width) }
+            ?: min(requestedWidth, (host.width * .64f).toInt())
         // Clear of the discs, a circle as tall as the pill on each button. Laid out rather than
         // shown: the buttons are put away in the doze, and the pill must not widen for it.
         val width = MiniPlayerGeometry.clearOfDiscsPx(
@@ -8380,13 +8382,23 @@ private class MiniPlayerController(
         // With a small island the pill makes room for it, the two centred as one group - and
         // the group kept clear of both discs: the camera's touch area is wider than its disc,
         // and a group reaching into it lost the small island's taps to the camera.
-        val gap = dp(MiniPlayerGeometry.DISC_GAP_DP)
         val pillWidth = if (!small) width else MiniPlayerGeometry.pillBesideIslandPx(width,
-            MiniPlayerGeometry.clearOfDiscsPx(
+            room?.width ?: MiniPlayerGeometry.clearOfDiscsPx(
                 MiniPlayerGeometry.widthPx(host.width, host.width, centerX, dp(12f)),
                 centerX, l?.get(0), r?.get(0), height.toFloat(), gap.toFloat(), 0),
             height, gap, dp(MiniPlayerGeometry.MIN_PILL_DP))
         return PillRest(pillWidth, height, centerX, centerY)
+    }
+
+    private fun shortcutInnerEdge(button: View, leftSide: Boolean, discSize: Int): Float {
+        val frame = (button.parent as? View)?.takeIf {
+            runCatching { it.resources.getResourceEntryName(it.id) }.getOrNull() ==
+                if (leftSide) "shortcut_view_left_layout" else "shortcut_view_right_layout"
+        } ?: button
+        val origin = FloatArray(2).also { restOrigin(frame, it) }
+        val center = restCentre(button)[0]
+        return if (leftSide) maxOf(origin[0] + frame.width, center + discSize / 2f)
+            else minOf(origin[0], center - discSize / 2f)
     }
 
     /** Stable across doze: hiding system bars must not move the island down and back up. */
