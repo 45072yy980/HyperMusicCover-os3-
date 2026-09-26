@@ -81,6 +81,10 @@ private fun MiniPlayerPage(blur: Boolean, onBack: () -> Unit) {
                         label = { "${MiniPlayerGeometry.heightDp(it.roundToInt().toFloat()).roundToInt()}" })
                     MiniSlider("封面圆角", MiniPlayerConfig.ART_RADIUS,
                         config, alive, 0f, 60f, ::push)
+                    SwitchPreference(title = "快捷方式隐藏时自适应宽度",
+                        summary = "两侧锁屏快捷方式都不可用时，按安全边距展开",
+                        checked = config.optBoolean(MiniPlayerConfig.ADAPTIVE_WIDTH), enabled = alive,
+                        onCheckedChange = { push(MiniPlayerConfig.ADAPTIVE_WIDTH, it) })
                 }
             }
         }

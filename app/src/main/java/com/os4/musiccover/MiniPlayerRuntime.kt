@@ -32,9 +32,16 @@ import kotlin.math.min
 import kotlin.math.roundToInt
 import org.json.JSONObject
 
+private data class MiniPlayerAnchors(
+    val left: View?,
+    val right: View?,
+    val bottomArea: View?,
+    val keyguardRoot: View?,
+)
+
 /** Owns one mini player for each live keyguard shortcut host. */
 object MiniPlayerRuntime {
-    private data class Held(val left: View, val right: View, val controller: MiniPlayerController)
+    private data class Held(val anchors: MiniPlayerAnchors, val controller: MiniPlayerController)
 
     /** One thread for scaling artwork, so a track change never decodes on the main thread. */
     internal val artWorker: java.util.concurrent.ExecutorService =
@@ -676,16 +683,25 @@ object MiniPlayerRuntime {
             synchronized(controllers) { controllers.remove(host) }
             return
         }
-        val (left, right) = resolveShortcuts(shortcutController) ?: findShortcuts(root) ?: return
-        if (left === right) return
-        if (old != null && old.left === left && old.right === right) {
+        val resolved = resolveShortcuts(shortcutController)
+        val found = findKeyguardAnchors(host)
+        val anchors = MiniPlayerAnchors(
+            left = resolved.first?.takeIf { it.isAttachedToWindow } ?: found.left,
+            right = resolved.second?.takeIf { it.isAttachedToWindow } ?: found.right,
+            bottomArea = found.bottomArea,
+            keyguardRoot = found.keyguardRoot,
+        )
+        if (anchors.left == null && anchors.right == null && anchors.bottomArea == null &&
+            anchors.keyguardRoot == null) return
+        if (anchors.left != null && anchors.left === anchors.right) return
+        if (old != null && old.anchors == anchors) {
             old.controller.refresh()
             return
         }
         old?.controller?.destroy()
-        val controller = MiniPlayerController(host, left, right, prefs(root.context),
-            loader ?: root.context.classLoader)
-        synchronized(controllers) { controllers[host] = Held(left, right, controller) }
+        val controller = MiniPlayerController(host, anchors.left, anchors.right, anchors.bottomArea,
+            anchors.keyguardRoot, prefs(root.context), loader ?: root.context.classLoader)
+        synchronized(controllers) { controllers[host] = Held(anchors, controller) }
         host.addOnAttachStateChangeListener(object : View.OnAttachStateChangeListener {
             override fun onViewAttachedToWindow(v: View) = Unit
             override fun onViewDetachedFromWindow(v: View) {
@@ -698,31 +714,33 @@ object MiniPlayerRuntime {
         })
     }
 
-    private fun resolveShortcuts(controller: Any?): Pair<View, View>? = runCatching {
+    private fun resolveShortcuts(controller: Any?): Pair<View?, View?> {
         val method = controller?.javaClass?.methods?.firstOrNull {
             it.name == "onSystemUIAction\$1" && it.parameterCount == 2
-        } ?: return@runCatching null
-        fun get(left: Boolean): View? = method.invoke(controller,
-            android.os.Bundle().apply { putBoolean("isLeftShortcutView", left) },
-            "getShortcutView") as? View
-        val left = get(true) ?: return@runCatching null
-        val right = get(false) ?: return@runCatching null
-        left to right
-    }.getOrNull()
+        } ?: return null to null
+        fun get(left: Boolean): View? = runCatching {
+            method.invoke(controller,
+                android.os.Bundle().apply { putBoolean("isLeftShortcutView", left) },
+                "getShortcutView") as? View
+        }.getOrNull()
+        return get(true) to get(false)
+    }
 
-    private fun findShortcuts(root: View): Pair<View, View>? {
+    private fun findKeyguardAnchors(root: View): MiniPlayerAnchors {
         var left: View? = null
         var right: View? = null
+        var bottomArea: View? = null
+        var keyguardRoot: View? = null
         fun visit(view: View) {
             val name = runCatching { view.resources.getResourceEntryName(view.id) }.getOrNull()
-            if (name == "shortcut_view_left_layout") left = view
-            if (name == "shortcut_view_right_layout") right = view
+            if (name == "shortcut_view_left_layout" && left == null) left = view
+            if (name == "shortcut_view_right_layout" && right == null) right = view
+            if (name == "keyguard_bottom_area" && bottomArea == null) bottomArea = view
+            if (name == "keyguard_root_view" && keyguardRoot == null) keyguardRoot = view
             if (view is ViewGroup) for (i in 0 until view.childCount) visit(view.getChildAt(i))
         }
         visit(root)
-        val l = left ?: return null
-        val r = right ?: return null
-        return l to r
+        return MiniPlayerAnchors(left, right, bottomArea, keyguardRoot)
     }
 
     @JvmStatic fun wantsNativeArtworkGesture(): Boolean =
@@ -1218,7 +1236,7 @@ object MiniPlayerRuntime {
 
     /** The torch button: the lock screen element the pill sits between, for probes. */
     @JvmStatic fun shortcutView(): View? = synchronized(controllers) {
-        controllers.values.firstOrNull()?.left
+        controllers.values.firstOrNull()?.anchors?.left
     }
 
     /**
@@ -1253,7 +1271,8 @@ object MiniPlayerRuntime {
         synchronized(controllers) { controllers.values.toList() }.forEach { held ->
             sb.append(" || ").append(held.controller.describe())
             sb.append(" || torch:")
-            var v: View? = held.left
+            var v: View? = held.anchors.left ?: held.anchors.right ?: held.anchors.bottomArea
+                ?: held.anchors.keyguardRoot
             while (v != null) {
                 val id = runCatching { v.resources.getResourceEntryName(v.id) }.getOrNull()
                     ?: v.javaClass.simpleName
@@ -1448,8 +1467,10 @@ object MiniPlayerRuntime {
 
 private class MiniPlayerController(
     private val host: ViewGroup,
-    private val left: View,
-    private val right: View,
+    private val left: View?,
+    private val right: View?,
+    private val bottomArea: View?,
+    private val keyguardRootView: View?,
     private val prefs: SharedPreferences,
     private val loader: ClassLoader,
 ) {
@@ -1616,8 +1637,9 @@ private class MiniPlayerController(
             return
         }
         if (shortcutRow?.get()?.isAttachedToWindow != true) findRow()?.let { shortcutRow = WeakReference(it) }
-        val row = shortcutRow?.get() ?: return
-        val keyguardRoot = followRoot?.get()
+        val row = shortcutRow?.get() ?: findRow()
+            ?: keyguardRootView?.takeIf { it.isAttachedToWindow } ?: return
+        val keyguardRoot = followRoot?.get() ?: keyguardRootView
         followHost.reset()
         host.transformMatrixToGlobal(followHost)
         if (!followHost.invert(hostInverse)) return
@@ -1644,12 +1666,14 @@ private class MiniPlayerController(
         fade *= 1f - editShown
         view.yieldTouches = editShown > 0.01f
         val matrix = followRelative
-        if (!rowHeldOff && left.isShown && right.isShown) {
+        val leftButton = usableButton(left)
+        val rightButton = usableButton(right)
+        if (!rowHeldOff && leftButton != null && rightButton != null) {
             fade *= rowFade
             // Where each button is drawn now and where it rests, both in the host's pixels.
-            if (!drawnCentre(left, drawnL) || !drawnCentre(right, drawnR)) return
-            restCentre(left, restL)
-            restCentre(right, restR)
+            if (!drawnCentre(leftButton, drawnL) || !drawnCentre(rightButton, drawnR)) return
+            restCentre(leftButton, restL)
+            restCentre(rightButton, restR)
             val restSpan = restR[0] - restL[0]
             if (kotlin.math.abs(restSpan) < 1f) return
             var scale = (drawnR[0] - drawnL[0]) / restSpan
@@ -6438,7 +6462,11 @@ private class MiniPlayerController(
     private val discUnit = FloatArray(4)
     private val discRest = FloatArray(2)
 
-    private fun button(side: Int) = if (side == 0) left else right
+    private fun button(side: Int): View? = if (side == 0) left else right
+
+    private fun usableButton(view: View?): View? = view?.takeIf {
+        it.isAttachedToWindow && it.isShown && it.width > 0 && it.height > 0
+    }
 
     /** A disc is a circle as tall as the pill. */
     private fun discDiameter(): Int = dp(MiniPlayerConfig.visibleHeightDp(config.toString()))
@@ -6466,7 +6494,7 @@ private class MiniPlayerController(
      */
     fun discAt(x: Float, y: Float): Int? = (0..1).firstOrNull {
         if (discs[it]?.visibility != View.VISIBLE) return@firstOrNull false
-        val icon = button(it)
+        val icon = button(it) ?: return@firstOrNull false
         val frame = (icon.parent as? View)?.takeIf { p ->
             runCatching { p.resources.getResourceEntryName(p.id) }.getOrNull()?.endsWith("_layout") == true
         }
@@ -6488,14 +6516,15 @@ private class MiniPlayerController(
         host.transformMatrixToGlobal(followHost)
         val placed = followHost.invert(hostInverse)
         for (side in 0..1) {
-            val button = button(side)
-            val shown = placed && discsWanted && button.isShown && button.width > 0 && button.height > 0
+            val button = usableButton(button(side))
+            val shown = placed && discsWanted && button != null
             var disc = discs[side]
             if (!shown) {
                 if (disc != null && disc.visibility != View.GONE) disc.visibility = View.GONE
                 clearButtonSqueeze(side)
                 continue
             }
+            button ?: continue
             if (disc == null) {
                 disc = ShortcutDisc(context)
                 discs[side] = disc
@@ -6511,7 +6540,7 @@ private class MiniPlayerController(
         // the discs are a frame behind the pill that is pushing them.
         squeezeScene(d.toFloat())
         for (side in 0..1) {
-            val button = button(side)
+            val button = usableButton(button(side)) ?: continue
             val disc = discs[side]?.takeIf { it.visibility == View.VISIBLE } ?: continue
             if (!drawnCentre(button, discPoint)) continue
             val zoom = drawnZoom(button)
@@ -6556,7 +6585,8 @@ private class MiniPlayerController(
         // The lower of the two chains as the doze left it this frame, before it is put back.
         var natural = 1f
         for (side in 0..1) {
-            var v: View? = findImage(button(side)) ?: button(side)
+            val button = usableButton(button(side)) ?: continue
+            var v: View? = findImage(button) ?: button
             while (v != null && v !== root && v !== host) {
                 natural = min(natural, v.alpha * v.transitionAlpha)
                 if (v.alpha < 1f) v.alpha = 1f
@@ -6607,7 +6637,7 @@ private class MiniPlayerController(
     private fun squeezeScene(d: Float) {
         fun disc(side: Int): CoverMorphMotion.Box? {
             if (discs[side]?.visibility != View.VISIBLE) return null
-            restCentre(button(side), discRest)
+            restCentre(button(side) ?: return null, discRest)
             return CoverMorphMotion.Box(discRest[0] - d / 2f, discRest[1] - d / 2f, d, d)
         }
         val hostXY = IntArray(2).also(host::getLocationOnScreen)
@@ -6658,7 +6688,7 @@ private class MiniPlayerController(
     private fun clearButtonSqueeze(side: Int) {
         if (!buttonSqueezeSet[side]) return
         buttonSqueezeSet[side] = false
-        button(side).setAnimationMatrix(null)
+        button(side)?.setAnimationMatrix(null)
     }
 
     /** How much a view is scaled on screen, every ancestor's transform included. */
@@ -6706,14 +6736,19 @@ private class MiniPlayerController(
     /** keyguard_bottom_area above the torch, and keyguard_root_view above that. */
     private fun findRow(): View? {
         var row: View? = null
-        var v: View? = left
+        var v: View? = listOfNotNull(bottomArea, left, right, keyguardRootView)
+            .firstOrNull { it.isAttachedToWindow }
         while (v != null && v !== host) {
             val name = runCatching { v.resources.getResourceEntryName(v.id) }.getOrNull()
             if (name == "keyguard_bottom_area" && row == null) row = v
             if (name == "keyguard_root_view") followRoot = WeakReference(v)
             v = v.parent as? View
         }
-        return row ?: left.parent as? View
+        keyguardRootView?.takeIf { it.isAttachedToWindow }?.let { followRoot = WeakReference(it) }
+        return row?.takeIf { it.isAttachedToWindow }
+            ?: bottomArea?.takeIf { it.isAttachedToWindow }
+            ?: left?.parent?.let { it as? View }?.takeIf { it.isAttachedToWindow }
+            ?: right?.parent?.let { it as? View }?.takeIf { it.isAttachedToWindow }
     }
 
     init {
@@ -6721,8 +6756,9 @@ private class MiniPlayerController(
         host.clipToPadding = false
         prefs.registerOnSharedPreferenceChangeListener(prefListener)
         host.viewTreeObserver.addOnPreDrawListener(preDraw)
-        left.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> schedulePosition() }
-        right.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> schedulePosition() }
+        listOfNotNull(left, right, bottomArea, keyguardRootView).distinct().forEach { anchor ->
+            anchor.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> schedulePosition() }
+        }
         runCatching { sessions?.addOnActiveSessionsChangedListener(sessionListener, null, handler) }
         LockIslands.addListener(islandListener)
         refresh()
@@ -6752,11 +6788,13 @@ private class MiniPlayerController(
     fun isShowing(): Boolean = player?.visibility == View.VISIBLE
 
     fun shortcutGeometry(): FloatArray? {
-        if (host.width <= 0 || left.width <= 0 || right.width <= 0) return null
-        val l = restCentre(left)
-        val r = restCentre(right)
-        val li = iconSize(left)
-        val ri = iconSize(right)
+        val lView = usableButton(left) ?: return null
+        val rView = usableButton(right) ?: return null
+        if (host.width <= 0) return null
+        val l = restCentre(lView)
+        val r = restCentre(rView)
+        val li = iconSize(lView)
+        val ri = iconSize(rView)
         return floatArrayOf(host.width.toFloat(), l[0], l[1], li[0], li[1], r[0], r[1], ri[0], ri[1])
     }
 
@@ -7197,7 +7235,8 @@ private class MiniPlayerController(
 
     /** The lock screen's own layer in the host; the discs go right before it, under the buttons. */
     private fun lockScreenLayerSlot(): Int {
-        var v: View = left
+        var v: View = listOfNotNull(left, right, bottomArea, keyguardRootView)
+            .firstOrNull { it.isAttachedToWindow } ?: return host.childCount
         while (true) {
             val parent = v.parent as? View ?: return host.childCount
             if (parent === host) {
@@ -7209,13 +7248,15 @@ private class MiniPlayerController(
     }
 
     /** The torch's right edge or the camera's left edge, where the pill's touch area stops. */
-    private fun buttonEdge(button: View, inner: Boolean): Float? {
+    private fun buttonEdge(button: View?, inner: Boolean): Float? {
+        button ?: return null
         if (!button.isShown || button.width <= 0) return null
         val xy = IntArray(2).also(button::getLocationOnScreen)
         return if (inner) (xy[0] + button.width).toFloat() else xy[0].toFloat()
     }
 
-    private fun onButton(button: View, x: Float, y: Float): Boolean {
+    private fun onButton(button: View?, x: Float, y: Float): Boolean {
+        button ?: return false
         if (!button.isShown || button.width <= 0) return false
         val xy = IntArray(2).also(button::getLocationOnScreen)
         return x >= xy[0] && x < xy[0] + button.width && y >= xy[1] && y < xy[1] + button.height
@@ -8240,19 +8281,31 @@ private class MiniPlayerController(
         // Where the buttons are laid out, not where they are drawn: whatever moves them on top
         // of their layout (the swipe, the doze) reaches the pill through followShortcuts.
         // Taking their drawn place here as well moved the pill twice as far as they went.
-        val laidOut = left.width > 0 && right.width > 0 && left.height > 0 && right.height > 0
-        val l = if (laidOut) restCentre(left) else null
-        val r = if (laidOut) restCentre(right) else null
+        val leftAnchor = usableButton(left)
+        val rightAnchor = usableButton(right)
+        val l = leftAnchor?.let { restCentre(it) }
+        val r = rightAnchor?.let { restCentre(it) }
         val centerX = if (l != null && r != null) (l[0] + r[0]) / 2f else host.width / 2f
-        val centerY = if (l != null && r != null) (l[1] + r[1]) / 2f else host.height / 2f
         val config = this.config
         val requestedWidth = dp(config.getDouble(MiniPlayerConfig.WIDTH).toFloat())
         val height = dp(MiniPlayerConfig.visibleHeightDp(config.toString()))
+        val centerY = when {
+            l != null && r != null -> (l[1] + r[1]) / 2f
+            l != null -> l[1]
+            r != null -> r[1]
+            else -> fallbackCenterY(height)
+        }
+        val margin = dp(12f)
+        val adaptive = config.getBoolean(MiniPlayerConfig.ADAPTIVE_WIDTH) && l == null && r == null
+        val widthLimit = if (adaptive) {
+            min(dp(360f), host.width - 2 * margin).coerceAtLeast(1)
+        } else {
+            min(requestedWidth, (host.width * .64f).toInt())
+        }
         // Clear of the discs, a circle as tall as the pill on each button. Laid out rather than
         // shown: the buttons are put away in the doze, and the pill must not widen for it.
         val width = MiniPlayerGeometry.clearOfDiscsPx(
-            MiniPlayerGeometry.widthPx(min(requestedWidth, (host.width * .64f).toInt()),
-                host.width, centerX, dp(12f)),
+            MiniPlayerGeometry.widthPx(widthLimit, host.width, centerX, margin),
             centerX, l?.get(0), r?.get(0), height.toFloat(),
             dp(MiniPlayerGeometry.DISC_GAP_DP).toFloat(), dp(MiniPlayerGeometry.MIN_PILL_DP))
         // With a small island the pill makes room for it, the two centred as one group - and
@@ -8265,6 +8318,20 @@ private class MiniPlayerController(
                 centerX, l?.get(0), r?.get(0), height.toFloat(), gap.toFloat(), 0),
             height, gap, dp(MiniPlayerGeometry.MIN_PILL_DP))
         return PillRest(pillWidth, height, centerX, centerY)
+    }
+
+    /** A missing shortcut row still leaves the island in the lock screen's lower safe area. */
+    private fun fallbackCenterY(pillHeight: Int): Float {
+        val area = bottomArea?.takeIf { it.isAttachedToWindow && it.height > 0 }
+        if (area != null) {
+            val center = restCentre(area)[1]
+            return center.coerceIn(pillHeight / 2f, host.height - pillHeight / 2f)
+        }
+        val navigationInset = runCatching {
+            host.rootWindowInsets?.getInsets(android.view.WindowInsets.Type.navigationBars())?.bottom ?: 0
+        }.getOrDefault(0)
+        val center = host.height - navigationInset - dp(12f) - pillHeight / 2f
+        return center.coerceIn(pillHeight / 2f, host.height - pillHeight / 2f)
     }
 
     private fun position() {
