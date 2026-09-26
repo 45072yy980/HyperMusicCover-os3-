@@ -8566,7 +8566,7 @@ private class MiniPlayerController(
         val margin = dp(12f)
         val gap = dp(MiniPlayerGeometry.DISC_GAP_DP)
         val adaptive = config.getBoolean(MiniPlayerConfig.ADAPTIVE_WIDTH) && (l == null || r == null)
-        if (adaptive && small && (leftAnchor != null) != (rightAnchor != null)) {
+        if (adaptive && (leftAnchor != null) != (rightAnchor != null)) {
             val onLeft = leftAnchor != null
             val present = leftAnchor ?: rightAnchor!!
             val missing = (if (onLeft) right else left)?.takeIf {
@@ -8574,11 +8574,12 @@ private class MiniPlayerController(
             }?.let { restCentre(it)[0] }?.takeIf { if (onLeft) it > host.width / 2f else it < host.width / 2f }
             val fixed = MiniPlayerGeometry.singleShortcutLayout(host.width, margin, dp(360f), height,
                 gap, onLeft, restCentre(present)[0],
-                // Reserve the visible disc plus a 16dp touch halo. The OEM wrapper extends
-                // much farther into the empty middle than the shortcut itself.
-                restCentre(present)[0] + (height / 2f + dp(16f)) * (if (onLeft) 1f else -1f),
+                // Keep a small touch halo around the visible shortcut, not the much
+                // wider invisible OEM wrapper. The common gap is added by the geometry.
+                restCentre(present)[0] + (height / 2f + dp(10f)) * (if (onLeft) 1f else -1f),
                 missing, small)
-            return PillRest(fixed.pillWidth, height, fixed.pillCenterX, centerY, fixed.smallCenterX)
+            return PillRest(fixed.pillWidth, height, fixed.pillCenterX, centerY,
+                fixed.smallCenterX.takeIf { small })
         }
         val room = if (adaptive) MiniPlayerGeometry.adaptiveRoom(host.width, margin,
             leftAnchor?.let { shortcutInnerEdge(it, true, height) },

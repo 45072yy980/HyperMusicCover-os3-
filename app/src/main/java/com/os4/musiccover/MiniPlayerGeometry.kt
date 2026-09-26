@@ -30,6 +30,13 @@ internal object MiniPlayerGeometry {
         if (hasSmall) {
             if (shortcutOnLeft) right = min(right, small - radius - gap)
             else left = max(left, small + radius + gap)
+        } else {
+            // With only one island, its outer edge replaces the absent native disc's
+            // outer edge. Do not extend it to the generic screen margin.
+            if (shortcutOnLeft) right = min(right, small + radius)
+            else left = max(left, small - radius)
+            val width = min(maxPillWidth, (right - left).toInt()).coerceAtLeast(1)
+            return PinnedIslandLayout((left + right) / 2f, width, small)
         }
         val width = min(maxPillWidth, (2f * min(center - left, right - center)).toInt()).coerceAtLeast(1)
         return PinnedIslandLayout(center, width, small)
