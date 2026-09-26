@@ -792,6 +792,7 @@ object MiniPlayerRuntime {
     internal fun restorePending(): Boolean = restoreScene
 
     private var routed: WeakReference<MiniPlayerView>? = null
+    private var routedTransitionGuard = false
 
     /**
      * Hands a whole gesture that starts on the pill to the pill and to nothing else. The pill's
@@ -802,6 +803,7 @@ object MiniPlayerRuntime {
         val action = ev.actionMasked
         if (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL) releasePress()
         if (action == MotionEvent.ACTION_DOWN) {
+            routedTransitionGuard = false
             routedX = ev.rawX
             routedY = ev.rawY
             routedDrag = false
@@ -819,7 +821,11 @@ object MiniPlayerRuntime {
                 if (catchDrag(catcher, ev)) {
                     routedDrag = true
                     routedMorph = true
-                } else routed = null
+                } else {
+                    routed = null
+                    routedTracker?.recycle()
+                    routedTracker = null
+                }
             }
             if (routed == null) {
                 routed = live().firstNotNullOfOrNull { it.touchTarget(ev.rawX, ev.rawY) }
@@ -831,6 +837,10 @@ object MiniPlayerRuntime {
                     routedBaseX = pill.nudgeX
                     routedBaseY = pill.nudgeY
                 }
+            }
+            if (routed == null) {
+                routedTransitionGuard = live().any { it.ownsTransitionTouch(ev.rawX, ev.rawY) }
+                if (routedTransitionGuard) noteTouch("down retained by island transition")
             }
             // The finger swells what it is on: the pill, or the torch or camera's disc - whose
             // button still takes the touch itself.
@@ -854,6 +864,15 @@ object MiniPlayerRuntime {
             noteTouch("down ${ev.rawX.toInt()},${ev.rawY.toInt()} pill=${pill != null} " +
                 "small=$routedSmall caught=$routedMorph disc=${hit?.second}" +
                 (pillOwner?.smallProbe(ev.rawX, ev.rawY)?.let { " [$it]" } ?: ""))
+        }
+        // Ownership lasts to UP/CANCEL even if the transition finishes during this gesture.
+        // Passing a MOVE through after consuming DOWN would also confuse keyguard's tracker.
+        if (routedTransitionGuard) {
+            if (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL) {
+                routedTransitionGuard = false
+                endRoute()
+            }
+            return true
         }
         val target = routed?.get() ?: return false
         routedTracker?.addMovement(ev)
@@ -7192,7 +7211,8 @@ private class MiniPlayerController(
 
     /** A morph moving on its springs under this point - the switch's, or a scene's. */
     /** A notification's morph is not the music's to catch: its drag engine would drive it wrong. */
-    fun catchableAt(x: Float, y: Float): Boolean = noteDrag == null && morph?.catchableAt(x, y) == true
+    fun catchableAt(x: Float, y: Float): Boolean = !MiniPlayerScene.aodActive &&
+        !Main.bouncerShown() && !editButtonUp() && noteDrag == null && morph?.catchableAt(x, y) == true
 
     /** Whether the running morph belongs to a cover or lyrics entry or exit. */
     fun morphIsScene(): Boolean = morph != null && morphScene
@@ -7361,7 +7381,13 @@ private class MiniPlayerController(
      * pill is a small target, and a swipe up that began just off it went to swipe-to-unlock.
      * The margin stops short of the torch and camera buttons, which keep their own touches.
      */
-    fun touchTarget(x: Float, y: Float): MiniPlayerView? {
+    fun ownsTransitionTouch(x: Float, y: Float): Boolean {
+        if (morph == null && exchange == null && swap == null && !rowAnimating) return false
+        if (MiniPlayerScene.aodActive || Main.bouncerShown() || !canShow()) return false
+        return touchTarget(x, y, allowTransition = true) != null
+    }
+
+    fun touchTarget(x: Float, y: Float, allowTransition: Boolean = false): MiniPlayerView? {
         val view = player ?: return null
         if (editButtonUp()) return null
         val d = density()
@@ -7383,8 +7409,8 @@ private class MiniPlayerController(
         val refused = when {
             view.visibility != View.VISIBLE -> "hidden"
             !view.isAttachedToWindow -> "detached"
-            morph != null -> "morph running"
-            !view.acceptsTouch() -> "not interactive (canShow=${canShow()} " +
+            morph != null && !allowTransition -> "morph running"
+            !view.acceptsTouch() && !allowTransition -> "not interactive (canShow=${canShow()} " +
                 "aod=${MiniPlayerScene.aodActive})"
             else -> null
         }

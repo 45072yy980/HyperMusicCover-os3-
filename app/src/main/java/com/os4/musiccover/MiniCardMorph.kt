@@ -295,8 +295,11 @@ internal class MiniCardMorph(
     /** Moving on its own springs, and the point is on the container as drawn. */
     fun catchableAt(x: Float, y: Float): Boolean {
         if (!running || dragging) return false
-        val b = boxDrawn ?: return false
-        return x >= b.x && x < b.x + b.w && y >= b.y && y < b.y + b.h
+        fun contains(b: CoverMorphMotion.Box?): Boolean = b != null &&
+            x >= b.x && x < b.x + b.w && y >= b.y && y < b.y + b.h
+        // A rapid second swipe starts at the island's slot while its picture is still
+        // travelling. Keep that endpoint interactive until the morph has landed.
+        return contains(boxDrawn) || contains(miniEndDrawn)
     }
 
     /** A finger stops it where it is; from here it is dragged, not sprung. */
