@@ -1735,6 +1735,16 @@ private class MiniPlayerController(
             matrix.setTranslate(-(restL[0] + restR[0]) / 2f, -(restL[1] + restR[1]) / 2f)
             matrix.postScale(scale, scale)
             matrix.postTranslate((restL[0] + restR[0]) / 2f + mx, (restL[1] + restR[1]) / 2f + my)
+        } else if (!rowHeldOff) {
+            // A single shortcut still carries the native swipe-to-bouncer transform.
+            // Following only keyguard_root_view here missed the bottom area's animation.
+            val anchor = leftButton ?: rightButton ?: row
+            fade = chainFade(anchor) * (1f - editShown)
+            matrix.reset()
+            anchor.transformMatrixToGlobal(matrix)
+            matrix.postConcat(hostInverse)
+            restOrigin(anchor, restL)
+            matrix.preTranslate(-restL[0], -restL[1])
         } else if (keyguardRoot != null) {
             // The keyguard's own zoom only, as a matrix from its untransformed slot.
             matrix.reset()
