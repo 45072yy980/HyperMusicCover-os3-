@@ -7727,7 +7727,7 @@ public class Main extends XposedModule {
                 sCardSwipeFired = false;
                 sCardSwipeShared = false;
                 sCardSwipeRow = null;
-                boolean atTop = MiniPlayerRuntime.nativeStackAtTop();
+                boolean atTop = MiniPlayerRuntime.nativeStackAtTop(true);
                 boolean armed = atTop && MiniPlayerRuntime.wantsNativeCardSwipe()
                         && !sGestureOnCentre && !sGestureOnCharge
                         && cardRectContains(ev.getRawX(), ev.getRawY());
@@ -7742,6 +7742,7 @@ public class Main extends XposedModule {
                 // cover once did nothing until the player was restarted (2026-09-25), and nothing
                 // said which of these it was.
                 MiniPlayerRuntime.noteTouch("card down armed=" + armed + " stackTop=" + atTop
+                        + " scroll=" + MiniPlayerRuntime.nativeScrollDebug()
                         + " want=" + MiniPlayerRuntime.wantsNativeCardSwipe()
                         + " centre=" + sGestureOnCentre + " charge=" + sGestureOnCharge
                         + " cover=" + sCoverMode + " card=" + describeCardRect()

@@ -1315,7 +1315,10 @@ object MiniPlayerRuntime {
         live().firstNotNullOfOrNull { it.releasedRowAt(x, y) }
 
     /** Unknown scroll state leaves the gesture with SystemUI. Read on DOWN and before taking it. */
-    @JvmStatic fun nativeStackAtTop(): Boolean = live().any { it.nativeStackAtTop() }
+    @JvmStatic @JvmOverloads fun nativeStackAtTop(refreshBoundary: Boolean = false): Boolean =
+        live().any { it.nativeStackAtTop(refreshBoundary) }
+
+    @JvmStatic fun nativeScrollDebug(): String = live().joinToString { it.lastScrollGate }
 
     /**
      * That row folds back into the row of islands, following the finger from [ev] on as the
@@ -6130,10 +6133,36 @@ private class MiniPlayerController(
             ?: (runCatching { Xp.getObjectField(stack, "mOwnScrollY") }.getOrNull() as? Number)?.toInt()
     }
 
-    fun nativeStackAtTop(): Boolean {
-        val scrollY = nativeScrollY() ?: return false
-        return scrollY <= 0 && notificationStack()?.canScrollVertically(-1) != true
+    private var collapseScrollBoundary: Float? = 0f
+    private var listTopStrategy: Any? = null
+    var lastScrollGate = "unread"
+        private set
+
+    /** Read the OEM's LIST resting offset once on DOWN, then keep it for this gesture. */
+    fun nativeStackAtTop(refreshBoundary: Boolean): Boolean {
+        if (refreshBoundary) {
+            collapseScrollBoundary = if (!LockIslands.isReleased(STACK_ISLAND)) 0f
+                else nativeListRestingScroll()
+        }
+        val scrollY = nativeScrollY()
+        lastScrollGate = "own=$scrollY/listTop=$collapseScrollBoundary"
+        return MiniPlayerCollapseGesture.atListTop(scrollY, collapseScrollBoundary)
     }
+
+    private fun nativeListRestingScroll(): Float? = runCatching {
+        val model = containerModel() ?: return@runCatching null
+        val sample = Xp.callMethod(Xp.callMethod(model, "getOnUpdateChildSampleStackInfo"), "getValue")
+        val event = Xp.findClass("com.miui.systemui.notification.view.strategy.KeyguardStackStateChangeEvent", loader)
+            .getField("CLICK_SHOW_LIST").get(null)
+        val info = Xp.callMethod(model, "getKeyguardStackStatusInfo", sample, event)
+        val focusHeight = (Xp.getObjectField(info, "focusNotifsHeight") as Number).toFloat()
+        val origin = (Xp.callMethod(model, "positionWithoutMinScrollRange", focusHeight) as Number).toFloat()
+        val strategy = listTopStrategy ?: Xp.findClass(
+            "com.miui.systemui.notification.view.strategy.KeyguardNotificationClickToListStateStrategy", loader)
+            .getDeclaredConstructor().newInstance().also { listTopStrategy = it }
+        val top = (Xp.callMethod(strategy, "calculateTargetYPosition", info) as Number).toFloat()
+        (origin - top).takeIf { it.isFinite() }?.coerceAtLeast(0f)
+    }.onFailure { MiniPlayerRuntime.noteTouch("list scroll boundary unavailable: $it") }.getOrNull()
 
     private fun notificationStack(): ViewGroup? {
         (stackRef?.get() as? ViewGroup)?.takeIf { it.isAttachedToWindow }?.let { return it }

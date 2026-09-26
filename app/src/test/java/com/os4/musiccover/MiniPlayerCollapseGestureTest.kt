@@ -5,6 +5,23 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class MiniPlayerCollapseGestureTest {
+    @Test fun positiveOemListPlacementIsNotUserScrolling() {
+        assertTrue(MiniPlayerCollapseGesture.atListTop(749, 749f))
+        assertTrue(MiniPlayerCollapseGesture.atListTop(750, 749f))
+        assertFalse(MiniPlayerCollapseGesture.atListTop(966, 749f))
+        assertTrue(MiniPlayerCollapseGesture.atListTop(0, 749f))
+        assertFalse(MiniPlayerCollapseGesture.atListTop(null, 749f))
+        assertFalse(MiniPlayerCollapseGesture.atListTop(749, null))
+    }
+
+    @Test fun listPlacementAllowsCollapseButAUserScrollStillOwnsItsGesture() {
+        val gesture = MiniPlayerCollapseGesture()
+        gesture.start(MiniPlayerCollapseGesture.atListTop(749, 749f))
+        assertTrue(gesture.move(0f, 30f, 10f, true))
+        gesture.start(MiniPlayerCollapseGesture.atListTop(966, 749f))
+        assertFalse(gesture.move(0f, 300f, 10f, true))
+    }
+
     @Test fun scrollingBackToTheTopCannotCollapseUntilTheNextDown() {
         val gesture = MiniPlayerCollapseGesture()
         gesture.start(false)

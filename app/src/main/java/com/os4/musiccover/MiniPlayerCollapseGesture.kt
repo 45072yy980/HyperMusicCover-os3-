@@ -23,4 +23,11 @@ internal class MiniPlayerCollapseGesture {
     }
 
     fun reset() { armed = false }
+
+    companion object {
+        /** HyperOS uses positive scroll to place LIST below the clock before any user scroll. */
+        fun atListTop(scrollY: Int?, restingScrollY: Float?): Boolean =
+            scrollY != null && restingScrollY != null && restingScrollY.isFinite() &&
+                scrollY <= restingScrollY.coerceAtLeast(0f) + 1f
+    }
 }
