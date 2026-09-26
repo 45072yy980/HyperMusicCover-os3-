@@ -1265,7 +1265,7 @@ object MiniPlayerRuntime {
 
     /** For `op mini`: the pill, the card, and the torch button's chain as they are right now. */
     @JvmStatic fun describe(): String {
-        val sb = StringBuilder("material=$cardEffect calls=${cardRecipe?.size} empty=$emptyEffect " +
+        val sb = StringBuilder("build=${BuildConfig.VERSION_CODE} material=$cardEffect calls=${cardRecipe?.size} empty=$emptyEffect " +
             "aod=${MiniPlayerScene.aodActive} ${describeAodDim()} || ${LockIslands.describe()} || clock: ${Main.roomTrace()} || touches: " +
             synchronized(touchLog) { touchLog.joinToString(" ; ") })
         synchronized(controllers) { controllers.values.toList() }.forEach { held ->
@@ -6925,6 +6925,9 @@ private class MiniPlayerController(
         return islands + icons + "pill v=${v.visibility} a=${v.alpha} ta=${v.transitionAlpha} at=${xy[0]},${xy[1]} " +
             "${v.width}x${v.height} morph=${morph != null} header=" +
             (if (h == null) "none" else "v=${h.visibility} a=${h.alpha} ta=${h.transitionAlpha}") +
+            " placement=${if (usableButton(left) != null || usableButton(right) != null) "shortcut" else "screen-bottom"}" +
+            " host=${host.width}x${host.height} bottomArea=${bottomArea?.width}x${bottomArea?.height}" +
+            " bottomInset=${bottomSafeInset()} fallbackY=${fallbackCenterY(v.height)}" +
             " last=[$lastPresentationLog] || land: " + landTrace.joinToString(" ; ") +
             " || doze: " + dozeTrace.joinToString(" ; ") + " || scene: " + sceneTrace.joinToString(" ; ")
     }
@@ -8320,19 +8323,14 @@ private class MiniPlayerController(
         return PillRest(pillWidth, height, centerX, centerY)
     }
 
-    /** A missing shortcut row still leaves the island in the lock screen's lower safe area. */
-    private fun fallbackCenterY(pillHeight: Int): Float {
-        val area = bottomArea?.takeIf { it.isAttachedToWindow && it.height > 0 }
-        if (area != null) {
-            val center = restCentre(area)[1]
-            return center.coerceIn(pillHeight / 2f, host.height - pillHeight / 2f)
-        }
-        val navigationInset = runCatching {
-            host.rootWindowInsets?.getInsets(android.view.WindowInsets.Type.navigationBars())?.bottom ?: 0
-        }.getOrDefault(0)
-        val center = host.height - navigationInset - dp(12f) - pillHeight / 2f
-        return center.coerceIn(pillHeight / 2f, host.height - pillHeight / 2f)
-    }
+    /** Stable across doze: hiding system bars must not move the island down and back up. */
+    private fun bottomSafeInset(): Int = host.rootWindowInsets?.getInsetsIgnoringVisibility(
+        android.view.WindowInsets.Type.systemBars() or android.view.WindowInsets.Type.displayCutout()
+    )?.bottom ?: 0
+
+    /** keyguard_bottom_area can fill the screen; its centre is not a bottom anchor. */
+    private fun fallbackCenterY(pillHeight: Int): Float = MiniPlayerGeometry.bottomCenterY(
+        host.height, bottomSafeInset(), dp(12f), pillHeight)
 
     private fun position() {
         val view = player ?: return

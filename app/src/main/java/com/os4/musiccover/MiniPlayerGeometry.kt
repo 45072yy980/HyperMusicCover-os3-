@@ -13,6 +13,14 @@ internal object MiniPlayerGeometry {
 
     fun heightDp(radiusDp: Float): Float = (radiusDp.coerceIn(10f, 60f) * 2f).coerceAtLeast(48f)
 
+    /** Bottom placement is independent of the OEM bottom area's possibly full-screen bounds. */
+    fun bottomCenterY(hostHeight: Int, bottomInset: Int, margin: Int, pillHeight: Int): Float {
+        if (hostHeight <= 0) return 0f
+        val half = pillHeight.coerceIn(0, hostHeight) / 2f
+        return (hostHeight - bottomInset.coerceAtLeast(0) - margin.coerceAtLeast(0) - half)
+            .coerceIn(half, hostHeight - half)
+    }
+
     fun widthPx(requestedPx: Int, hostWidth: Int, centerX: Float, marginPx: Int): Int {
         if (hostWidth <= 0) return 0
         val margin = marginPx.coerceIn(0, (hostWidth - 1) / 2)

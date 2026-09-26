@@ -5,6 +5,19 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class MiniPlayerGeometryTest {
+    @Test fun missingShortcutsAnchorToScreenBottomOnTheReportedDevice() {
+        // 1200x2608 device, 54dp island and 12dp margin at density 3.
+        val center = MiniPlayerGeometry.bottomCenterY(2608, 0, 36, 162)
+        assertEquals(2491f, center, 0f)
+        assertEquals(2572f, center + 81f, 0f)
+        assertEquals(2419f, MiniPlayerGeometry.bottomCenterY(2608, 72, 36, 162), 0f)
+    }
+
+    @Test fun bottomPlacementHandlesAnUnmeasuredOrUndersizedHost() {
+        assertEquals(0f, MiniPlayerGeometry.bottomCenterY(0, 72, 36, 162), 0f)
+        assertEquals(50f, MiniPlayerGeometry.bottomCenterY(100, 72, 36, 162), 0f)
+    }
+
     @Test fun originalHeightSettingUsesDiameterWithMinimum() {
         assertEquals(72f, MiniPlayerGeometry.heightDp(36f))
         assertEquals(48f, MiniPlayerGeometry.heightDp(10f))
