@@ -4224,14 +4224,16 @@ private class MiniPlayerController(
         val nativeTop = top[native] ?: return 0f
         var shift = 0f
         var above = Float.NaN
-        val goneTrace = StringBuilder()
+        val now = android.os.SystemClock.uptimeMillis()
+        val recordDiagnostic = now - settleDiagnosticAt >= 100L
+        val goneTrace = if (recordDiagnostic) StringBuilder() else null
         // Rows given back early are transient views, not among these: what is left here is only
         // a row the stack has not been told about yet, for the frame or two until it has.
         for (c in kids.sortedBy { top[it] }) {
             val t = top[c] ?: continue
             val bottom = t + stackTargetHeight(c)
             if (c in gone && t > nativeTop && !above.isNaN()) shift += bottom - above
-            if (c in gone) goneTrace.append(if (t > nativeTop) " v" else " ^").append(t.toInt())
+            if (c in gone && goneTrace != null) goneTrace.append(if (t > nativeTop) " v" else " ^").append(t.toInt())
                 .append('+').append((bottom - t).toInt()).append("/ty").append(c.translationY.toInt())
             above = bottom
         }
@@ -4249,11 +4251,14 @@ private class MiniPlayerController(
         val target = if (floor != null) minOf(stackTarget + shift, floor) else stackTarget + shift
         lastGone = gone.size
         lastStackTarget = stackTarget
-        lastSettle = (if (floor != null && stackTarget + shift > floor) "floor=${floor.toInt()} " else "") +
+        if (recordDiagnostic) {
+            settleDiagnosticAt = now
+            lastSettle = (if (floor != null && stackTarget + shift > floor) "floor=${floor.toInt()} " else "") +
             "t=${target.toInt()} st=${stackTarget.toInt()}${if (targetRead) "" else "?"} " +
             "sh=${shift.toInt()} gone=${gone.size}$goneTrace kept=${kept.size} " +
             "ty=${native.translationY.toInt()} " +
             "rows=${kids.size} mt=${Main.liveMediaTop().let { if (it.isNaN()) "-" else it.toInt().toString() }}"
+        }
         return target - native.translationY
     } }
 
@@ -4283,6 +4288,8 @@ private class MiniPlayerController(
 
     /** The last settleDy reading, for the landing trace. */
     private var lastSettle = ""
+    private var settleDiagnosticAt = 0L
+    private var contentDiagnosticAt = 0L
 
     /**
      * The translation the stack is taking [v] to: its view state's mYTranslation, which the
@@ -4325,7 +4332,8 @@ private class MiniPlayerController(
             var skipped = 0
             val stackY = IntArray(2).also(stack::getLocationOnScreen)[1]
             // Every child weighed, for `op mini`: name:target-on-screen/translation and why skipped.
-            val seen = StringBuilder()
+            val recordDiagnostic = now - contentDiagnosticAt >= 100L
+            val seen = if (recordDiagnostic) StringBuilder() else null
             // A card a switch is taking home to its island is the morph's, drawn on its way to the
             // row, not where the stack still has it. The media card going back to the pill for a
             // focus notification was pushed up the stack by the row let out under it, 1700 -> 1425,
@@ -4342,28 +4350,33 @@ private class MiniPlayerController(
                 val name = c.javaClass.name
                 if (!name.contains("ExpandableNotificationRow") && !name.contains("MediaHeader")) continue
                 val t = stackTargetY(c) + c.top
-                seen.append(' ').append(shortName(c)).append(':').append((stackY + t).toInt())
-                    .append('/').append((stackY + c.top + c.translationY).toInt())
-                if (c in hiddenRows) seen.append('H')
-                if (c.visibility != View.VISIBLE) seen.append('I')
-                if (c.alpha <= 0.01f) seen.append('A')
-                if (pinned?.get() === c) seen.append('P')
                 val home = leaving.any { isInside(it, c) }
-                if (home) seen.append('L')
+                if (seen != null) {
+                    seen.append(' ').append(shortName(c)).append(':').append((stackY + t).toInt())
+                        .append('/').append((stackY + c.top + c.translationY).toInt())
+                    if (c in hiddenRows) seen.append('H')
+                    if (c.visibility != View.VISIBLE) seen.append('I')
+                    if (c.alpha <= 0.01f) seen.append('A')
+                    if (pinned?.get() === c) seen.append('P')
+                    if (home) seen.append('L')
+                }
                 // Hidden only while its morph is being made - a tap has sent it out, the row is
                 // there, the morph takes it a frame or two later: it is on its way, and the clock
                 // gives way to where it is going. Skipped, the clock grew for the frame or two
                 // and shrank back on every tap of a run of them (2026-09-26).
                 val coming = c in hiddenRows && rowComingOut(c)
-                if (coming) seen.append('C')
+                if (coming) seen?.append('C')
                 // The media card the pill stands in for is kept INVISIBLE, still laid out (see
                 // the setVisibility hook in install): the clock gave way to it too (2026-09-26).
                 if (home || c in hiddenRows && !coming || c.visibility != View.VISIBLE ||
                     c.alpha <= 0.01f && !coming) { skipped++; continue }
                 if (t < top) { top = t; from = c }
             }
-            contentTopFrom = (from?.let(::shortName) ?: "-") + " skip=$skipped" +
+            if (seen != null) {
+                contentDiagnosticAt = now
+                contentTopFrom = (from?.let(::shortName) ?: "-") + " skip=$skipped" +
                 (if (exchange != null) " X" else "") + (if (morph != null) " M" else "") + " [" + seen.toString().trim() + "]"
+            }
             when {
                 from != null -> stackY + top
                 skipped > 0 -> (stackY + stack.height).toFloat()
@@ -6396,14 +6409,14 @@ private class MiniPlayerController(
 
     private fun hideRow(row: View) {
         if (row in hiddenRows) return
-        trace("hide ${shortName(row)} by ${Throwable().stackTrace.getOrNull(1)?.methodName}")
+        trace("hide ${shortName(row)}")
         hiddenRows[row] = row.transitionAlpha
         row.transitionAlpha = 0f
     }
 
     private fun showRow(row: View) {
         val was = hiddenRows.remove(row) ?: return
-        trace("show ${shortName(row)} ta=${"%.2f".format(was)} by ${Throwable().stackTrace.getOrNull(1)?.methodName}")
+        trace("show ${shortName(row)} ta=$was")
         row.transitionAlpha = was
     }
 
