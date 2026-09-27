@@ -5201,6 +5201,8 @@ private class MiniPlayerController(
         var pending: String? = null
         var pendingPill = false
         var pendingCover = false
+        var pendingSeats: Seats? = null
+        var pendingSlots: MiniPlayerSlotMemory.Snapshot? = null
         var waitSince = 0L
         fun has(key: String) = key == expanded || key in movers || key == pending
         fun keys(): List<String> = listOfNotNull(expanded) + movers.keys + listOfNotNull(pending)
@@ -5251,9 +5253,10 @@ private class MiniPlayerController(
      * the row reseats and everything moves once that card is laid out (switchWait): meanwhile the
      * island stays drawn where it is and the rest goes on as it was.
      */
-    private fun requestUp(x: Switch, key: String, fromPill: Boolean, cover: Boolean) {
+    private fun requestUp(x: Switch, key: String, fromPill: Boolean, cover: Boolean, seats: Seats? = null,
+                          slots: MiniPlayerSlotMemory.Snapshot? = null) {
         if (x.movers[key]?.morph != null) {
-            if (!applyUp(x, key, fromPill, cover)) MiniPlayerRuntime.noteTouch("switch $key: no morph")
+            if (!applyUp(x, key, fromPill, cover, seats, slots)) MiniPlayerRuntime.noteTouch("switch $key: no morph")
             return
         }
         // The one out resting in its card is held where it is drawn while the stack makes room
@@ -5270,6 +5273,8 @@ private class MiniPlayerController(
         x.pending = key
         x.pendingPill = fromPill
         x.pendingCover = cover
+        x.pendingSeats = seats
+        x.pendingSlots = slots
         x.waitSince = android.os.SystemClock.uptimeMillis()
         if (cover) {
             // Into the cover the card is shown by the scene, not chosen: out from under the
@@ -5304,7 +5309,8 @@ private class MiniPlayerController(
             } == true
             if (native != null && traced("MC x.ready") { rowReady(native) } && outReady) {
                 x.pending = null
-                if (!traced("MC x.begin") { applyUp(x, key, x.pendingPill, x.pendingCover) }) abandonUp(x, key, "no morph")
+                if (!traced("MC x.begin") { applyUp(x, key, x.pendingPill, x.pendingCover, x.pendingSeats.also { x.pendingSeats = null },
+                        x.pendingSlots.also { x.pendingSlots = null }) }) abandonUp(x, key, "no morph")
                 return
             }
             if (android.os.SystemClock.uptimeMillis() - x.waitSince > ROW_WAIT_MS) {
@@ -5453,7 +5459,8 @@ private class MiniPlayerController(
      * [key] the one asked out now, the one out till now coming back in: the row reseated, and
      * every island on its way to its new end.
      */
-    private fun applyUp(x: Switch, key: String, fromPill: Boolean, cover: Boolean): Boolean {
+    private fun applyUp(x: Switch, key: String, fromPill: Boolean, cover: Boolean, restoredSeats: Seats? = null,
+                        restoredSlots: MiniPlayerSlotMemory.Snapshot? = null): Boolean {
         // Nothing out: the one that was is on its way home already (adoptNote).
         val out = x.expanded
         val oldBig = selectedIsland
@@ -5466,7 +5473,8 @@ private class MiniPlayerController(
         val ghostDrawn = swap?.takeIf { !fromPill && it.smallMode == SMALL_FROM_GHOST && it.ghostKey == key &&
             it.ghostFrom != null }?.let(::ghostSmallBox)
         if (ghostDrawn != null) endSwap()
-        val seats = reseat(key, out, fromPill)
+        restoredSlots?.let(slotMemory::restore)
+        val seats = restoredSeats ?: reseat(key, out, fromPill)
         // The one asked for: turned round on its way home, or up out of its place.
         val up = x.movers[key]
         if (up != null) {
@@ -5523,6 +5531,7 @@ private class MiniPlayerController(
             updateVisibility()
             followShortcuts()
         }
+        switchPull?.takeIf { it.owner === x && it.key == key }?.let(::applySwitchPull)
         val plan = "seats=${seats.big?.takeLast(6)}/${seats.small?.takeLast(6)} " +
             x.movers.values.joinToString(" ") { moverState(it) }
         trace("switch up=${key.takeLast(6)} down=${out?.takeLast(6)} pill=$fromPill $plan " + smallState())
@@ -5829,6 +5838,8 @@ private class MiniPlayerController(
     private fun abandonUp(x: Switch, key: String, why: String) {
         if (exchange !== x) return
         x.pending = null
+        x.pendingSeats = null
+        x.pendingSlots = null
         Xp.log("MCIsland: switch $key not run: $why")
         MiniPlayerRuntime.noteTouch("exchange $why")
         abandonMover(x, key)
@@ -6537,15 +6548,15 @@ private class MiniPlayerController(
         if (moving != null && moving != key && morph != null) {
             if ((if (fromSmall) smallKey else selectedIsland) != key) return false
             val x = adoptNote(moving) ?: return false
+            switchPull = newSwitchPull(x, key, startY)
             requestUp(x, key, !fromSmall, cover = false)
-            switchPull = SwitchPull(x, key, startY)
             return true
         }
         exchange?.let { x ->
             val seats = x.seats ?: return false
             if ((if (fromSmall) seats.small else seats.big) != key || x.pending != null) return false
+            switchPull = newSwitchPull(x, key, startY)
             requestUp(x, key, !fromSmall, cover = false)
-            switchPull = SwitchPull(x, key, startY)
             return true
         }
         if (noteMorphKey != null || morph != null) return false
@@ -6578,28 +6589,74 @@ private class MiniPlayerController(
         return true
     }
 
-    private class SwitchPull(val owner: Switch, val key: String, val startY: Float) {
+    private class SwitchPull(
+        val owner: Switch, val key: String, val startY: Float,
+        val previousExpanded: String?, val previousSeats: Seats?,
+        val previousSlots: MiniPlayerSlotMemory.Snapshot, val previousCover: Boolean
+    ) {
         var grab: MiniCardMorph.Grab? = null
-        var baseY = startY
+        var y = startY
+        var nudgeX = 0f
         var span = 1f
     }
     private var switchPull: SwitchPull? = null
 
+    private fun newSwitchPull(x: Switch, key: String, y: Float) = SwitchPull(
+        x, key, y, x.expanded, x.seats, slotMemory.snapshot(),
+        x.expanded?.let { x.movers[it]?.cover ?: (it == MUSIC_ISLAND && Main.coverModeOn()) } == true
+    ).also { it.span = dp(160f).toFloat() }
+
+    private fun applySwitchPull(pull: SwitchPull) {
+        val mover = pull.owner.movers[pull.key] ?: return
+        val running = mover.morph ?: return
+        if (pull.grab == null) {
+            pull.grab = running.grab() ?: return
+            val end = moverEnd(mover)
+            val xy = IntArray(2).also(mover.native::getLocationOnScreen)
+            pull.span = kotlin.math.abs((end?.y ?: pull.startY) - xy[1]).coerceAtLeast(dp(160f).toFloat())
+        }
+        val grab = pull.grab ?: return
+        running.drag((grab.progress + (pull.startY - pull.y) / pull.span).coerceIn(0f, 1f),
+            grab.nudge, grab.nudgeX + pull.nudgeX)
+    }
+
+    private fun cancelSwitchPull(pull: SwitchPull, velocity: Float) {
+        val x = pull.owner
+        slotMemory.restore(pull.previousSlots)
+        if (x.pending == pull.key) {
+            Choreographer.getInstance().removeFrameCallback(switchWait)
+            abandonUp(x, pull.key, "pull cancelled")
+        } else {
+            val seats = pull.previousSeats ?: Seats(null, null)
+            x.movers[pull.key]?.let { m ->
+                unland(m)
+                turnTo(m.key, false)
+                aimEnd(m, placeOf(m.key, seats))
+                m.morph?.release(false, velocity)
+            }
+            val previous = pull.previousExpanded
+            if (previous != null) {
+                // Reuse the previous card's live morph, or wait for its row if it settled
+                // while held. Restore the captured seats instead of promoting a new centre.
+                requestUp(x, previous, previous == selectedIsland, pull.previousCover, seats, pull.previousSlots)
+                return
+            }
+            x.expanded = null
+            for (m in x.movers.values) if (m.headedHome) aimEnd(m, placeOf(m.key, seats))
+        }
+        x.seats = pull.previousSeats
+        selectedIsland = pull.previousSeats?.big
+        preferredSmall = pull.previousSeats?.small
+        refresh()
+        updateVisibility()
+    }
+
     fun noteDragMove(y: Float, nudgeX: Float = 0f) { android.os.Trace.beginSection("MC t.noteDragMove"); try {
         switchPull?.let { pull ->
             if (exchange !== pull.owner) { switchPull = null; return }
-            val mover = pull.owner.movers[pull.key] ?: return
-            val running = mover.morph ?: return
-            if (pull.grab == null) {
-                pull.grab = running.grab() ?: return
-                pull.baseY = y
-                val end = moverEnd(mover)
-                val xy = IntArray(2).also(mover.native::getLocationOnScreen)
-                pull.span = kotlin.math.abs((end?.y ?: pull.startY) - xy[1]).coerceAtLeast(dp(160f).toFloat())
-            }
-            val grab = pull.grab ?: return
-            running.drag((grab.progress + (pull.baseY - y) / pull.span).coerceIn(0f, 1f),
-                grab.nudge, grab.nudgeX + nudgeX)
+            pull.y = y
+            pull.nudgeX = nudgeX
+            applySwitchPull(pull)
             return
         }
         val drag = noteDrag ?: return
@@ -6617,11 +6674,13 @@ private class MiniPlayerController(
     fun noteDragEnd(velocityY: Float, cancelled: Boolean) {
         switchPull?.let { pull ->
             switchPull = null
-            if (exchange === pull.owner && pull.grab != null) {
-                // The requested island remains selected; release the held animation from
-                // its current position, without rebuilding either notification row.
-                pull.owner.movers[pull.key]?.morph?.release(true,
-                    if (cancelled) 0f else -velocityY / pull.span)
+            if (exchange === pull.owner) {
+                val running = pull.owner.movers[pull.key]?.morph
+                val progress = running?.progress ?: ((pull.startY - pull.y) / pull.span).coerceIn(0f, 1f)
+                val velocity = if (cancelled) 0f else -velocityY / pull.span
+                if (MiniPlayerExchangeGesture.commit(progress, velocity, cancelled)) {
+                    running?.release(true, velocity)
+                } else cancelSwitchPull(pull, velocity)
             }
             return
         }

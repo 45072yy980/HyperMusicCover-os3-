@@ -7,6 +7,18 @@ internal class MiniPlayerSlotMemory {
     private val homes = linkedMapOf<String, Slot>()
     private val displayed = linkedMapOf<String, Slot>()
 
+    class Snapshot internal constructor(
+        internal val homes: Map<String, Slot>, internal val displayed: Map<String, Slot>)
+
+    fun snapshot() = Snapshot(homes.toMap(), displayed.toMap())
+
+    fun restore(snapshot: Snapshot) {
+        homes.clear()
+        homes.putAll(snapshot.homes)
+        displayed.clear()
+        displayed.putAll(snapshot.displayed)
+    }
+
     fun home(key: String?): Slot? = homes[key]
     fun displayedAt(key: String?): Slot? = displayed[key]
 
