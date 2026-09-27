@@ -3591,7 +3591,16 @@ private class MiniPlayerController(
 
     private fun stackLead(): String? {
         val members = LockIslands.stackMembers
-        return stackLeadKey?.takeIf { it in members } ?: members.firstOrNull()
+        fun hasLaidOutRow(key: String): Boolean = findRow(key)?.let { (row, top) ->
+            row.isAttachedToWindow && row.height > 0 && top.height > 0 &&
+                row.visibility == View.VISIBLE && top.visibility == View.VISIBLE
+        } == true
+        val preferred = stackLeadKey?.takeIf { it in members }
+        if (preferred != null && hasLaidOutRow(preferred)) return preferred
+        // Other pipeline filters can remove a candidate after our keyguard filter saw it.
+        // A hidden entry must not prevent the remaining real rows from opening.
+        return members.firstOrNull(::hasLaidOutRow)?.also { stackLeadKey = it }
+            ?: preferred ?: members.firstOrNull()
     }
 
     /** The stack island's other rows the pile has moved: their matrix and alpha are ours. */
@@ -7262,7 +7271,7 @@ private class MiniPlayerController(
     private fun canShow(): Boolean =
         // The music on its way in or out of its card or the cover is not the row's to gate: the
         // row takes taps meanwhile, to turn the switch round (2026-09-25).
-        if (islandKeys.firstOrNull() == MUSIC_ISLAND && exchange == null && noteMorphKey != MUSIC_ISLAND)
+        if (islandKeys == listOf(MUSIC_ISLAND) && exchange == null && noteMorphKey != MUSIC_ISLAND)
             Main.miniPlayerCanShow() else Main.miniPlayerIslandsCanShow()
 
     /** A morph moving on its springs under this point - the switch's, or a scene's. */
@@ -7579,7 +7588,11 @@ private class MiniPlayerController(
             thumbShown = null
             lastTrack = ""
         }
-        val music = controller?.takeIf(::isUsable)
+        val music = controller?.takeIf(::isUsable)?.takeIf {
+            Main.miniPlayerMediaCardPresent() || Main.coverSceneActive() || group != null ||
+                musicComingDown || morph != null && noteMorphKey == null ||
+                noteMorphKey == MUSIC_ISLAND || exchange?.has(MUSIC_ISLAND) == true
+        }
         val notes = LockIslands.notes
         // One island out as its card, the rest in the row (the super island's expanded state):
         // the music out as the media card leaves the row to the notifications. Alone, it keeps
@@ -8387,7 +8400,7 @@ private class MiniPlayerController(
         // startSceneFlight puts it back first in the row a moment before its morph exists, and
         // for that refresh the cover still up read as "not presentable" - the row went and came
         // back within 2ms, a whole list rebuild each way, on every exit (probed 2026-09-25).
-        val presentable = if (islandKeys.firstOrNull() == MUSIC_ISLAND && noteMorphKey != MUSIC_ISLAND)
+        val presentable = if (islandKeys == listOf(MUSIC_ISLAND) && noteMorphKey != MUSIC_ISLAND)
             Main.miniPlayerPresentable() else Main.miniPlayerIslandsPresentable()
         val sceneVisible = keyguardOwned && presentable && !MiniPlayerScene.blocksMiniPlayer
         // Unlocking or a session ending mid-morph: straight to where it was going.

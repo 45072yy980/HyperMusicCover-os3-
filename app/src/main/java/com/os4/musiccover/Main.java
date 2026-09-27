@@ -6279,6 +6279,9 @@ public class Main extends XposedModule {
      * The lock screen's own media presentation holds: the card is up, no cover scene, the
      * keyguard up. Awake or dozing, pad or no pad - those only stop the pill taking touches.
      */
+    /** MediaSession can remain active after the user dismisses its lockscreen card. */
+    static boolean miniPlayerMediaCardPresent() { return sCardShowing; }
+
     static boolean miniPlayerPresentable() {
         return sCardShowing && !coverSceneActive() && keyguardShowing();
     }
