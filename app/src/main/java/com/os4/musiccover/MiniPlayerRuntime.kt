@@ -1840,7 +1840,8 @@ private class MiniPlayerController(
         }
         // A notification flying out of the pill, or home into it, is the flight: the pill under
         // it stays out of sight until the flight lands on it.
-        val pillFade = if (pillHeld() || exchangeHoldsPill()) 0f else fade
+        val pillFade = if (pillHeld() || exchangeHoldsPill() ||
+            !contentOwnership.ready(view, selectedIsland)) 0f else fade
         followPillFade = pillFade
         if (kotlin.math.abs(view.transitionAlpha - pillFade) > 0.002f) view.transitionAlpha = pillFade
     }
@@ -1927,6 +1928,7 @@ private class MiniPlayerController(
     private var smallKey: String? = null
     private var smallIconKey: Any? = null
     private val sideContinuity = MiniPlayerSideContinuity<ShortcutDisc>()
+    private val contentOwnership = MiniPlayerContentOwnership<View>()
     private val smallRest = FloatArray(2)
     private var extraIsland: ShortcutDisc? = null
     private var extraKey: String? = null
@@ -2028,6 +2030,7 @@ private class MiniPlayerController(
                 else -> null
             })
         }
+        contentOwnership.bind(view, key)
     }
 
     private fun placeExtraIsland(follow: Matrix?, fade: Float) {
@@ -2353,6 +2356,7 @@ private class MiniPlayerController(
                 else -> null
             })
         }
+        contentOwnership.bind(view, key)
     } finally { android.os.Trace.endSection() } }
 
     private fun hideSmallIsland() {
@@ -5397,7 +5401,13 @@ private class MiniPlayerController(
     }
 
     private fun moverListener(m: Mover) = object : MiniCardMorph.Listener {
-        override fun canSettle(morph: MiniCardMorph, toNative: Boolean) = true
+        override fun canSettle(morph: MiniCardMorph, toNative: Boolean) = toNative ||
+            m.place == LAND_HIDDEN || contentOwnership.ready(when (m.place) {
+                LAND_PILL -> player
+                LAND_SMALL -> smallIsland
+                LAND_EXTRA -> extraIsland
+                else -> null
+            }, m.key)
         override fun artBridged() = m.key == MUSIC_ISLAND && artBridged
         override fun onFrame(morph: MiniCardMorph, progress: Float) {
             if (m.key == STACK_ISLAND) pileStack(progress, morph.miniEndBox())
@@ -5626,6 +5636,16 @@ private class MiniPlayerController(
             orderMovers(x)
             followShortcuts()
         }
+        val target = when (m.place) {
+            LAND_PILL -> player
+            LAND_SMALL -> smallIsland
+            LAND_EXTRA -> extraIsland
+            else -> null
+        }
+        if (m.landed && !contentOwnership.ready(target, m.key)) {
+            unland(m)
+            updateVisibility()
+        }
         if (m.landed) morph.containerBox()?.let {
             when (m.place) {
                 LAND_PILL -> landOnPill(it)
@@ -5653,6 +5673,7 @@ private class MiniPlayerController(
     private fun moverSettled(m: Mover, toNative: Boolean, completed: Boolean) {
         val x = exchange ?: return
         if (x.movers[m.key] !== m) return
+        if (!toNative && m.key != MUSIC_ISLAND) markReturning(m.key)
         flushTurn(m.key)
         x.movers.remove(m.key)
         unland(m)
@@ -5674,7 +5695,6 @@ private class MiniPlayerController(
             releasedFromSmall -= key
             if (key != MUSIC_ISLAND) {
                 rowFor(key)?.let { hideRowUntilGone(it, key) }
-                markReturning(key)
             } else transitionHeader()?.let(::showRow)
             takeIn(key)
             letGo(key)
@@ -5690,12 +5710,12 @@ private class MiniPlayerController(
     /** Everyone is at an end: the row is the seats'. */
     private fun endSwitch(x: Switch) {
         if (exchange !== x) return
-        exchange = null
-        endPillLanding()
         x.seats?.let { s ->
             s.big?.let { selectedIsland = it }
             preferredSmall = s.small
         }
+        exchange = null
+        endPillLanding()
         snapSmallOnce = true
         refresh()
         trace("exchange end " + smallState())
@@ -6183,7 +6203,8 @@ private class MiniPlayerController(
 
     /** Where an island's picture, title and text land on a notification's row, and its corners. */
     private fun rowLanding(row: View) = MiniCardMorph.Landing(
-        findNamed(row, ICON_NAMES) { it is ImageView },
+        findNamed(row, FOCUS_ART_NAMES) { it.width > 0 && it.height > 0 }
+            ?: findNamed(row, ICON_NAMES) { it is ImageView },
         findNamed(row, TITLE_NAMES) { it is TextView },
         findNamed(row, TEXT_NAMES) { it is TextView },
         Main.notificationRowRadius(row),
@@ -6272,7 +6293,9 @@ private class MiniPlayerController(
     private fun noteMorphListener(key: String) = object : MiniCardMorph.Listener {
         /** The music out of a scene lands once the cover has let go of the lock screen. */
         override fun canSettle(morph: MiniCardMorph, toNative: Boolean) =
-            key != MUSIC_ISLAND || toNative || !morphScene || !Main.coverSceneActive()
+            toNative || contentOwnership.ready(
+                if (flight == null || flightHome == HOME_PILL) player else smallIsland, key) &&
+                (key != MUSIC_ISLAND || !morphScene || !Main.coverSceneActive())
 
         override fun artBridged() = key == MUSIC_ISLAND && artBridged
 
@@ -6285,12 +6308,19 @@ private class MiniPlayerController(
                 trace("f c=${"%.3f".format(progress)} box=${b.cx().toInt()},${b.w.toInt()}x${b.h.toInt()} " +
                     "fa=${"%.2f".format(f.alpha)} land=$flightLanding " + smallState())
             }
-            val landing = !morph.toNative && progress < FLIGHT_HANDOFF
+            var landing = !morph.toNative && progress < FLIGHT_HANDOFF
             if (landing != flightLanding) {
                 flightLanding = landing
-                // Shown at once, whole, with its own picture: it is what the flight becomes.
                 if (landing) snapSmallOnce = true
-                scheduleRefresh()
+                // A posted refresh can leave the previous island's artwork exposed for a
+                // frame. Bind the destination in this frame before reducing flight alpha.
+                refresh()
+            }
+            val target = if (flightHome == HOME_PILL) player else smallIsland
+            if (landing && !contentOwnership.ready(target, key)) {
+                landing = false
+                flightLanding = false
+                updateVisibility()
             }
             val box = if (landing) morph.containerBox() else null
             if (flightHome == HOME_PILL) {
@@ -6306,6 +6336,11 @@ private class MiniPlayerController(
             if (kotlin.math.abs(f.alpha - a) > 0.002f) f.alpha = a
         }
         override fun onSettled(morph: MiniCardMorph, toNative: Boolean, completed: Boolean) {
+            if (!toNative) {
+                if (key != MUSIC_ISLAND) markReturning(key)
+                if (flight != null && flightHome == HOME_SMALL) preferredSmall = key
+                else selectedIsland = key
+            }
             flushTurn(key)
             trace("settled toRow=$toNative completed=$completed " +
                 (if (completed) "" else "why=${morph.lastCancel} ") + smallState())
@@ -6345,7 +6380,6 @@ private class MiniPlayerController(
                     // The stack gives it back a run of the pipeline later: until then the row
                     // keeps its place, or the small island showed the next one for a frame or two
                     // and then grew this one anew - the icon blinked on landing (2026-09-25).
-                    markReturning(key)
                 }
                 takeIn(key)
                 letGo(key)
@@ -8026,9 +8060,10 @@ private class MiniPlayerController(
         // after the notification had landed there (2026-09-25).
         val note = notes.firstOrNull { it.key == selected }
             ?: selected.takeIf { it != MUSIC_ISLAND }?.let(LockIslands::noteFor)
-        if (note == null && music != null) bindMusic(view, music, config)
+        if (selected == MUSIC_ISLAND && music != null) bindMusic(view, music, config)
         else if (note != null) bindNote(view, note, config)
-        pillShowsMusic = note == null && music != null
+        else contentOwnership.clear(view)
+        pillShowsMusic = selected == MUSIC_ISLAND && music != null
         // After the small island is chosen: whether the music is it decides its picture's bridge.
         updateSmallIsland(music, notes)
         applyArtBridge()
@@ -8098,6 +8133,7 @@ private class MiniPlayerController(
             },
             { openCover() },
         )
+        contentOwnership.bind(view, MUSIC_ISLAND)
     }
 
     /**
@@ -8138,6 +8174,7 @@ private class MiniPlayerController(
         )
         showTimer(view, note.timer)
         showFocusAnim(view, note.anim, note.live)
+        contentOwnership.bind(view, note.key)
     }
 
     /**
@@ -9224,6 +9261,8 @@ private const val ROW_WAIT_MS = 800L
 /** A row's picture, title and text, by the ids the notification templates give them. */
 // A focus notification's row is the plugin's template: its picture (a Lottie view or a still),
 // its chronometer or title, and its content line.
+private val FOCUS_ART_NAMES = setOf("focus_animation", "focus_animation_static", "focus_icon",
+    "focus_large_icon", "focus_small_icon")
 private val ICON_NAMES = setOf("right_icon", "icon", "app_icon", "notification_icon", "left_icon",
     "focus_animation", "focus_animation_static", "focus_icon")
 private val TITLE_NAMES = setOf("title", "notification_title", "chronometer", "focus_title")
