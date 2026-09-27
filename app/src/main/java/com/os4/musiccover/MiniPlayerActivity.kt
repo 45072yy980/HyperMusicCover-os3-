@@ -85,6 +85,10 @@ private fun MiniPlayerPage(blur: Boolean, onBack: () -> Unit) {
                         summary = "单侧隐藏时大岛居中，小按钮使用空出的快捷位置；双侧隐藏时加宽",
                         checked = config.optBoolean(MiniPlayerConfig.ADAPTIVE_WIDTH), enabled = alive,
                         onCheckedChange = { push(MiniPlayerConfig.ADAPTIVE_WIDTH, it) })
+                    SwitchPreference(title = "小图标放在左侧",
+                        summary = "无快捷方式、两个岛时选择小图标的位置；三个岛时左右各放一个",
+                        checked = config.optBoolean(MiniPlayerConfig.SMALL_ON_LEFT), enabled = alive,
+                        onCheckedChange = { push(MiniPlayerConfig.SMALL_ON_LEFT, it) })
                 }
             }
         }

@@ -11,6 +11,7 @@ object MiniPlayerConfig {
     const val WIDTH = "widthDp"
     const val HEIGHT_RADIUS = "heightRadiusDp"
     const val ART_RADIUS = "artRadiusDp"
+    const val SMALL_ON_LEFT = "smallOnLeft"
     const val ADAPTIVE_WIDTH = "adaptiveWidth"
 
     private val defaults = linkedMapOf<String, Any>(
@@ -19,6 +20,7 @@ object MiniPlayerConfig {
         HEIGHT_RADIUS to 27f,
         ART_RADIUS to 12f,
         ADAPTIVE_WIDTH to false,
+        SMALL_ON_LEFT to false,
     )
 
     @JvmStatic fun defaultJson(): String = normalizedJson(null)

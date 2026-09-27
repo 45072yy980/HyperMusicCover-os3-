@@ -811,6 +811,7 @@ object MiniPlayerRuntime {
             routedPullRefused = false
             routedTracker?.recycle()
             routedTracker = null
+            live().firstOrNull { it.promoteExtraAt(ev.rawX, ev.rawY) }
             // A morph still moving on its own is taken hold of where it is: a pull, a let-go and
             // a pull again, as often as the finger likes - it used to shut touches off until it
             // had settled, and a finger landing on it meanwhile went to swipe-to-unlock.
@@ -1775,6 +1776,7 @@ private class MiniPlayerController(
             matrix.reset()
         }
         placeSmallIsland(matrix, fade)
+        placeExtraIsland(matrix, fade)
         // Into the pill's own frame: conjugated by its slot in the host.
         matrix.preTranslate(view.left.toFloat(), view.top.toFloat())
         matrix.postTranslate(-view.left.toFloat(), -view.top.toFloat())
@@ -1886,6 +1888,123 @@ private class MiniPlayerController(
     private var smallKey: String? = null
     private var smallIconKey: Any? = null
     private val smallRest = FloatArray(2)
+    private var extraIsland: ShortcutDisc? = null
+    private var extraKey: String? = null
+    private var extraIconKey: Any? = null
+    private val extraRest = FloatArray(2)
+    private val extraFollow = Matrix()
+    private val extraFollowValues = FloatArray(9)
+    private val lastExtraFollow = FloatArray(9)
+    private var primarySmallLeft: Boolean? = null
+
+    private fun noShortcutButtons(): Boolean = usableButton(left) == null && usableButton(right) == null
+    private fun smallOnLeft(): Boolean = primarySmallLeft ?: config.optBoolean(MiniPlayerConfig.SMALL_ON_LEFT)
+
+    /** Native slots retain their layout when a shortcut is hidden. */
+    private fun vacantSlotX(onLeft: Boolean, height: Int): Float {
+        val anchor = if (onLeft) left else right
+        val half = height / 2f
+        val fallback = dp(12f) + half
+        return anchor?.takeIf { it.isAttachedToWindow && it.width > 0 }
+            ?.let { restCentre(it)[0] }
+            ?.takeIf { if (onLeft) it < host.width / 2f else it > host.width / 2f }
+            ?.coerceIn(half, host.width - half)
+            ?: if (onLeft) fallback else host.width - fallback
+    }
+
+    /** The third visible island uses the opposite vacant shortcut slot. */
+    private fun updateExtraIsland(music: MediaController?, notes: List<LockIslands.Note>) {
+        val keys = islandKeys.filter { it != selectedIsland && it != smallKey && it != noteMorphKey &&
+            exchange?.has(it) != true }
+        val key = keys.firstOrNull().takeIf { noShortcutButtons() && smallKey != null }
+        extraKey = key
+        if (key == null) {
+            extraIsland?.visibility = View.GONE
+            if (morph == null && exchange == null && swap == null && noteDrag == null) primarySmallLeft = null
+            return
+        }
+        val d = discDiameter()
+        val frame = discFrame(d)
+        val view = extraIsland ?: ShortcutDisc(context).also {
+            extraIsland = it
+            host.addView(it, lockScreenLayerIndex(), ViewGroup.LayoutParams(frame, frame))
+        }
+        resizeSmallIsland(view, frame, frame)
+        view.dress(MiniPlayerRuntime.materialGeneration) { MiniPlayerRuntime.material(it, loader) }
+        view.setShape(d, d)
+        val note = if (key == MUSIC_ISLAND) null else notes.firstOrNull { it.key == key } ?: LockIslands.noteFor(key)
+        view.setIconBare(note != null)
+        val moving = focusLottie(view, note?.anim)
+        view.setLive(liveArt(view, note?.live))
+        val picture = if (key == MUSIC_ISLAND && music != null) thumbShown ?: cachedCover else moving ?: note?.icon
+        if (picture !== extraIconKey) {
+            extraIconKey = picture
+            view.setIcon(when (picture) {
+                is Bitmap -> android.graphics.drawable.BitmapDrawable(context.resources, picture)
+                is android.graphics.drawable.Drawable -> picture
+                else -> null
+            })
+        }
+    }
+
+    private fun placeExtraIsland(follow: Matrix?, fade: Float) {
+        val v = extraIsland?.takeIf { it.visibility == View.VISIBLE } ?: return
+        val d = discDiameter()
+        extraRest[0] = vacantSlotX(!smallOnLeft(), d)
+        extraRest[1] = smallRest[1]
+        setIfChanged(v, extraRest[0] - v.width / 2f - v.left,
+            extraRest[1] - v.height / 2f - v.top, 1f, 1f, 1f)
+        if (follow != null) extraFollow.set(follow) else extraFollow.reset()
+        extraFollow.preTranslate(v.left.toFloat(), v.top.toFloat())
+        extraFollow.postTranslate(-v.left.toFloat(), -v.top.toFloat())
+        extraFollow.getValues(extraFollowValues)
+        if (!extraFollowValues.contentEquals(lastExtraFollow)) {
+            extraFollowValues.copyInto(lastExtraFollow)
+            v.setAnimationMatrix(if (extraFollow.isIdentity) null else extraFollow)
+        }
+        if (kotlin.math.abs(v.transitionAlpha - fade) > 0.002f) v.transitionAlpha = fade
+    }
+
+    /** Swap the two side seats, preserving their actual frames before routing this DOWN. */
+    fun promoteExtraAt(x: Float, y: Float): Boolean {
+        val extra = extraIsland?.takeIf { it.visibility == View.VISIBLE } ?: return false
+        val key = extraKey ?: return false
+        if (!noShortcutButtons() || !canShow() || Main.bouncerShown() || editButtonUp() ||
+            MiniPlayerScene.aodActive || group != null) return false
+        val xy = IntArray(2).also(host::getLocationOnScreen)
+        val radius = discDiameter() / 2f + dp(6f)
+        if (kotlin.math.hypot(x - xy[0] - extraRest[0], y - xy[1] - extraRest[1]) > radius) return false
+        noteMorphKey?.takeIf { morph != null && flight != null }?.let { adoptNote(it) ?: return false }
+        endSwap()
+        clearSmallNudge()
+        val oldSmall = smallIsland
+        val oldKey = smallKey
+        val oldIcon = smallIconKey
+        smallIsland = extra
+        smallKey = key
+        smallIconKey = extraIconKey
+        extraIsland = oldSmall
+        extraKey = oldKey
+        extraIconKey = oldIcon
+        primarySmallLeft = extraRest[0] < host.width / 2f
+        smallRest[0] = extraRest[0]
+        smallRest[1] = extraRest[1]
+        smallWide = false
+        lastSmallFollow.fill(0f)
+        lastExtraFollow.fill(0f)
+        extra.setAnimationMatrix(null)
+        oldSmall?.setAnimationMatrix(null)
+        preferredSmall = key
+        exchange?.let { state ->
+            state.seats = Seats(selectedIsland, key)
+            for (m in state.movers.values) if (m.place == LAND_SMALL && m.key != key) aimEnd(m, LAND_HIDDEN)
+        }
+        refresh()
+        position()
+        followShortcuts()
+        return true
+    }
+
     private val smallFollow = Matrix()
     private val smallFollowValues = FloatArray(9)
     private val lastSmallFollow = FloatArray(9)
@@ -2074,11 +2193,13 @@ private class MiniPlayerController(
             keys.size < 2 -> null
             preferred != null -> preferred
             // The first swiped alone, or the last with none after it: the pill alone (canSwitchIsland).
+            noShortcutButtons() -> keys.firstOrNull { it != selectedIsland }
             firstAlone(keys, selectedIsland) -> null
             else -> keys.getOrNull(keys.indexOf(selectedIsland).coerceAtLeast(0) + 1)
         }
         val previous = smallKey
         smallKey = key
+        updateExtraIsland(music, notes)
         // Gone from the row: updateVisibility shrinks it away rather than cutting it.
         if (key == null) return
         val d = discDiameter()
@@ -2128,6 +2249,8 @@ private class MiniPlayerController(
     private fun hideSmallIsland() {
         clearSmallNudge()
         smallKey = null
+        extraKey = null
+        extraIsland?.visibility = View.GONE
         smallGrowing = false
         smallIsland?.let { if (it.visibility != View.GONE) it.visibility = View.GONE }
     }
@@ -2368,6 +2491,10 @@ private class MiniPlayerController(
         ghostDisc = null
         smallIsland?.let { runCatching { host.removeView(it) } }
         smallIsland = null
+        extraIsland?.let { runCatching { host.removeView(it) } }
+        extraIsland = null
+        extraKey = null
+        extraIconKey = null
         smallKey = null
         smallIconKey = null
     }
@@ -3591,16 +3718,7 @@ private class MiniPlayerController(
 
     private fun stackLead(): String? {
         val members = LockIslands.stackMembers
-        fun hasLaidOutRow(key: String): Boolean = findRow(key)?.let { (row, top) ->
-            row.isAttachedToWindow && row.height > 0 && top.height > 0 &&
-                row.visibility == View.VISIBLE && top.visibility == View.VISIBLE
-        } == true
-        val preferred = stackLeadKey?.takeIf { it in members }
-        if (preferred != null && hasLaidOutRow(preferred)) return preferred
-        // Other pipeline filters can remove a candidate after our keyguard filter saw it.
-        // A hidden entry must not prevent the remaining real rows from opening.
-        return members.firstOrNull(::hasLaidOutRow)?.also { stackLeadKey = it }
-            ?: preferred ?: members.firstOrNull()
+        return stackLeadKey?.takeIf { it in members } ?: members.firstOrNull()
     }
 
     /** The stack island's other rows the pile has moved: their matrix and alpha are ours. */
@@ -6426,7 +6544,25 @@ private class MiniPlayerController(
      * was never found: the media card's morph left its row standing, unfolded (2026-09-25).
      */
     private fun findRow(key: String): Pair<View, View>? {
-        if (key == STACK_ISLAND) return findRow(stackLead() ?: return null)
+        if (key == STACK_ISLAND) {
+            val lead = stackLead() ?: return null
+            fun usable(pair: Pair<View, View>?): Boolean = pair?.let { (row, top) ->
+                row.isAttachedToWindow && row.height > 0 && top.height > 0 &&
+                    row.visibility == View.VISIBLE && top.visibility == View.VISIBLE
+            } == true
+            val current = findRow(lead)
+            if (usable(current)) return current
+            // A later OEM filter may remove the preferred entry. Resolve a real row
+            // only when needed, keeping the ordinary per-frame lead lookup constant-time.
+            for (member in LockIslands.stackMembers) if (member != lead) {
+                val candidate = findRow(member)
+                if (usable(candidate)) {
+                    stackLeadKey = member
+                    return candidate
+                }
+            }
+            return current
+        }
         // Given back early and drawn on as a transient view: no longer among the stack's rows.
         kept[key]?.row?.takeIf { it.isAttachedToWindow }?.let { return it to it }
         val stack = notificationStack() ?: return null
@@ -7154,7 +7290,8 @@ private class MiniPlayerController(
                 "seats=${x.seats?.big?.takeLast(6)}/${x.seats?.small?.takeLast(6)} " +
                 x.movers.values.joinToString(" ") { moverState(it) } }} " +
             "row=${islandKeys.size} sel=${selectedIsland?.takeLast(24)} " +
-            "small=${smallKey?.takeLast(24)} smallShown=${smallIsland?.visibility == View.VISIBLE} "
+            "small=${smallKey?.takeLast(24)} smallShown=${smallIsland?.visibility == View.VISIBLE} " +
+            "extra=${extraKey?.takeLast(24)} extraShown=${extraIsland?.visibility == View.VISIBLE} "
         val v = player ?: return islands + "no pill"
         val xy = IntArray(2).also(v::getLocationOnScreen)
         val icons = "pillArt=[${v.artworkState()}] smallIcon=[${smallIsland?.iconState()}] " +
@@ -7557,6 +7694,7 @@ private class MiniPlayerController(
         if (configStale) {
             configStale = false
             config = JSONObject(MiniPlayerConfig.fromPreferences(prefs))
+            primarySmallLeft = null
             configuredHeightDp = MiniPlayerConfig.visibleHeightDp(config.toString())
         }
         val config = this.config
@@ -8472,6 +8610,10 @@ private class MiniPlayerController(
         setSmallShown(shown && smallKey != null && !held && !exchangeHoldsSmall() &&
             (groupShowsSmall() ?: true),
             animate = shown && !snapSmallOnce && group == null && exchange == null)
+        extraIsland?.let {
+            val visibility = if (shown && extraKey != null && noShortcutButtons()) View.VISIBLE else View.GONE
+            if (it.visibility != visibility) it.visibility = visibility
+        }
         snapSmallOnce = false
         if (!keyguardOwned) preferredSmall = null
         if (!Main.keyguardLocked()) {
@@ -8579,6 +8721,15 @@ private class MiniPlayerController(
         val margin = dp(12f)
         val gap = dp(MiniPlayerGeometry.DISC_GAP_DP)
         val adaptive = config.getBoolean(MiniPlayerConfig.ADAPTIVE_WIDTH) && (l == null || r == null)
+        if (leftAnchor == null && rightAnchor == null && small) {
+            val lx = vacantSlotX(true, height)
+            val rx = vacantSlotX(false, height)
+            val center = host.width / 2f
+            val room = (2f * minOf(center - lx - height / 2f - gap,
+                rx - height / 2f - gap - center)).toInt().coerceAtLeast(1)
+            val width = minOf(if (adaptive) dp(360f) else requestedWidth, room)
+            return PillRest(width, height, center, centerY, if (smallOnLeft()) lx else rx)
+        }
         if (adaptive && (leftAnchor != null) != (rightAnchor != null)) {
             val onLeft = leftAnchor != null
             val present = leftAnchor ?: rightAnchor!!
