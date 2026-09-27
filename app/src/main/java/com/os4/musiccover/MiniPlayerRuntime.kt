@@ -1438,6 +1438,11 @@ object MiniPlayerRuntime {
         if (changed) Xp.log("MCMini: dynamic choice -> mini (out of the scene)")
     }
 
+    @JvmStatic fun mediaCardRemoved() {
+        resetDynamicChoice("media card dismissed")
+        live().forEach { it.onMediaCardRemoved() }
+    }
+
     internal fun resetDynamicChoice(reason: String) {
         val changed = synchronized(selectionLock) { sessionSelection.resetChoice() }
         if (changed) Xp.log("MCMini: dynamic choice reset to mini ($reason)")
@@ -4246,10 +4251,43 @@ private class MiniPlayerController(
     }
 
     /** The music is out as the media card, the row holding the others. */
-    private fun musicCarded(): Boolean {
-        val token = controller?.takeIf(::isUsable)?.sessionToken ?: return false
-        return MiniPlayerRuntime.nativeRequested(token) && MUSIC_ISLAND !in islandKeys
+    fun onMediaCardRemoved() {
+        // The session can outlive its dismissed card. Tear down only media-owned work;
+        // otherwise switchWait waits forever for an expanded card that no longer exists.
+        val x = exchange
+        if (x != null) {
+            if (x.expanded == MUSIC_ISLAND) x.expanded = null
+            if (x.pending == MUSIC_ISLAND) x.pending = null
+            x.movers.remove(MUSIC_ISLAND)?.let { mover ->
+                unland(mover)
+                mover.morph?.cancel()
+                recycleSmallView(mover.view)
+            }
+            x.seats = x.seats?.let { Seats(it.big?.takeUnless { k -> k == MUSIC_ISLAND },
+                it.small?.takeUnless { k -> k == MUSIC_ISLAND }) }
+            if (x.pending == null && x.movers.isEmpty()) exchange = null
+        }
+        if (noteMorphKey == MUSIC_ISLAND || morph != null && noteMorphKey == null) morph?.cancel()
+        if (rowWaitKey == MUSIC_ISLAND) abandonNoteMorph(MUSIC_ISLAND)
+        releasedFromPill.remove(MUSIC_ISLAND)
+        releasedFromSmall.remove(MUSIC_ISLAND)
+        returning.remove(MUSIC_ISLAND)
+        if (selectedIsland == MUSIC_ISLAND) selectedIsland = null
+        if (preferredSmall == MUSIC_ISLAND) preferredSmall = null
+        restoreHeader()
+        header?.get()?.let { it.visibility = View.GONE }
+        scheduleRefresh()
     }
+
+    private fun mediaExpanded(includeCover: Boolean): Boolean = MiniPlayerPresentationPolicy.mediaExpanded(
+        cardPresent = Main.miniPlayerMediaCardPresent(),
+        sessionUsable = controller?.let(::isUsable) == true,
+        musicInRow = MUSIC_ISLAND in islandKeys,
+        nativeRequested = MiniPlayerRuntime.nativeRequested(controller?.sessionToken),
+        coverActive = includeCover && Main.coverModeOn(),
+    )
+
+    private fun musicCarded(): Boolean = mediaExpanded(includeCover = false)
 
     /** A pull down on the media card brings the music home as a flight (musicFlies). */
     fun musicCollapses(): Boolean = config.getBoolean(MiniPlayerConfig.ENABLED) &&
@@ -4260,12 +4298,7 @@ private class MiniPlayerController(
      * Null with every island in the row. Only ever one: another asked out takes its place.
      */
     private fun expandedKey(): String? {
-        if (musicCarded()) return MUSIC_ISLAND
-        // The cover is the music's card: another island opened there takes its place, and the
-        // cover goes (2026-09-25) - not a row of its own in the cover's stack beside the card.
-        if (Main.coverModeOn() && MUSIC_ISLAND !in islandKeys && controller?.takeIf(::isUsable) != null) {
-            return MUSIC_ISLAND
-        }
+        if (mediaExpanded(includeCover = true)) return MUSIC_ISLAND
         return LockIslands.releasedKeys().firstOrNull { it != noteMorphKey && rowFor(it) != null }
     }
 
@@ -4335,7 +4368,8 @@ private class MiniPlayerController(
     }
 
     /** [key]'s card: the media card for the music, the notification's own row in the stack. */
-    private fun nativeFor(key: String): View? = if (key == MUSIC_ISLAND) transitionHeader() else rowFor(key)
+    private fun nativeFor(key: String): View? = if (key == MUSIC_ISLAND)
+        transitionHeader().takeIf { Main.miniPlayerMediaCardPresent() } else rowFor(key)
 
     // ---- a card landing where the stack is settling it
 
@@ -7727,7 +7761,7 @@ private class MiniPlayerController(
             lastTrack = ""
         }
         val music = controller?.takeIf(::isUsable)?.takeIf {
-            Main.miniPlayerMediaCardPresent() || Main.coverSceneActive() || group != null ||
+            Main.miniPlayerMediaCardPresent() || group != null ||
                 musicComingDown || morph != null && noteMorphKey == null ||
                 noteMorphKey == MUSIC_ISLAND || exchange?.has(MUSIC_ISLAND) == true
         }
@@ -8650,6 +8684,7 @@ private class MiniPlayerController(
     }
 
     private fun ensureNativeHeaderVisible() {
+        if (!Main.miniPlayerMediaCardPresent()) return
         val current = transitionHeader() ?: return
         if (current.visibility != View.VISIBLE) current.visibility = View.VISIBLE
         if (current.alpha < 0.99f) current.alpha = 1f

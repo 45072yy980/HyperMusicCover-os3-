@@ -23,6 +23,11 @@ internal data class MiniPlayerPresentation(
 
 /** Keeps scene visibility separate from the user's selected media presentation. */
 internal object MiniPlayerPresentationPolicy {
+    /** A live session alone never proves that its dismissed native card still exists. */
+    fun mediaExpanded(cardPresent: Boolean, sessionUsable: Boolean, musicInRow: Boolean,
+                      nativeRequested: Boolean, coverActive: Boolean): Boolean =
+        cardPresent && sessionUsable && !musicInRow && (nativeRequested || coverActive)
+
     fun evaluate(input: MiniPlayerPresentationInput): MiniPlayerPresentation {
         val available = input.enabled && input.sessionUsable
         val miniSelected = !input.nativeRequested

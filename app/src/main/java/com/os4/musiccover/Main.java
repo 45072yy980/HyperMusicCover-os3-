@@ -8555,6 +8555,7 @@ public class Main extends XposedModule {
         main().removeCallbacks(sCardGone);
         if (!sAuto) {
             sCardShowing = showing;
+            if (!showing) MiniPlayerRuntime.mediaCardRemoved();
             MiniPlayerRuntime.refresh();
             return;
         }
@@ -8571,6 +8572,7 @@ public class Main extends XposedModule {
         @Override
         public void run() {
             sCardShowing = false;
+            MiniPlayerRuntime.mediaCardRemoved();
             noteCard("gone stands, cover mode off");
             MiniPlayerRuntime.refresh();
             applyCardState();
