@@ -181,8 +181,9 @@ internal class MiniPlayerView(context: Context) : FrameLayout(context) {
         val appearance = "$config|$material"
         if (lastAppearance != appearance) {
             lastAppearance = appearance
-            if (lastMaterial != null && lastMaterial != material) {
-                // A fresh view also drops the previous vendor blur/material state.
+            if (MiniPlayerMaterialState.replacesLayer(lastMaterial, material)) {
+                // Replace only when switching effect families. Rebinding the same effect's
+                // values must retain this layer and its in-progress animation.
                 removeView(materialLayer)
                 materialLayer = ImageView(context).apply {
                     scaleType = ImageView.ScaleType.FIT_XY

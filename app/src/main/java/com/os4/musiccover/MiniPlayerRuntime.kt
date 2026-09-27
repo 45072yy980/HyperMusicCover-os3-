@@ -185,7 +185,7 @@ object MiniPlayerRuntime {
         }
     }
 
-    /** Bumped whenever the card is dressed; part of the pill's appearance key. */
+    /** Changes only when the recorded material values change, not on every native rebind. */
     @Volatile internal var materialGeneration = 0
         private set
 
@@ -201,6 +201,25 @@ object MiniPlayerRuntime {
     private var recording: ArrayList<Recorded>? = null
     private var recordTarget: View? = null
     private var recordDepth = 0
+    private var materialSignature: Any? = null
+    private var unchangedMaterialApplications = 0
+    internal val materialStyleKey: String get() = "$cardEffect#$materialGeneration"
+
+    private fun materialSignature(effect: String, calls: List<Recorded>, bg: android.graphics.drawable.Drawable?): Any {
+        val background: Any? = when (bg) {
+            null -> null
+            is GradientDrawable -> listOf(bg.javaClass.name, bg.color?.defaultColor, bg.color?.isStateful, bg.cornerRadius,
+                MiniPlayerMaterialState.snapshot(bg.cornerRadii), bg.shape, bg.gradientType,
+                bg.orientation, MiniPlayerMaterialState.snapshot(bg.colors))
+            is android.graphics.drawable.ColorDrawable -> listOf(bg.javaClass.name, bg.color)
+            else -> bg.constantState ?: bg
+        }
+        return listOf(effect, background, calls.map { call ->
+            listOf(call.method, call.viewAt, call.args.mapIndexed { index, arg ->
+                if (index == call.viewAt || arg is Context) null else MiniPlayerMaterialState.snapshot(arg)
+            })
+        })
+    }
 
     /**
      * The card's material, copied call for call. NotificationViewEffectHelper has eight media
@@ -262,12 +281,16 @@ object MiniPlayerRuntime {
                         cardBackground = bg?.background?.constantState
                         recording = null
                         recordTarget = null
-                        runCatching { keepRecipe(target!!.context, recorded!!, bg?.background) }
-                            .onFailure { Xp.log("MCMini: recipe not kept: $it") }
-                        if (cardEffect != cls.simpleName) Xp.log("MCMini: card material -> ${cls.simpleName}")
-                        cardEffect = cls.simpleName
-                        materialGeneration++
-                        refresh()
+                        val signature = materialSignature(cls.name, recorded!!, bg?.background)
+                        if (materialSignature != signature) {
+                            materialSignature = signature
+                            runCatching { keepRecipe(target!!.context, recorded, bg?.background) }
+                                .onFailure { Xp.log("MCMini: recipe not kept: $it") }
+                            if (cardEffect != cls.simpleName) Xp.log("MCMini: card material -> ${cls.simpleName}")
+                            cardEffect = cls.simpleName
+                            materialGeneration++
+                            refresh()
+                        } else unchangedMaterialApplications++
                     }
                     result
                 }
@@ -305,7 +328,12 @@ object MiniPlayerRuntime {
                             chain.proceed()
                         } finally {
                             recordDepth--
-                            list.add(Recorded(m, args, at))
+                            val snapshot = args.map { arg -> when (arg) {
+                                is IntArray -> arg.copyOf()
+                                is FloatArray -> arg.copyOf()
+                                else -> arg
+                            } }.toTypedArray()
+                            list.add(Recorded(m, snapshot, at))
                         }
                     }
                 }
@@ -1298,7 +1326,7 @@ object MiniPlayerRuntime {
 
     /** For `op mini`: the pill, the card, and the torch button's chain as they are right now. */
     @JvmStatic fun describe(): String {
-        val sb = StringBuilder("build=${BuildConfig.VERSION_CODE} material=$cardEffect calls=${cardRecipe?.size} empty=$emptyEffect " +
+        val sb = StringBuilder("build=${BuildConfig.VERSION_CODE} material=$cardEffect gen=$materialGeneration reused=$unchangedMaterialApplications calls=${cardRecipe?.size} empty=$emptyEffect " +
             "aod=${MiniPlayerScene.aodActive} ${describeAodDim()} || ${LockIslands.describe()} || clock: ${Main.roomTrace()} || touches: " +
             synchronized(touchLog) { touchLog.joinToString(" ; ") })
         synchronized(controllers) { controllers.values.toList() }.forEach { held ->
@@ -8022,7 +8050,7 @@ private class MiniPlayerController(
             shown,
             stateOf(current)?.state == PlaybackState.STATE_PLAYING,
             config,
-            "#${MiniPlayerRuntime.materialGeneration}",
+            MiniPlayerRuntime.materialStyleKey,
             { target -> MiniPlayerRuntime.material(target, loader) },
             ::togglePlayback,
             { skip(next = false) },
@@ -8064,7 +8092,7 @@ private class MiniPlayerController(
             noteBitmap(note),
             false,
             config,
-            "#${MiniPlayerRuntime.materialGeneration}",
+            MiniPlayerRuntime.materialStyleKey,
             { target -> MiniPlayerRuntime.material(target, loader) },
             {},
             {},
@@ -8500,6 +8528,7 @@ private class MiniPlayerController(
             if (timerViews.remove(view) != null) view.titleView.fontFeatureSettings = null
             return
         }
+        if (timerViews[view] === timer) return
         timerViews[view] = timer
         if (view.titleView.fontFeatureSettings != "tnum") view.titleView.fontFeatureSettings = "tnum"
         timerText(view, timer, timer.text())
