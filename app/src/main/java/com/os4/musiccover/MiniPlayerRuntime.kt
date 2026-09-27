@@ -1638,6 +1638,12 @@ private class MiniPlayerController(
         updateDiscs()
         traceScene()
         gateBouncerOverlays()
+        sideContinuity.record(smallIsland, smallKey, smallIsland?.let {
+            it.visibility == View.VISIBLE && it.alpha > 0.01f && it.transitionAlpha > 0.01f
+        } == true)
+        sideContinuity.record(extraIsland, extraKey, extraIsland?.let {
+            it.visibility == View.VISIBLE && it.alpha > 0.01f && it.transitionAlpha > 0.01f
+        } == true)
         true
     } finally { android.os.Trace.endSection() } }
 
@@ -1920,6 +1926,7 @@ private class MiniPlayerController(
     private var smallIsland: ShortcutDisc? = null
     private var smallKey: String? = null
     private var smallIconKey: Any? = null
+    private val sideContinuity = MiniPlayerSideContinuity<ShortcutDisc>()
     private val smallRest = FloatArray(2)
     private var extraIsland: ShortcutDisc? = null
     private var extraKey: String? = null
@@ -1971,6 +1978,7 @@ private class MiniPlayerController(
         lastSmallFollow.fill(0f); lastExtraFollow.fill(0f)
         smallIsland?.setAnimationMatrix(null); extraIsland?.setAnimationMatrix(null)
         smallWide = false
+        resetSmallAppearanceOwner()
     }
 
     /** Native slots retain their layout when a shortcut is hidden. */
@@ -2076,6 +2084,7 @@ private class MiniPlayerController(
         extraIsland = oldSmall
         extraKey = oldKey
         extraIconKey = oldIcon
+        resetSmallAppearanceOwner()
         smallRest[0] = extraRest[0]
         smallRest[1] = extraRest[1]
         smallWide = false
@@ -2335,7 +2344,7 @@ private class MiniPlayerController(
         // Another island in a small island that is showing, nothing else moving it (a switch
         // animates its own): it comes up anew in the place rather than just changing its picture.
         if (previous != null && previous != key && showing && swap == null && !islandDragging &&
-            held == null && !snapSmallOnce) regrowSmall()
+            held == null && !snapSmallOnce && !sideContinuity.keeps(view, key)) regrowSmall()
         if (picture !== smallIconKey) {
             smallIconKey = picture
             view.setIcon(when (picture) {
@@ -2627,6 +2636,8 @@ private class MiniPlayerController(
          * gaining a small island beside it, or losing it (switchIsland). Its content stays.
          */
         val pillKept: Boolean = false,
+        val smallTarget: ShortcutDisc? = null,
+        val smallTargetKey: String? = null,
     ) {
         /** The pill's frame: CHANGE_EASE out of the small island, APPEAR_EASE out of the middle. */
         val spring = (if (kind == SWAP_PREV && !pillKept) Jelly(APPEAR_RESPONSE, APPEAR_DAMPING)
@@ -2641,6 +2652,7 @@ private class MiniPlayerController(
         val ghostContent = Jelly(ALPHA_RESPONSE, ALPHA_DAMPING).apply { value = 0f; target = 1f }
         /** The old small island going into hiding where it is, on HIDDEN_EASE. */
         val ghostDisc = Jelly(HIDDEN_RESPONSE, HIDDEN_DAMPING).apply { value = 0f; target = 1f }
+        var contentFrom = 1f
         var ghostFrom: CoverMorphMotion.Box? = null
         var ghost = false
         var disc = false
@@ -2716,7 +2728,10 @@ private class MiniPlayerController(
         // speed at every tap mid-switch, and an island shrinking into the small place (its
         // stand-in) jumped to a still circle there, or the pill grew out of that circle.
         val prev = swap
+        val previousContentAlpha = view.drawnContentAlpha
         val prevPillVel = prev?.takeIf { !it.holdPill }?.let { velocityOf(it.pillFrom, it.pillTo, it.spring) }
+        val prevPillBox = prev?.takeIf { !it.holdPill && (pillStays || oldBig == selectedIsland) }
+            ?.let { lerpBox(it.pillFrom, it.pillTo, it.spring.value) }
         val ghosting = prev?.takeIf { it.smallMode == SMALL_FROM_GHOST && it.ghostFrom != null &&
             it.ghostKey != null && !it.small.atRest() }
         val ghostNow = ghosting?.let(::ghostSmallBox)
@@ -2751,7 +2766,7 @@ private class MiniPlayerController(
         // it grows from where it has got to.
         val fromGhost = fromSmall && ghostNow != null && selectedIsland == ghosting?.ghostKey
         val from = when {
-            pillStays -> pillFrom ?: rest
+            pillStays -> pillFrom ?: prevPillBox ?: rest
             pillFrom != null -> pillFrom
             // Out of hiding, the super island's HiddenToBigIsland: out of the middle.
             kind == SWAP_PREV -> cutoutBox(rest)
@@ -2760,7 +2775,7 @@ private class MiniPlayerController(
             else -> CoverMorphMotion.Box(rest.x, rest.y, d, rest.h)
         }
         val fromVel = when {
-            pillStays && pillFrom != null -> prevPillVel
+            pillStays && (pillFrom != null || prevPillBox != null) -> prevPillVel
             fromGhost -> ghostVel
             else -> null
         }
@@ -2778,10 +2793,13 @@ private class MiniPlayerController(
             smallKey == null || holdSmall -> SMALL_KEPT
             ghostToSmall -> SMALL_FROM_GHOST
             smallKey == oldBig -> SMALL_FROM_PILL
+            sideContinuity.keeps(smallIsland, smallKey) -> SMALL_KEPT
             smallKey != oldSmall -> if (kind == SWAP_NEXT) SMALL_EMERGE else SMALL_POP
             else -> SMALL_KEPT
         }
-        val s = Swap(from, rest, mode, kind, holdPill, pillKept)
+        val keepContent = pillKept || pillStays && oldBig == selectedIsland
+        val s = Swap(from, rest, mode, kind, holdPill, keepContent, smallIsland, smallKey)
+        s.contentFrom = if (keepContent) previousContentAlpha else 1f
         s.started = android.os.SystemClock.uptimeMillis()
         fromVel?.let { s.spring.velocity = springVelocity(it, from, rest) }
         if (fromVel == null && flingPx > 0f) {
@@ -2893,7 +2911,7 @@ private class MiniPlayerController(
             // The pill is under a flight landing on it, or waiting for a card to: that has its frame.
         } else if (s.pillKept) {
             view.setMorphFrame(box, box.h / 2f, 1f)
-            view.setContentAlpha(1f)
+            view.setContentAlpha(lerp(s.contentFrom, 1f, p.coerceIn(0f, 1f)))
         } else if (s.kind == SWAP_PREV) {
             view.setMorphFrame(box, box.h / 2f, 1f)
             // Out of the middle: the content comes into focus as it arrives.
@@ -2907,7 +2925,8 @@ private class MiniPlayerController(
         applyGhost(s)
         applyGhostDisc(s)
         if (s.smallMode == SMALL_KEPT) return
-        val small = smallIsland?.takeIf { it.visibility == View.VISIBLE && smallKey != null } ?: return
+        if (!MiniPlayerSideContinuity.owns(s.smallTarget, s.smallTargetKey, smallIsland, smallKey)) return
+        val small = s.smallTarget?.takeIf { it.visibility == View.VISIBLE } ?: return
         val d = discDiameter().toFloat()
         val q = s.small.value
         if (s.smallMode == SMALL_FROM_GHOST) {
@@ -2977,7 +2996,8 @@ private class MiniPlayerController(
             followShortcuts()
         }
         // A small island the switch left alone may be mid-grow on its own spring: not cut short.
-        if (s.smallMode != SMALL_KEPT) restoreSmallIslandShape()
+        if (s.smallMode != SMALL_KEPT &&
+            MiniPlayerSideContinuity.owns(s.smallTarget, s.smallTargetKey, smallIsland, smallKey)) restoreSmallIslandShape()
         schedulePosition()
         pendingExpand?.let { key ->
             pendingExpand = null
@@ -4174,6 +4194,15 @@ private class MiniPlayerController(
             applySmallGrow()
             Choreographer.getInstance().postFrameCallback(smallGrowFrame)
         }
+    }
+
+    private fun resetSmallAppearanceOwner() {
+        smallGrowing = false
+        Choreographer.getInstance().removeFrameCallback(smallGrowFrame)
+        smallGrow.value = if (smallIsland?.visibility == View.VISIBLE) 1f else 0f
+        smallGrow.target = smallGrow.value
+        smallGrow.velocity = 0f
+        smallDx = 0f
     }
 
     /** Another island in the small island's place: it comes up there from nothing. */
@@ -5540,13 +5569,15 @@ private class MiniPlayerController(
         val smallRest = oldSmall?.takeIf { it !in movers }
         val bigMoves = !holdPill && seats.big != bigRest
         val intoSmall = bigRest != null && seats.small == bigRest
-        val bigHides = bigRest != null && bigRest != seats.big && bigRest != seats.small
-        val smallChanges = !holdSmall && seats.small != smallRest
+        val bigHides = bigRest != null && bigRest != seats.big && bigRest != seats.small && bigRest != seats.extra
+        val smallChanges = !holdSmall && seats.small != smallRest &&
+            !sideContinuity.keeps(smallIsland, seats.small)
         val stillGrowing = !holdPill && pillDrawn != null
         if (!bigMoves && !intoSmall && !bigHides && !smallChanges && !stillGrowing) return
         startSwap(oldBig, if (intoSmall) null else oldSmall, kind = if (bigHides) SWAP_NEXT else SWAP_PAIR,
             intoSmall = intoSmall, holdPill = holdPill, holdSmall = holdSmall,
-            pillFrom = if (!bigMoves && !holdPill) pillDrawn else null, pillStays = !bigMoves && !holdPill)
+            pillFrom = if (!bigMoves && !holdPill) pillDrawn else null,
+            pillStays = !bigMoves && !holdPill, pillKept = !bigMoves && !holdPill)
     }
 
     /**

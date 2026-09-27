@@ -826,6 +826,8 @@ internal class MiniPlayerView(context: Context) : FrameLayout(context) {
         super.dispatchDraw(canvas)
     }
 
+    val drawnContentAlpha: Float get() = contentAlpha
+
     fun setContentAlpha(alpha: Float) {
         val a = alpha.coerceIn(0f, 1f)
         contentAlpha = a
