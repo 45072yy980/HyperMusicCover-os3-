@@ -1941,7 +1941,7 @@ private class MiniPlayerController(
     private var extraLandingBox: CoverMorphMotion.Box? = null
 
     private fun noShortcutButtons(): Boolean = usableButton(left) == null && usableButton(right) == null
-    private fun sideOnLeft(key: String?): Boolean = when (slotMemory.home(key)) {
+    private fun sideOnLeft(key: String?): Boolean = when (slotMemory.displayedAt(key) ?: slotMemory.home(key)) {
         MiniPlayerSlotMemory.Slot.LEFT -> true
         MiniPlayerSlotMemory.Slot.RIGHT -> false
         else -> config.optBoolean(MiniPlayerConfig.SMALL_ON_LEFT)
@@ -2000,7 +2000,10 @@ private class MiniPlayerController(
         val keys = islandKeys.filter { it != selectedIsland && it != smallKey && it != noteMorphKey &&
             exchange?.has(it) != true }
         val seated = exchange?.seats?.extra
-        val eligible = keys.filter { slotMemory.home(it) != null && sideOnLeft(it) != smallOnLeft() }
+        val eligible = keys.filter {
+            slotMemory.displayedAt(it) in listOf(MiniPlayerSlotMemory.Slot.LEFT, MiniPlayerSlotMemory.Slot.RIGHT) &&
+                sideOnLeft(it) != smallOnLeft()
+        }
         val key = (seated ?: extraKey?.takeIf { it in eligible } ?: eligible.firstOrNull())
             .takeIf { noShortcutButtons() && smallKey != null }
         extraKey = key
@@ -2304,7 +2307,7 @@ private class MiniPlayerController(
             preferred != null -> preferred
             // The first swiped alone, or the last with none after it: the pill alone (canSwitchIsland).
             noShortcutButtons() -> smallKey?.takeIf { it in keys && it != selectedIsland }
-                ?: keys.firstOrNull { it != selectedIsland && slotMemory.home(it) != null }
+                ?: keys.firstOrNull { it != selectedIsland && slotMemory.displayedAt(it) != null }
             firstAlone(keys, selectedIsland) -> null
             else -> keys.getOrNull(keys.indexOf(selectedIsland).coerceAtLeast(0) + 1)
         }
@@ -4449,6 +4452,11 @@ private class MiniPlayerController(
         return LockIslands.takesPlace(c, o, big)
     }
 
+    private fun highestPriority(keys: Collection<String>): String? =
+        MiniPlayerReturnPolicy.chooseCentre(keys, STACK_ISLAND) { current, next ->
+            takesPlace(current, next, big = true)
+        }
+
     /** Who is in the big place and the small one once an expanded switch is over. */
     private class Seats(val big: String?, val small: String?, val extra: String? = null)
 
@@ -4474,12 +4482,12 @@ private class MiniPlayerController(
             if (down != null && down != STACK_ISLAND) slotMemory.page(down,
                 (islandOrder + keys + down).distinct(), config.optBoolean(MiniPlayerConfig.SMALL_ON_LEFT))
             val big = down?.takeIf { it != STACK_ISLAND }
-                ?: big0?.takeIf { it in remaining } ?: remaining.firstOrNull()
-            val sides = remaining.filter { it != big && slotMemory.home(it) != null }
+                ?: big0?.takeIf { it in remaining } ?: highestPriority(remaining)
+            val sides = remaining.filter { it != big }
             val small = big0?.takeIf { down != null && down != STACK_ISLAND && it in sides }
                 ?: down?.takeIf { it in sides }
                 ?: small0?.takeIf { it in sides } ?: sides.firstOrNull()
-            return Seats(big, small, sides.firstOrNull { it != small && sideOnLeft(it) != sideOnLeft(small) })
+            return Seats(big, small, sides.firstOrNull { it != small })
         }
         val at = keys.indexOf(big0).coerceAtLeast(0)
         // The hidden ones, next first: after the small island round the row.
@@ -5851,7 +5859,8 @@ private class MiniPlayerController(
         // Pulled and not let go, it was not out yet: its home is given up now, as a tap's is.
         if (running.toNative) setFlightOut(true) else takeInEarly(key)
         val home = if (flightHome == HOME_PILL) LAND_PILL else LAND_SMALL
-        val end = if (home == LAND_PILL) player?.restBoxOnScreen() else smallBoxFor(key)
+        val end = running.miniEndBox()
+            ?: if (home == LAND_PILL) player?.restBoxOnScreen() else smallBoxFor(key)
         // The flight's landing - the pill or the small island in its shape - is the switch's to
         // make again (moverFrame), once the seats have it.
         endPillLanding()
@@ -6141,9 +6150,13 @@ private class MiniPlayerController(
             releasedFromSmall -= key
             val oldSmall = smallKey
             if (selectedIsland == key) {
-                selectedIsland = oldSmall ?: islandKeys.firstOrNull { it != key }
+                val next = highestPriority(islandKeys.filter { it != key })
+                val source = next?.takeIf {
+                    slotMemory.displayedAt(it) in listOf(MiniPlayerSlotMemory.Slot.LEFT, MiniPlayerSlotMemory.Slot.RIGHT)
+                }?.let(::smallBoxFor)
+                selectedIsland = next
                 refresh()
-                startSwap(key, oldSmall)
+                startSwap(key, oldSmall, pillFrom = source)
             } else refresh()
         } else if (selectedIsland != key) {
             val oldBig = selectedIsland
@@ -6221,10 +6234,11 @@ private class MiniPlayerController(
         val landing = landingFor(key, row)
         // The flight's end, both ways: its home - the small island's circle, or the pill.
         val home = flightHome
+        val sideOrigin = if (useFlight && home == HOME_SMALL && toRow) smallBoxFor(key) else null
         val restBox: (() -> CoverMorphMotion.Box?)? = when {
             !useFlight -> null
             home == HOME_PILL -> { { player?.restBoxOnScreen() } }
-            else -> { { smallBoxFor(key) } }
+            else -> { { sideOrigin ?: smallBoxFor(key) } }
         }
         view.alpha = 1f
         if (!useFlight) endRow()
@@ -7541,7 +7555,8 @@ private class MiniPlayerController(
                 x.movers.values.joinToString(" ") { moverState(it) } }} " +
             "row=${islandKeys.size} sel=${selectedIsland?.takeLast(24)} " +
             "small=${smallKey?.takeLast(24)} smallShown=${smallIsland?.visibility == View.VISIBLE} " +
-            "extra=${extraKey?.takeLast(24)} extraShown=${extraIsland?.visibility == View.VISIBLE} "
+            "extra=${extraKey?.takeLast(24)} extraShown=${extraIsland?.visibility == View.VISIBLE} " +
+            "sideX=${smallRest[0].toInt()}/${extraRest[0].toInt()} "
         val v = player ?: return islands + "no pill"
         val xy = IntArray(2).also(v::getLocationOnScreen)
         val icons = "pillArt=[${v.artworkState()}] smallIcon=[${smallIsland?.iconState()}] " +
@@ -8022,6 +8037,16 @@ private class MiniPlayerController(
         if (noShortcutButtons()) slotMemory.reconcile(order,
             selectedIsland?.takeIf { it in islandKeys } ?: islandKeys.firstOrNull(),
             config.optBoolean(MiniPlayerConfig.SMALL_ON_LEFT))
+        if (noShortcutButtons()) {
+            val visibleKeys = islandKeys.filter { key ->
+                !(key == noteMorphKey && flightOut) && key != exchange?.expanded
+            }
+            val centre = selectedIsland?.takeIf { it in visibleKeys } ?: highestPriority(visibleKeys)
+            if (centre != null) selectedIsland = centre
+            slotMemory.layout(visibleKeys, centre, config.optBoolean(MiniPlayerConfig.SMALL_ON_LEFT),
+                exchange?.seats?.small ?: preferredSmall ?: smallKey,
+                exchange?.seats?.extra ?: extraKey)
+        }
         noteMorphKey?.let { key ->
             // The pill itself morphing: it keeps what it is showing. Under a flight it goes on
             // being the row's (the island beside the flight can take it).

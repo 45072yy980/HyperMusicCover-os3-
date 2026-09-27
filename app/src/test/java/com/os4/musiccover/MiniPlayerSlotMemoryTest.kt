@@ -1,10 +1,63 @@
 package com.os4.musiccover
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Assert.assertNull
 import org.junit.Test
 
 class MiniPlayerSlotMemoryTest {
+    @Test fun moreThanThreeCandidatesStillUseExactlyThreeDistinctVisibleSlots() {
+        val seats = MiniPlayerSlotMemory()
+        val all = listOf("media", "timer", "stopwatch", "notifications", "delivery")
+        seats.reconcile(all, "media", true)
+        for (expanded in all) {
+            val remaining = all - expanded
+            for (centre in remaining) {
+                seats.layout(remaining, centre, true)
+                assertNull(seats.displayedAt(expanded))
+                assertEquals(MiniPlayerSlotMemory.Slot.CENTRE, seats.displayedAt(centre))
+                val positions = remaining.mapNotNull(seats::displayedAt)
+                assertEquals(3, positions.size)
+                assertEquals(3, positions.toSet().size)
+            }
+        }
+    }
+    @Test fun expandedMediaDoesNotReserveVisibleCapacityAgainstThreeRemainingIslands() {
+        val seats = MiniPlayerSlotMemory()
+        val all = listOf("media", "timer", "stopwatch", "notifications")
+        seats.reconcile(all, "media", true)
+        seats.layout(all, "media", true, "timer", "notifications")
+        seats.layout(listOf("timer", "stopwatch", "notifications"), "timer", true)
+        assertNull(seats.displayedAt("media"))
+        assertEquals(MiniPlayerSlotMemory.Slot.CENTRE, seats.displayedAt("timer"))
+        assertEquals(setOf(MiniPlayerSlotMemory.Slot.LEFT, MiniPlayerSlotMemory.Slot.RIGHT),
+            setOf(seats.displayedAt("stopwatch"), seats.displayedAt("notifications")))
+        assertEquals(MiniPlayerSlotMemory.Slot.CENTRE, seats.home("media"))
+    }
+
+    @Test fun threeRemainingIslandsKeepTheExistingSideAndFillTheVacatedSide() {
+        val seats = MiniPlayerSlotMemory()
+        val all = listOf("media", "timer", "stopwatch", "notifications")
+        seats.reconcile(all, "media", true)
+        seats.layout(all, "media", true, "timer", "notifications")
+        val notificationSide = seats.displayedAt("notifications")
+        seats.layout(all - "media", "timer", false)
+        assertEquals(notificationSide, seats.displayedAt("notifications"))
+        seats.layout((all - "media").reversed(), "timer", true)
+        assertEquals(notificationSide, seats.displayedAt("notifications"))
+    }
+
+    @Test fun twoRemainingIslandsDoNotManufactureAnExpandedMediaEntry() {
+        val seats = MiniPlayerSlotMemory()
+        val all = listOf("media", "timer", "stopwatch")
+        seats.reconcile(all, "media", true)
+        seats.layout(all, "media", true)
+        seats.layout(all - "media", "timer", true)
+        assertNull(seats.displayedAt("media"))
+        assertEquals(MiniPlayerSlotMemory.Slot.CENTRE, seats.displayedAt("timer"))
+        assertTrue(seats.displayedAt("stopwatch") in
+            listOf(MiniPlayerSlotMemory.Slot.LEFT, MiniPlayerSlotMemory.Slot.RIGHT))
+    }
     @Test fun mostRecentlyCollapsedFocusTakesCentreWithoutMovingTheNotificationSide() {
         val seats = MiniPlayerSlotMemory()
         val keys = listOf("media", "notes", "focus")

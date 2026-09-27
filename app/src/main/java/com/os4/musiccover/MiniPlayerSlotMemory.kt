@@ -5,8 +5,34 @@ internal class MiniPlayerSlotMemory {
     enum class Slot { CENTRE, LEFT, RIGHT }
 
     private val homes = linkedMapOf<String, Slot>()
+    private val displayed = linkedMapOf<String, Slot>()
 
     fun home(key: String?): Slot? = homes[key]
+    fun displayedAt(key: String?): Slot? = displayed[key]
+
+    /** Return reservations never consume a slot in the currently collapsed row. */
+    fun layout(keys: Collection<String>, centre: String?, preferLeft: Boolean,
+               primary: String? = null, extra: String? = null) {
+        val available = keys.toSet()
+        val next = linkedMapOf<String, Slot>()
+        if (centre != null && centre in available) next[centre] = Slot.CENTRE
+        val candidates = (listOfNotNull(primary, extra) + displayed.keys + keys).distinct()
+            .filter { it != centre && it in available }.take(2)
+        val sides = if (preferLeft) listOf(Slot.LEFT, Slot.RIGHT) else listOf(Slot.RIGHT, Slot.LEFT)
+        // Keep the still-visible side islands stationary before filling a newly freed side.
+        for (key in candidates) {
+            val slot = displayed[key]
+            if (slot in sides && slot !in next.values) next[key] = slot!!
+        }
+        for (key in candidates) if (key !in next) {
+            val slot = homes[key]?.takeIf { it in sides && it !in next.values }
+                ?: sides.firstOrNull { it !in next.values } ?: continue
+            next[key] = slot
+            homes.putIfAbsent(key, slot)
+        }
+        displayed.clear()
+        displayed.putAll(next)
+    }
 
     fun reconcile(keys: Collection<String>, centre: String?, preferLeft: Boolean) {
         homes.keys.retainAll(keys.toSet())
@@ -33,5 +59,8 @@ internal class MiniPlayerSlotMemory {
         reconcile(visible, centre, preferLeft)
     }
 
-    fun clear() = homes.clear()
+    fun clear() {
+        homes.clear()
+        displayed.clear()
+    }
 }
