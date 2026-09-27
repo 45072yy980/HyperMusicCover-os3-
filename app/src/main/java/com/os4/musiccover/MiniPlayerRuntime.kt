@@ -4322,12 +4322,15 @@ private class MiniPlayerController(
             noteMorphKey = MUSIC_ISLAND
             flightFromSmall = false
             flightOut = false
-            flightHome = if (MUSIC_ISLAND in releasedFromSmall) HOME_SMALL else HOME_PILL
+            flightHome = HOME_PILL
+            if (noShortcutButtons()) slotMemory.page(MUSIC_ISLAND,
+                (islandOrder + MUSIC_ISLAND).distinct(), config.optBoolean(MiniPlayerConfig.SMALL_ON_LEFT))
             if (flightHome == HOME_PILL) {
                 // The pill is the music's again: whatever took it forms into the small place.
                 val oldBig = selectedIsland
                 val oldSmall = smallKey
                 selectedIsland = MUSIC_ISLAND
+                if (noShortcutButtons() && oldBig != MUSIC_ISLAND) preferredSmall = oldBig
                 refresh()
                 startSwap(oldBig, oldSmall, intoSmall = true)
             }
@@ -4435,10 +4438,13 @@ private class MiniPlayerController(
         val keys = islandKeys
         if (noShortcutButtons()) {
             val remaining = (keys + listOfNotNull(down)).distinct().filter { it != up }
-            val big = down?.takeIf { slotMemory.home(it) == MiniPlayerSlotMemory.Slot.CENTRE }
+            if (down != null && down != STACK_ISLAND) slotMemory.page(down,
+                (islandOrder + keys + down).distinct(), config.optBoolean(MiniPlayerConfig.SMALL_ON_LEFT))
+            val big = down?.takeIf { it != STACK_ISLAND }
                 ?: big0?.takeIf { it in remaining } ?: remaining.firstOrNull()
             val sides = remaining.filter { it != big && slotMemory.home(it) != null }
-            val small = down?.takeIf { it in sides }
+            val small = big0?.takeIf { down != null && down != STACK_ISLAND && it in sides }
+                ?: down?.takeIf { it in sides }
                 ?: small0?.takeIf { it in sides } ?: sides.firstOrNull()
             return Seats(big, small, sides.firstOrNull { it != small && sideOnLeft(it) != sideOnLeft(small) })
         }
@@ -4467,7 +4473,7 @@ private class MiniPlayerController(
         when {
             down == null -> {}
             b == null -> big = down
-            takesPlace(b, down, big = true) -> { big = down; intoSmall(b) }
+            down != STACK_ISLAND -> { big = down; intoSmall(b) }
             else -> intoSmall(down)
         }
         return Seats(big, small)
@@ -5992,13 +5998,11 @@ private class MiniPlayerController(
         // Back where it came out of: the pill it was in, or the small island. The music, out
         // as its card since before any pull, comes back into the pill - the super island's
         // expanded island folds into its big one.
-        val sideHome = noShortcutButtons() && slotMemory.home(key).let {
-            it == MiniPlayerSlotMemory.Slot.LEFT || it == MiniPlayerSlotMemory.Slot.RIGHT
-        }
-        flightHome = if (!rowEmpty && sideHome) HOME_SMALL
-        else if (MiniPlayerReturnPolicy.returnsToPill(rowEmpty, key == MUSIC_ISLAND,
-                selectedIsland == MUSIC_ISLAND, key in releasedFromPill, key in releasedFromSmall))
+        flightHome = if (MiniPlayerReturnPolicy.returnsToPill(rowEmpty, key == STACK_ISLAND))
             HOME_PILL else HOME_SMALL
+        if (flightHome == HOME_PILL && noShortcutButtons() && key != STACK_ISLAND) {
+            slotMemory.page(key, (islandOrder + key).distinct(), config.optBoolean(MiniPlayerConfig.SMALL_ON_LEFT))
+        }
         if (flightHome == HOME_SMALL) preferredSmall = key
         MiniPlayerRuntime.noteTouch("collapse home=${if (flightHome == HOME_PILL) "pill" else "small"} " +
             "empty=$rowEmpty key=${shortKey(key)} big=${selectedIsland?.let(::shortKey)}")
@@ -6023,6 +6027,7 @@ private class MiniPlayerController(
             val oldBig = selectedIsland
             val oldSmall = smallKey
             selectedIsland = key
+            if (noShortcutButtons() && oldBig != key) preferredSmall = oldBig
             refresh()
             startSwap(oldBig, oldSmall, intoSmall = true)
         }

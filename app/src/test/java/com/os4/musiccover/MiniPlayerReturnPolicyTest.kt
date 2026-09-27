@@ -5,18 +5,16 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class MiniPlayerReturnPolicyTest {
-    @Test fun notificationTemporarilyPromotedWhileMediaWasOutReturnsBesideMusic() {
-        assertFalse(MiniPlayerReturnPolicy.returnsToPill(false, false, true, true, false))
-        assertFalse(MiniPlayerReturnPolicy.returnsToPill(false, false, true, false, true))
+    @Test fun newestReturnedMediaOrFocusTakesTheCentre() {
+        assertTrue(MiniPlayerReturnPolicy.returnsToPill(false, false))
+        assertTrue(MiniPlayerReturnPolicy.returnsToPill(true, false))
     }
 
-    @Test fun notificationAloneStillReturnsAsThePill() {
-        assertTrue(MiniPlayerReturnPolicy.returnsToPill(true, false, false, false, true))
-        assertTrue(MiniPlayerReturnPolicy.returnsToPill(false, false, false, true, false))
+    @Test fun ordinaryNotificationStackDoesNotDisplaceTheCentralIsland() {
+        assertFalse(MiniPlayerReturnPolicy.returnsToPill(false, true))
     }
 
-    @Test fun mediaPreservesItsOriginalSmallOrBigSeat() {
-        assertTrue(MiniPlayerReturnPolicy.returnsToPill(false, true, false, false, false))
-        assertFalse(MiniPlayerReturnPolicy.returnsToPill(false, true, false, false, true))
+    @Test fun notificationStackAloneCanStillBeShown() {
+        assertTrue(MiniPlayerReturnPolicy.returnsToPill(true, true))
     }
 }

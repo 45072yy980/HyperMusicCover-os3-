@@ -1,12 +1,7 @@
 package com.os4.musiccover
 
 internal object MiniPlayerReturnPolicy {
-    fun returnsToPill(rowEmpty: Boolean, isMusic: Boolean, musicInPill: Boolean,
-                      fromPill: Boolean, fromSmall: Boolean): Boolean = when {
-        rowEmpty -> true
-        // A notification temporarily filled the pill while the media card was expanded.
-        // The returned music keeps that seat; the notification resumes the small button.
-        !isMusic && musicInPill -> false
-        else -> fromPill || isMusic && !fromSmall
-    }
+    /** The latest returned media/focus island takes the centre; the notification stack stays beside it. */
+    fun returnsToPill(rowEmpty: Boolean, isNotificationStack: Boolean): Boolean =
+        rowEmpty || !isNotificationStack
 }

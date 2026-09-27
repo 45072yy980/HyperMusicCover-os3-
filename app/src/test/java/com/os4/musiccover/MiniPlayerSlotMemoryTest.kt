@@ -5,6 +5,17 @@ import org.junit.Assert.assertNull
 import org.junit.Test
 
 class MiniPlayerSlotMemoryTest {
+    @Test fun mostRecentlyCollapsedFocusTakesCentreWithoutMovingTheNotificationSide() {
+        val seats = MiniPlayerSlotMemory()
+        val keys = listOf("media", "notes", "focus")
+        seats.reconcile(keys, "media", true)
+        seats.page("focus", keys, true)
+        assertEquals(MiniPlayerSlotMemory.Slot.CENTRE, seats.home("focus"))
+        assertEquals(MiniPlayerSlotMemory.Slot.LEFT, seats.home("notes"))
+        seats.page("media", keys, true)
+        assertEquals(MiniPlayerSlotMemory.Slot.CENTRE, seats.home("media"))
+        assertEquals(MiniPlayerSlotMemory.Slot.LEFT, seats.home("notes"))
+    }
     @Test fun rolePromotionAndPipelineReorderingDoNotChangeSideHomes() {
         val seats = MiniPlayerSlotMemory()
         seats.reconcile(listOf("media", "notes", "focus"), "media", true)
