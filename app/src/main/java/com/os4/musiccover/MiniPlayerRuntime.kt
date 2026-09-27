@@ -1900,10 +1900,50 @@ private class MiniPlayerController(
     private val extraFollow = Matrix()
     private val extraFollowValues = FloatArray(9)
     private val lastExtraFollow = FloatArray(9)
-    private var primarySmallLeft: Boolean? = null
+    private val slotMemory = MiniPlayerSlotMemory()
+    private var extraLandingBox: CoverMorphMotion.Box? = null
 
     private fun noShortcutButtons(): Boolean = usableButton(left) == null && usableButton(right) == null
-    private fun smallOnLeft(): Boolean = primarySmallLeft ?: config.optBoolean(MiniPlayerConfig.SMALL_ON_LEFT)
+    private fun sideOnLeft(key: String?): Boolean = when (slotMemory.home(key)) {
+        MiniPlayerSlotMemory.Slot.LEFT -> true
+        MiniPlayerSlotMemory.Slot.RIGHT -> false
+        else -> config.optBoolean(MiniPlayerConfig.SMALL_ON_LEFT)
+    }
+    private fun smallOnLeft(): Boolean = sideOnLeft(smallKey)
+
+    /** Logical layout target, independent of the frame currently drawn by a landing morph. */
+    private fun pillSlotBox(): CoverMorphMotion.Box? {
+        val hasSmall = smallKey != null
+        val rest = pillRest(hasSmall) ?: return null
+        val groupWidth = rest.width + if (hasSmall && rest.separateSmallX == null)
+            dp(MiniPlayerGeometry.DISC_GAP_DP) + rest.height else 0
+        val xy = IntArray(2).also(host::getLocationOnScreen)
+        return CoverMorphMotion.Box(xy[0] + rest.centerX - groupWidth / 2f,
+            xy[1] + rest.centerY - rest.height / 2f, rest.width.toFloat(), rest.height.toFloat())
+    }
+
+    private fun smallBoxFor(key: String): CoverMorphMotion.Box {
+        if (!noShortcutButtons()) return smallBoxOnScreen()
+        val d = discDiameter().toFloat()
+        val xy = IntArray(2).also(host::getLocationOnScreen)
+        val cx = vacantSlotX(sideOnLeft(key), d.toInt())
+        val cy = pillRest(smallKey != null)?.centerY ?: fallbackCenterY(d.toInt())
+        return CoverMorphMotion.Box(xy[0] + cx - d / 2f, xy[1] + cy - d / 2f, d, d)
+    }
+
+    /** Changing controller roles must not move either physical side view. */
+    private fun bindPrimarySide(key: String?) {
+        if (key == null || !noShortcutButtons() || smallIsland == null || extraIsland == null) return
+        val wantedLeft = sideOnLeft(key)
+        if (smallRest[0] <= 0f || (smallRest[0] < host.width / 2f) == wantedLeft) return
+        val view = smallIsland; smallIsland = extraIsland; extraIsland = view
+        val icon = smallIconKey; smallIconKey = extraIconKey; extraIconKey = icon
+        val oldKey = smallKey; smallKey = extraKey; extraKey = oldKey
+        val x = smallRest[0]; smallRest[0] = extraRest[0]; extraRest[0] = x
+        lastSmallFollow.fill(0f); lastExtraFollow.fill(0f)
+        smallIsland?.setAnimationMatrix(null); extraIsland?.setAnimationMatrix(null)
+        smallWide = false
+    }
 
     /** Native slots retain their layout when a shortcut is hidden. */
     private fun vacantSlotX(onLeft: Boolean, height: Int): Float {
@@ -1921,11 +1961,13 @@ private class MiniPlayerController(
     private fun updateExtraIsland(music: MediaController?, notes: List<LockIslands.Note>) {
         val keys = islandKeys.filter { it != selectedIsland && it != smallKey && it != noteMorphKey &&
             exchange?.has(it) != true }
-        val key = keys.firstOrNull().takeIf { noShortcutButtons() && smallKey != null }
+        val seated = exchange?.seats?.extra
+        val eligible = keys.filter { slotMemory.home(it) != null && sideOnLeft(it) != smallOnLeft() }
+        val key = (seated ?: extraKey?.takeIf { it in eligible } ?: eligible.firstOrNull())
+            .takeIf { noShortcutButtons() && smallKey != null }
         extraKey = key
         if (key == null) {
             extraIsland?.visibility = View.GONE
-            if (morph == null && exchange == null && swap == null && noteDrag == null) primarySmallLeft = null
             return
         }
         val d = discDiameter()
@@ -1934,9 +1976,9 @@ private class MiniPlayerController(
             extraIsland = it
             host.addView(it, lockScreenLayerIndex(), ViewGroup.LayoutParams(frame, frame))
         }
-        resizeSmallIsland(view, frame, frame)
+        if (extraLandingBox == null) resizeSmallIsland(view, frame, frame)
         view.dress(MiniPlayerRuntime.materialGeneration) { MiniPlayerRuntime.material(it, loader) }
-        view.setShape(d, d)
+        if (extraLandingBox == null) view.setShape(d, d)
         val note = if (key == MUSIC_ISLAND) null else notes.firstOrNull { it.key == key } ?: LockIslands.noteFor(key)
         view.setIconBare(note != null)
         val moving = focusLottie(view, note?.anim)
@@ -1955,8 +1997,22 @@ private class MiniPlayerController(
     private fun placeExtraIsland(follow: Matrix?, fade: Float) {
         val v = extraIsland?.takeIf { it.visibility == View.VISIBLE } ?: return
         val d = discDiameter()
-        extraRest[0] = vacantSlotX(!smallOnLeft(), d)
+        extraRest[0] = vacantSlotX(sideOnLeft(extraKey), d)
         extraRest[1] = smallRest[1]
+        extraLandingBox?.let { box ->
+            val frame = discFrame(d)
+            resizeSmallIsland(v, maxOf(frame, (box.w + dp(16f)).roundToInt()),
+                maxOf(frame, (box.h + dp(16f)).roundToInt()))
+            val xy = IntArray(2).also(host::getLocationOnScreen)
+            setIfChanged(v, box.cx() - xy[0] - v.width / 2f - v.left,
+                box.cy() - xy[1] - v.height / 2f - v.top, 1f, 1f, 1f)
+            v.iconAtStart = true
+            v.setShape(box.w.roundToInt().coerceAtLeast(1), box.h.roundToInt().coerceAtLeast(1))
+            v.setAnimationMatrix(null)
+            lastExtraFollow.fill(0f)
+            v.transitionAlpha = fade
+            return
+        }
         setIfChanged(v, extraRest[0] - v.width / 2f - v.left,
             extraRest[1] - v.height / 2f - v.top, 1f, 1f, 1f)
         if (follow != null) extraFollow.set(follow) else extraFollow.reset()
@@ -1982,6 +2038,7 @@ private class MiniPlayerController(
         noteMorphKey?.takeIf { morph != null && flight != null }?.let { adoptNote(it) ?: return false }
         endSwap()
         clearSmallNudge()
+        exchange?.movers?.values?.filter { it.place == LAND_SMALL }?.forEach(::unland)
         val oldSmall = smallIsland
         val oldKey = smallKey
         val oldIcon = smallIconKey
@@ -1991,7 +2048,6 @@ private class MiniPlayerController(
         extraIsland = oldSmall
         extraKey = oldKey
         extraIconKey = oldIcon
-        primarySmallLeft = extraRest[0] < host.width / 2f
         smallRest[0] = extraRest[0]
         smallRest[1] = extraRest[1]
         smallWide = false
@@ -2001,8 +2057,8 @@ private class MiniPlayerController(
         oldSmall?.setAnimationMatrix(null)
         preferredSmall = key
         exchange?.let { state ->
-            state.seats = Seats(selectedIsland, key)
-            for (m in state.movers.values) if (m.place == LAND_SMALL && m.key != key) aimEnd(m, LAND_HIDDEN)
+            state.seats = Seats(selectedIsland, key, oldKey)
+            for (m in state.movers.values) if (m.place == LAND_SMALL && m.key != key) aimEnd(m, LAND_EXTRA)
         }
         refresh()
         position()
@@ -2112,12 +2168,21 @@ private class MiniPlayerController(
             aloneFirst = null
             selectedIsland = keys[at + if (next) 1 else -1]
         }
+        val sideSource = if (!kept && noShortcutButtons()) selectedIsland?.takeIf {
+            slotMemory.home(it) == MiniPlayerSlotMemory.Slot.LEFT ||
+                slotMemory.home(it) == MiniPlayerSlotMemory.Slot.RIGHT
+        }?.let(::smallBoxFor) else null
+        if (noShortcutButtons()) selectedIsland?.let {
+            slotMemory.page(it, islandOrder, config.optBoolean(MiniPlayerConfig.SMALL_ON_LEFT))
+            if (!kept && oldBig != it) preferredSmall = oldBig
+        }
         refresh()
         // One goes into hiding and another comes out of it, as the super island's row does
         // (SwipeEventCoordinator) - with two islands too, now that either can be alone.
-        startSwap(oldBig, oldSmall, if (next) SWAP_NEXT else SWAP_PREV,
-            pillFrom = oldRest, pillStays = kept, pillKept = kept, smallFromSide = smallSide,
-            flingPx = flingPx)
+        val tradesSides = noShortcutButtons() && !kept && oldBig != null && smallKey == oldBig
+        startSwap(oldBig, oldSmall, if (tradesSides) SWAP_PAIR else if (next) SWAP_NEXT else SWAP_PREV,
+            intoSmall = tradesSides, pillFrom = sideSource ?: oldRest,
+            pillStays = kept, pillKept = kept, smallFromSide = smallSide, flingPx = flingPx)
     }
 
     /** The pill's rest frame as islandDrag has it drawn: scaled about its centre, and nudged. */
@@ -2198,10 +2263,12 @@ private class MiniPlayerController(
             keys.size < 2 -> null
             preferred != null -> preferred
             // The first swiped alone, or the last with none after it: the pill alone (canSwitchIsland).
-            noShortcutButtons() -> keys.firstOrNull { it != selectedIsland }
+            noShortcutButtons() -> smallKey?.takeIf { it in keys && it != selectedIsland }
+                ?: keys.firstOrNull { it != selectedIsland && slotMemory.home(it) != null }
             firstAlone(keys, selectedIsland) -> null
             else -> keys.getOrNull(keys.indexOf(selectedIsland).coerceAtLeast(0) + 1)
         }
+        bindPrimarySide(key)
         val previous = smallKey
         smallKey = key
         updateExtraIsland(music, notes)
@@ -2657,10 +2724,11 @@ private class MiniPlayerController(
         val fromGhost = fromSmall && ghostNow != null && selectedIsland == ghosting?.ghostKey
         val from = when {
             pillStays -> pillFrom ?: rest
+            pillFrom != null -> pillFrom
             // Out of hiding, the super island's HiddenToBigIsland: out of the middle.
             kind == SWAP_PREV -> cutoutBox(rest)
             fromGhost -> ghostNow!!
-            fromSmall -> oldSmallBox
+            fromSmall -> if (noShortcutButtons()) smallBoxFor(oldSmall!!) else oldSmallBox
             else -> CoverMorphMotion.Box(rest.x, rest.y, d, rest.h)
         }
         val fromVel = when {
@@ -4264,7 +4332,8 @@ private class MiniPlayerController(
                 recycleSmallView(mover.view)
             }
             x.seats = x.seats?.let { Seats(it.big?.takeUnless { k -> k == MUSIC_ISLAND },
-                it.small?.takeUnless { k -> k == MUSIC_ISLAND }) }
+                it.small?.takeUnless { k -> k == MUSIC_ISLAND },
+                it.extra?.takeUnless { k -> k == MUSIC_ISLAND }) }
             if (x.pending == null && x.movers.isEmpty()) exchange = null
         }
         if (noteMorphKey == MUSIC_ISLAND || morph != null && noteMorphKey == null) morph?.cancel()
@@ -4317,7 +4386,7 @@ private class MiniPlayerController(
     }
 
     /** Who is in the big place and the small one once an expanded switch is over. */
-    private class Seats(val big: String?, val small: String?)
+    private class Seats(val big: String?, val small: String?, val extra: String? = null)
 
     /**
      * The super island's expanded switch, as ClickEventCoordinator and its state handlers run it
@@ -4336,6 +4405,15 @@ private class MiniPlayerController(
         val big0 = selectedIsland
         val small0 = smallKey
         val keys = islandKeys
+        if (noShortcutButtons()) {
+            val remaining = (keys + listOfNotNull(down)).distinct().filter { it != up }
+            val big = down?.takeIf { slotMemory.home(it) == MiniPlayerSlotMemory.Slot.CENTRE }
+                ?: big0?.takeIf { it in remaining } ?: remaining.firstOrNull()
+            val sides = remaining.filter { it != big && slotMemory.home(it) != null }
+            val small = down?.takeIf { it in sides }
+                ?: small0?.takeIf { it in sides } ?: sides.firstOrNull()
+            return Seats(big, small, sides.firstOrNull { it != small && sideOnLeft(it) != sideOnLeft(small) })
+        }
         val at = keys.indexOf(big0).coerceAtLeast(0)
         // The hidden ones, next first: after the small island round the row.
         val hidden = (keys.drop(at) + keys.take(at))
@@ -5064,7 +5142,7 @@ private class MiniPlayerController(
         pill.clearNudge()
         val x = Switch()
         x.expanded = down
-        x.seats = Seats(selectedIsland, smallKey)
+        x.seats = Seats(selectedIsland, smallKey, extraKey)
         exchange = x
         requestUp(x, up, inPill, toCover && up == MUSIC_ISLAND)
         return true
@@ -5148,6 +5226,7 @@ private class MiniPlayerController(
     private fun placeOf(key: String, seats: Seats): Int = when (key) {
         seats.big -> LAND_PILL
         seats.small -> LAND_SMALL
+        seats.extra -> LAND_EXTRA
         else -> LAND_HIDDEN
     }
 
@@ -5167,8 +5246,27 @@ private class MiniPlayerController(
             m.round.step(dt)
         }
         m.endLast = now
-        val to = m.endTo ?: return m.endFrom
-        val from = m.endFrom ?: return to
+        var to = m.endTo ?: return m.endFrom
+        var from = m.endFrom ?: to
+        if (m.headedHome) {
+            val target = when (m.place) {
+                LAND_PILL -> pillSlotBox()
+                LAND_SMALL, LAND_EXTRA -> smallBoxFor(m.key)
+                else -> null
+            }
+            if (target != null && (kotlin.math.abs(target.x - to.x) > 0.5f ||
+                kotlin.math.abs(target.y - to.y) > 0.5f || kotlin.math.abs(target.w - to.w) > 0.5f ||
+                kotlin.math.abs(target.h - to.h) > 0.5f)) {
+                // Reseating can change the long island's available width. Continue from
+                // the current endpoint instead of landing at an obsolete frame then jumping.
+                from = lerpBox(from, to, m.endT.value)
+                to = target
+                m.endFrom = from
+                m.endTo = to
+                m.endT.value = 0f
+                m.endT.velocity = 0f
+            }
+        }
         return lerpBox(from, to, m.endT.value)
     }
 
@@ -5179,12 +5277,13 @@ private class MiniPlayerController(
     private fun aimEnd(m: Mover, place: Int, snap: Boolean = false, at: CoverMorphMotion.Box? = null) {
         val current = if (snap) null else moverEnd(m)
         m.place = place
-        m.endTo = at ?: placeBoxNow(place)
+        m.endTo = at ?: if (noShortcutButtons() && (place == LAND_SMALL || place == LAND_EXTRA))
+            smallBoxFor(m.key) else placeBoxNow(place)
         m.endFrom = current
         m.endT.value = if (current == null) 1f else 0f
         m.endT.velocity = 0f
         m.endT.target = 1f
-        val round = if (place == LAND_SMALL || place == LAND_HIDDEN) 1f else 0f
+        val round = if (place != LAND_PILL) 1f else 0f
         if (snap) {
             m.round.value = round
             m.round.velocity = 0f
@@ -5218,7 +5317,15 @@ private class MiniPlayerController(
         if (!m.landed) return
         m.landed = false
         if (m.place == LAND_PILL) endPillLanding()
-        else if (landingBox != null) {
+        else if (m.place == LAND_EXTRA) {
+            extraLandingBox = null
+            extraIsland?.let { v ->
+                v.iconAtStart = false
+                val d = discDiameter()
+                resizeSmallIsland(v, discFrame(d), discFrame(d))
+                v.setShape(d, d)
+            }
+        } else if (landingBox != null) {
             landingBox = null
             smallIsland?.iconAtStart = false
             restoreSmallIslandShape()
@@ -5440,6 +5547,7 @@ private class MiniPlayerController(
         val holder = when (m.place) {
             LAND_PILL -> x.seats?.big
             LAND_SMALL -> x.seats?.small
+            LAND_EXTRA -> x.seats?.extra
             else -> null
         }
         // Only once its end has got to the place: the place's island is at rest there.
@@ -5453,7 +5561,13 @@ private class MiniPlayerController(
             orderMovers(x)
             followShortcuts()
         }
-        if (m.landed) morph.containerBox()?.let { if (m.place == LAND_PILL) landOnPill(it) else landOn(it) }
+        if (m.landed) morph.containerBox()?.let {
+            when (m.place) {
+                LAND_PILL -> landOnPill(it)
+                LAND_EXTRA -> { extraLandingBox = it; placeExtraIsland(null, 1f) }
+                else -> landOn(it)
+            }
+        }
         val a = if (m.landed || hiding) MiniCardMorph.smooth(0f, FLIGHT_HANDOFF, p) else 1f
         if (kotlin.math.abs(m.view.alpha - a) > 0.002f) m.view.alpha = a
         traced("MC xTrace") {
@@ -5652,7 +5766,7 @@ private class MiniPlayerController(
         // Pulled and not let go, it was not out yet: its home is given up now, as a tap's is.
         if (running.toNative) setFlightOut(true) else takeInEarly(key)
         val home = if (flightHome == HOME_PILL) LAND_PILL else LAND_SMALL
-        val end = if (home == LAND_PILL) player?.restBoxOnScreen() else smallBoxOnScreen()
+        val end = if (home == LAND_PILL) player?.restBoxOnScreen() else smallBoxFor(key)
         // The flight's landing - the pill or the small island in its shape - is the switch's to
         // make again (moverFrame), once the seats have it.
         endPillLanding()
@@ -5672,7 +5786,7 @@ private class MiniPlayerController(
         running.handTo(moverListener(m), { moverEnd(m) }, { moverDy(x, m) }, { m.round.value })
         x.movers[key] = m
         x.expanded = key.takeIf { running.toNative }
-        x.seats = Seats(selectedIsland, smallKey)
+        x.seats = Seats(selectedIsland, smallKey, extraKey)
         if (!running.toNative && home == LAND_PILL) fitToPill(view, smallKey != null)
         // Nothing is the flight's any more.
         morph = null
@@ -5850,7 +5964,11 @@ private class MiniPlayerController(
         // Back where it came out of: the pill it was in, or the small island. The music, out
         // as its card since before any pull, comes back into the pill - the super island's
         // expanded island folds into its big one.
-        flightHome = if (MiniPlayerReturnPolicy.returnsToPill(rowEmpty, key == MUSIC_ISLAND,
+        val sideHome = noShortcutButtons() && slotMemory.home(key).let {
+            it == MiniPlayerSlotMemory.Slot.LEFT || it == MiniPlayerSlotMemory.Slot.RIGHT
+        }
+        flightHome = if (!rowEmpty && sideHome) HOME_SMALL
+        else if (MiniPlayerReturnPolicy.returnsToPill(rowEmpty, key == MUSIC_ISLAND,
                 selectedIsland == MUSIC_ISLAND, key in releasedFromPill, key in releasedFromSmall))
             HOME_PILL else HOME_SMALL
         if (flightHome == HOME_SMALL) preferredSmall = key
@@ -6021,7 +6139,7 @@ private class MiniPlayerController(
         val restBox: (() -> CoverMorphMotion.Box?)? = when {
             !useFlight -> null
             home == HOME_PILL -> { { player?.restBoxOnScreen() } }
-            else -> { { smallBoxOnScreen() } }
+            else -> { { smallBoxFor(key) } }
         }
         view.alpha = 1f
         if (!useFlight) endRow()
@@ -7727,8 +7845,11 @@ private class MiniPlayerController(
     private fun refreshUnsafe() { android.os.Trace.beginSection("MC refresh"); try {
         if (configStale) {
             configStale = false
-            config = JSONObject(MiniPlayerConfig.fromPreferences(prefs))
-            primarySmallLeft = null
+            val nextConfig = JSONObject(MiniPlayerConfig.fromPreferences(prefs))
+            if (config.optBoolean(MiniPlayerConfig.SMALL_ON_LEFT) != nextConfig.optBoolean(MiniPlayerConfig.SMALL_ON_LEFT)) {
+                slotMemory.clear()
+            }
+            config = nextConfig
             configuredHeightDp = MiniPlayerConfig.visibleHeightDp(config.toString())
         }
         val config = this.config
@@ -7800,6 +7921,9 @@ private class MiniPlayerController(
             }
         }
         islandOrder = order
+        if (noShortcutButtons()) slotMemory.reconcile(order,
+            selectedIsland?.takeIf { it in islandKeys } ?: islandKeys.firstOrNull(),
+            config.optBoolean(MiniPlayerConfig.SMALL_ON_LEFT))
         noteMorphKey?.let { key ->
             // The pill itself morphing: it keeps what it is showing. Under a flight it goes on
             // being the row's (the island beside the flight can take it).
@@ -8645,7 +8769,7 @@ private class MiniPlayerController(
             (groupShowsSmall() ?: true),
             animate = shown && !snapSmallOnce && group == null && exchange == null)
         extraIsland?.let {
-            val visibility = if (shown && extraKey != null && noShortcutButtons()) View.VISIBLE else View.GONE
+            val visibility = if (shown && extraKey != null && noShortcutButtons() && !switchHolds(extraKey)) View.VISIBLE else View.GONE
             if (it.visibility != visibility) it.visibility = visibility
         }
         snapSmallOnce = false
@@ -8756,14 +8880,14 @@ private class MiniPlayerController(
         val margin = dp(12f)
         val gap = dp(MiniPlayerGeometry.DISC_GAP_DP)
         val adaptive = config.getBoolean(MiniPlayerConfig.ADAPTIVE_WIDTH) && (l == null || r == null)
-        if (leftAnchor == null && rightAnchor == null && small) {
+        if (leftAnchor == null && rightAnchor == null && (small || adaptive)) {
             val lx = vacantSlotX(true, height)
             val rx = vacantSlotX(false, height)
-            val center = host.width / 2f
-            val room = (2f * minOf(center - lx - height / 2f - gap,
-                rx - height / 2f - gap - center)).toInt().coerceAtLeast(1)
-            val width = minOf(if (adaptive) dp(360f) else requestedWidth, room)
-            return PillRest(width, height, center, centerY, if (smallOnLeft()) lx else rx)
+            val occupied = listOfNotNull(smallKey.takeIf { small }, extraKey)
+            val room = MiniPlayerGeometry.sideSlotRoom(host.width, lx, rx, height, gap,
+                occupied.any(::sideOnLeft), occupied.any { !sideOnLeft(it) }, adaptive)
+            return PillRest(minOf(if (adaptive) dp(360f) else requestedWidth, room.width),
+                height, room.centerX, centerY, if (small) (if (smallOnLeft()) lx else rx) else null)
         }
         if (adaptive && (leftAnchor != null) != (rightAnchor != null)) {
             val onLeft = leftAnchor != null
@@ -8954,6 +9078,7 @@ private const val GHOST_HANDOFF = 0.85f
 private const val LAND_PILL = 0
 private const val LAND_SMALL = 1
 private const val LAND_HIDDEN = 2
+private const val LAND_EXTRA = 3
 
 private const val SWAP_PAIR = 0
 private const val SWAP_NEXT = 1

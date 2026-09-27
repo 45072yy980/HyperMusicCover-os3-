@@ -13,6 +13,17 @@ internal object MiniPlayerGeometry {
 
     data class RowRoom(val centerX: Float, val width: Int)
 
+    /** Only occupied side slots reserve circle space; empty slots contribute their full width. */
+    fun sideSlotRoom(hostWidth: Int, leftCenter: Float, rightCenter: Float, size: Int, gap: Int,
+                     leftOccupied: Boolean, rightOccupied: Boolean, adaptive: Boolean): RowRoom {
+        val radius = size / 2f
+        val left = (if (leftOccupied) leftCenter + radius + gap else leftCenter - radius).coerceAtLeast(0f)
+        val right = (if (rightOccupied) rightCenter - radius - gap else rightCenter + radius)
+            .coerceAtMost(hostWidth.toFloat())
+        val center = if (adaptive && leftOccupied != rightOccupied) (left + right) / 2f else hostWidth / 2f
+        return RowRoom(center, (2f * min(center - left, right - center)).toInt().coerceAtLeast(1))
+    }
+
     data class PinnedIslandLayout(val pillCenterX: Float, val pillWidth: Int, val smallCenterX: Float)
 
     /** Keep the big island centred; the small one occupies the absent shortcut's own slot. */
