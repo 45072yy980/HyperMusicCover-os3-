@@ -1979,7 +1979,8 @@ private class MiniPlayerController(
         val x = smallRest[0]; smallRest[0] = extraRest[0]; extraRest[0] = x
         lastSmallFollow.fill(0f); lastExtraFollow.fill(0f)
         smallIsland?.setAnimationMatrix(null); extraIsland?.setAnimationMatrix(null)
-        smallWide = false
+        smallWide = swap?.let { s -> s.smallMode != SMALL_KEPT &&
+            MiniPlayerSideContinuity.owns(s.smallTarget, s.smallTargetKey, smallIsland, smallKey) } == true
         resetSmallAppearanceOwner()
     }
 
@@ -2017,9 +2018,9 @@ private class MiniPlayerController(
             extraIsland = it
             host.addView(it, lockScreenLayerIndex(), ViewGroup.LayoutParams(frame, frame))
         }
-        if (extraLandingBox == null) resizeSmallIsland(view, frame, frame)
+        if (extraLandingBox == null && !swapOwnsExtra()) resizeSmallIsland(view, frame, frame)
         view.dress(MiniPlayerRuntime.materialGeneration) { MiniPlayerRuntime.material(it, loader) }
-        if (extraLandingBox == null) view.setShape(d, d)
+        if (extraLandingBox == null && !swapOwnsExtra()) view.setShape(d, d)
         val note = if (key == MUSIC_ISLAND) null else notes.firstOrNull { it.key == key } ?: LockIslands.noteFor(key)
         view.setIconBare(note != null)
         val moving = focusLottie(view, note?.anim)
@@ -2035,6 +2036,11 @@ private class MiniPlayerController(
         }
         contentOwnership.bind(view, key)
     }
+
+    private fun swapOwnsExtra(): Boolean = swap?.let { s ->
+        s.smallMode != SMALL_KEPT &&
+            MiniPlayerSideContinuity.owns(s.smallTarget, s.smallTargetKey, extraIsland, extraKey)
+    } == true
 
     private fun placeExtraIsland(follow: Matrix?, fade: Float) {
         val v = extraIsland?.takeIf { it.visibility == View.VISIBLE } ?: return
@@ -2055,8 +2061,11 @@ private class MiniPlayerController(
             v.transitionAlpha = fade
             return
         }
-        setIfChanged(v, extraRest[0] - v.width / 2f - v.left,
-            extraRest[1] - v.height / 2f - v.top, 1f, 1f, 1f)
+        val s = swap?.takeIf { swapOwnsExtra() }
+        val dx = if (s?.smallMode == SMALL_EMERGE)
+            lerp(emergeDx(extraRest[0]), 0f, s.small.value) else 0f
+        setIfChanged(v, extraRest[0] + dx - v.width / 2f - v.left,
+            extraRest[1] - v.height / 2f - v.top, 1f, 1f, if (s != null) v.alpha else 1f)
         if (follow != null) extraFollow.set(follow) else extraFollow.reset()
         extraFollow.preTranslate(v.left.toFloat(), v.top.toFloat())
         extraFollow.postTranslate(-v.left.toFloat(), -v.top.toFloat())
@@ -2078,7 +2087,7 @@ private class MiniPlayerController(
         val radius = discDiameter() / 2f + dp(6f)
         if (kotlin.math.hypot(x - xy[0] - extraRest[0], y - xy[1] - extraRest[1]) > radius) return false
         noteMorphKey?.takeIf { morph != null && flight != null }?.let { adoptNote(it) ?: return false }
-        endSwap()
+        // Routing a DOWN changes side roles, not the running animation or its owner.
         clearSmallNudge()
         exchange?.movers?.values?.filter { it.place == LAND_SMALL }?.forEach(::unland)
         val oldSmall = smallIsland
@@ -2091,9 +2100,12 @@ private class MiniPlayerController(
         extraKey = oldKey
         extraIconKey = oldIcon
         resetSmallAppearanceOwner()
+        val oldRest = smallRest.copyOf()
         smallRest[0] = extraRest[0]
         smallRest[1] = extraRest[1]
-        smallWide = false
+        oldRest.copyInto(extraRest)
+        smallWide = swap?.let { s -> s.smallMode != SMALL_KEPT &&
+            MiniPlayerSideContinuity.owns(s.smallTarget, s.smallTargetKey, smallIsland, smallKey) } == true
         lastSmallFollow.fill(0f)
         lastExtraFollow.fill(0f)
         extra.setAnimationMatrix(null)
@@ -2932,7 +2944,9 @@ private class MiniPlayerController(
         applyGhost(s)
         applyGhostDisc(s)
         if (s.smallMode == SMALL_KEPT) return
-        if (!MiniPlayerSideContinuity.owns(s.smallTarget, s.smallTargetKey, smallIsland, smallKey)) return
+        val primary = MiniPlayerSideContinuity.owns(s.smallTarget, s.smallTargetKey, smallIsland, smallKey)
+        if (!primary && !swapOwnsExtra()) return
+        val rest = if (primary) smallRest else extraRest
         val small = s.smallTarget?.takeIf { it.visibility == View.VISIBLE } ?: return
         val d = discDiameter().toFloat()
         val q = s.small.value
@@ -2944,7 +2958,7 @@ private class MiniPlayerController(
             if (box != null) {
                 val xy = IntArray(2).also(host::getLocationOnScreen)
                 small.setShape(box.w.roundToInt().coerceAtLeast(1), box.h.roundToInt().coerceAtLeast(1),
-                    (box.cx() - xy[0] - smallRest[0]).roundToInt())
+                    (box.cx() - xy[0] - rest[0]).roundToInt())
             } else small.setShape(d.roundToInt(), d.roundToInt(), 0)
             small.setIconAlpha(1f)
             small.alpha = MiniCardMorph.smooth(GHOST_HANDOFF, 1f, q)
@@ -2956,7 +2970,7 @@ private class MiniPlayerController(
             small.setShape(side, side, 0)
             small.setIconAlpha(MiniCardMorph.smooth(0.15f, 0.7f, q))
             small.alpha = MiniCardMorph.smooth(0f, 0.12f, q)
-            smallDx = lerp(emergeDx(), 0f, q)
+            if (primary) smallDx = lerp(emergeDx(), 0f, q)
             followShortcuts()
             return
         }
@@ -2966,8 +2980,8 @@ private class MiniPlayerController(
             val xy = IntArray(2).also(host::getLocationOnScreen)
             val restCx = s.pillTo.cx() - xy[0]
             val w = lerp(s.pillTo.w, d, p).coerceAtLeast(d * 0.5f)
-            val cx = lerp(restCx, smallRest[0], p)
-            small.setShape(w.roundToInt(), d.roundToInt(), (cx - smallRest[0]).roundToInt())
+            val cx = lerp(restCx, rest[0], p)
+            small.setShape(w.roundToInt(), d.roundToInt(), (cx - rest[0]).roundToInt())
             small.setIconAlpha(MiniCardMorph.smooth(0.55f, 1f, p))
             if (small.alpha != 1f) small.alpha = 1f
         } else {
@@ -2986,6 +3000,7 @@ private class MiniPlayerController(
      */
     private fun endSwap(keepGhosts: Boolean = false) {
         val s = swap ?: return
+        val ownedExtra = swapOwnsExtra()
         swap = null
         Choreographer.getInstance().removeFrameCallback(swapFrame)
         player?.let {
@@ -3005,6 +3020,13 @@ private class MiniPlayerController(
         // A small island the switch left alone may be mid-grow on its own spring: not cut short.
         if (s.smallMode != SMALL_KEPT &&
             MiniPlayerSideContinuity.owns(s.smallTarget, s.smallTargetKey, smallIsland, smallKey)) restoreSmallIslandShape()
+        if (ownedExtra) extraIsland?.let { v ->
+            val d = discDiameter()
+            resizeSmallIsland(v, discFrame(d), discFrame(d))
+            v.setShape(d, d, 0)
+            v.setIconAlpha(1f)
+            v.alpha = 1f
+        }
         schedulePosition()
         pendingExpand?.let { key ->
             pendingExpand = null
@@ -3024,10 +3046,10 @@ private class MiniPlayerController(
     private var smallDx = 0f
 
     /** Where an emerging small island starts: its centre under the pill's end. */
-    private fun emergeDx(): Float {
+    private fun emergeDx(centreX: Float = smallRest[0]): Float {
         val d = discDiameter().toFloat()
         val distance = d * 0.8f + dp(MiniPlayerGeometry.DISC_GAP_DP)
-        return if (smallRest[0] < host.width / 2f) distance else -distance
+        return if (centreX < host.width / 2f) distance else -distance
     }
 
     /** Lowest in the row: under the small island, which is under the pill. */
@@ -3078,7 +3100,7 @@ private class MiniPlayerController(
      */
     private fun ghostSmallBox(s: Swap): CoverMorphMotion.Box? {
         val from = s.ghostFrom ?: return null
-        val to = smallBoxOnScreen()
+        val to = s.smallTargetKey?.let(::smallBoxFor) ?: smallBoxOnScreen()
         val g = s.small.value
         val shrunk = lerpBox(from, to, g)
         val narrowing = s.small.velocity * (to.w - from.w)
