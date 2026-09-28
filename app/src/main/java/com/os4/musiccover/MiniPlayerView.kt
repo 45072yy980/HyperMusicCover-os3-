@@ -206,6 +206,12 @@ internal class MiniPlayerView(context: Context) : FrameLayout(context) {
         // Equal by their words, so a line the row rewrote as a span is not set again every frame.
         if (!TextUtils.equals(title.text, trackTitle)) title.text = trackTitle
         if (!TextUtils.equals(artist.text, trackArtist)) artist.text = trackArtist
+        // A line with no words in it takes no room, and the column centres what is left: an island
+        // whose template gives it only a timer (the recorder's, its param_v2 an animTextInfo and
+        // nothing else) drew that one line on the upper one and read off centre (the user,
+        // 2026-09-28). Both lines have words, the layout is the one it always was.
+        title.visibility = if (trackTitle.isNullOrBlank()) View.GONE else View.VISIBLE
+        artist.visibility = if (trackArtist.isNullOrBlank()) View.GONE else View.VISIBLE
         if (lastArtwork !== cover) {
             lastArtwork = cover
             if (artworkOverride == null) artwork.setImageBitmap(cover)
