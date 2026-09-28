@@ -992,10 +992,6 @@ object MiniPlayerRuntime {
         routedTracker = null
     }
 
-    /** Sideways: close to the finger at first, giving less and less. */
-    private fun pillNudgeX(dx: Float, d: Float): Float =
-        Math.copySign(MiniCardMorph.rubber(kotlin.math.abs(dx), 56f * d, 0.9f), dx)
-
     /** Up as the card end of a drag measures it, so the hand-over to the morph is seamless. */
     private fun pillNudgeY(dy: Float, d: Float): Float =
         if (dy < 0f) -MiniCardMorph.rubber(-dy, DRAG_NUDGE_DP * d)
@@ -3855,26 +3851,35 @@ private class MiniPlayerController(
      * (2026-09-25, the user had the fade taken out).
      */
     fun islandDrag(dx: Float) {
+        islandDragStep(dx)
+        traceIslandDrag(dx)
+    }
+
+    private fun islandDragStep(dx: Float) {
         val view = player ?: return
         // A switch still settling is finished where it was headed: the finger has the row now.
         if (swap != null) endSwap()
         if (!islandDragging) springSmallNudgeBack(0f, 0f)
         islandDragging = true
-        // Pulled past the row's end the pill only gives a little, and no island moves toward it.
+        // The row's end: nothing to switch to, so the pull takes the pill with it instead - it
+        // runs into the torch or the camera there and they give way, as they do for a lone
+        // island's pull (the user, 2026-09-29).
         val atEnd = !canSwitchIsland(next = dx < 0f)
+        if (atEnd) {
+            view.scaleX = 1f
+            view.scaleY = 1f
+            view.setNudge(pillNudgeX(dx, host.resources.displayMetrics.density), 0f)
+            // Back from a pull the other way, the small island leaves the shape it had for it.
+            if (smallIsland?.visibility == View.VISIBLE && !smallGrowing) restoreSmallIslandShape()
+            return
+        }
         val p = (kotlin.math.abs(dx) / (host.width / 2f).coerceAtLeast(1f) * SWIPE_SHARE)
-            .coerceAtMost(SWIPE_SHARE * 1.5f) * (if (atEnd) SWIPE_END_GIVE else 1f)
+            .coerceAtMost(SWIPE_SHARE * 1.5f)
         val towardSmall = dx > 0f
         view.pivotX = view.width / 2f
         view.pivotY = view.height / 2f
         view.scaleX = 1f - p
         view.scaleY = 1f - p * 0.25f
-        if (atEnd) {
-            view.setNudge(0f, 0f)
-            // Back from a pull the other way, the small island leaves the shape it had for it.
-            if (smallIsland?.visibility == View.VISIBLE && !smallGrowing) restoreSmallIslandShape()
-            return
-        }
         val small = smallIsland?.takeIf { it.visibility == View.VISIBLE } ?: return
         val d = discDiameter().toFloat()
         val w = view.width.toFloat()
@@ -3891,11 +3896,40 @@ private class MiniPlayerController(
         }
     }
 
+    /** Every frame of a finger on the row, and its release, for `op mini`. */
+    private val islandTrace = ArrayDeque<String>()
+
+    private fun traceIsland(s: String) {
+        islandTrace.addLast("${android.os.SystemClock.uptimeMillis() % 100000} $s")
+        while (islandTrace.size > 150) islandTrace.removeFirst()
+    }
+
+    /**
+     * What the pill is drawn as this frame, for `op mini`: a shape that changes in one frame
+     * instead of over the spring shows here as the value it stepped from and to. [dx] the pull.
+     */
+    private fun traceIslandDrag(dx: Float) {
+        val v = player ?: return
+        val w = v.width.toFloat().coerceAtLeast(1f)
+        traceIsland("drag dx=${dx.toInt()} end=${!canSwitchIsland(next = dx < 0f)} " +
+            "sc=${"%.3f".format(v.scaleX)}/${"%.3f".format(v.scaleY)} piv=${v.pivotX.toInt()} " +
+            "tx=${v.translationX.toInt()} w=${v.width} morph=${v.inMorph()} " +
+            "sq=${"%.3f".format(squeeze.pillScaleX(w))}/${"%.3f".format(squeeze.pillScaleY())}" +
+            "+${squeeze.pillShiftPx().toInt()} " +
+            "row=${rowWidth.value.toInt()}>${rowWidth.target.toInt()}@${rowLeft.value.toInt()} " +
+            "small=${smallIsland?.let { "${it.visibility}/${it.shapeWidth}" }}")
+    }
+
     /** The finger is off: over the threshold the switch runs, under it the row springs back. */
     fun islandDragEnd(commit: Boolean, next: Boolean, vx: Float = 0f) {
         if (!islandDragging) return
         // Past the row's end there is nothing to switch to: it springs back as from a short pull.
-        if (commit && canSwitchIsland(next)) {
+        val switchable = canSwitchIsland(next)
+        traceIsland("end commit=$commit next=$next to=$switchable vx=${vx.toInt()} " +
+            "sc=${"%.3f".format(player?.scaleX ?: -1f)}/${"%.3f".format(player?.scaleY ?: -1f)} " +
+            "piv=${player?.pivotX?.toInt()} tx=${player?.translationX?.toInt()} " +
+            "nx=${player?.nudgeX?.toInt()} ny=${player?.nudgeY?.toInt()}")
+        if (commit && switchable) {
             // A fling the way of the switch hands the switch its speed; one back against it none.
             switchIsland(next, flingPx = if (next == vx < 0f) kotlin.math.abs(vx) else 0f)
             return
@@ -3912,6 +3946,8 @@ private class MiniPlayerController(
     private fun resetIslandDrag() {
         if (!islandDragging) return
         islandDragging = false
+        traceIsland("reset drag sc=${"%.3f".format(player?.scaleX ?: -1f)} " +
+            "tx=${player?.translationX?.toInt()} nx=${player?.nudgeX?.toInt()}")
         player?.let {
             it.animate().cancel()
             it.scaleX = 1f
@@ -6626,8 +6662,13 @@ private class MiniPlayerController(
             else -> null
         }
         // The small island at rest where the finger has it; the row is worked out from the two.
+        // Only one that has settled counts: one still appearing or leaving sits in the place the
+        // pill is taking over from it, and by design the two overlap there - read as a press, the
+        // pill's give snapped to its 6% cap in a single frame every time a pull reached the row's
+        // end (measured 2026-09-29, `op mini` islandDrag: sq 0.999 -> 0.934 in 6ms, five pulls
+        // running). The list's own idiom for a small island really there (showing).
         val small = smallIsland?.takeIf { running == null && it.visibility == View.VISIBLE && swap == null &&
-            landingBox == null }
+            landingBox == null && (!smallGrowing || smallGrow.atRest()) }
             ?.let { CoverMorphMotion.Box(smallRest[0] - d / 2f + smallNudgeX(),
                 smallRest[1] - d / 2f + smallNudgeY(), d, d) }
         squeeze.setScene(pill, running == null, disc(0), disc(1), small)
@@ -6887,7 +6928,8 @@ private class MiniPlayerController(
         return islands + icons + "pill v=${v.visibility} a=${v.alpha} ta=${v.transitionAlpha} at=${xy[0]},${xy[1]} " +
             "${v.width}x${v.height} morph=${morph != null} header=" +
             (if (h == null) "none" else "v=${h.visibility} a=${h.alpha} ta=${h.transitionAlpha}") +
-            " last=[$lastPresentationLog] || land: " + landTrace.joinToString(" ; ") +
+            " last=[$lastPresentationLog] || islandDrag: " + islandTrace.joinToString(" ; ") +
+            " || land: " + landTrace.joinToString(" ; ") +
             " || doze: " + dozeTrace.joinToString(" ; ") + " || scene: " + sceneTrace.joinToString(" ; ")
     }
     fun nativeHeaderHidden(): Boolean = nativeSuppressionRequested
@@ -8442,6 +8484,15 @@ private const val SWAP_DAMPING = 0.82f
 
 /** The super island's swipe progress: the pull over half the width, times this. */
 private const val SWIPE_SHARE = 0.14f
+
+/**
+ * Sideways, tightly: the row is pressing on what is beside it - the torch, the camera, the small
+ * island - and a loose follow slid it far too easily (the user, 2026-09-29). It carries the row
+ * past the end of its islands too (islandDrag), where the pull presses on a disc instead of
+ * switching. Here rather than in the object: the controller's own drag reads it as well.
+ */
+private fun pillNudgeX(dx: Float, d: Float): Float =
+    Math.copySign(MiniCardMorph.rubber(kotlin.math.abs(dx), 24f * d, 0.6f), dx)
 /** How much of the pull the pill still follows past the row's end (islandDrag). */
 private const val SWIPE_END_GIVE = 0.35f
 /** The stack island's other rows come in over this part of their own way out from under it (pileStack). */
