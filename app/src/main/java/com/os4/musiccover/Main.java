@@ -1579,7 +1579,16 @@ public class Main extends XposedModule {
             Xp.hookAll(sContainerCls, "notifStateChange", chain -> {
                 // Anyone calling this is by definition the live instance.
                 sContainer = (View) chain.getThisObject();
-                if (findClockView(sContainer, "time_group") != null) return chain.proceed();
+                if (findClockView(sContainer, "time_group") != null) {
+                    // The all_in_one family, which this hook does not act on - and the only
+                    // place a probe could see that the channel was used at all. `getArgs`
+                    // allocates, and this runs every frame: taken only while a run is armed.
+                    if (ClockMove.on()) {
+                        Object[] a = chain.getArgs().toArray();
+                        ClockMove.noteState((Float) a[0], a[1], (Float) a[0]);
+                    }
+                    return chain.proceed();
+                }
                 Object[] args = chain.getArgs().toArray();
                 float requested = (Float) args[0];
                 // Not our own writes, which are not what the system asked for. The system's
@@ -1589,6 +1598,7 @@ public class Main extends XposedModule {
                 Float hold = sHoldY;
                 if (hold != null && requested != hold) args[0] = hold;
                 else if (hold == null) args[0] = roomForRows(requested);
+                ClockMove.noteState(requested, args[1], (Float) args[0]);
                 return chain.proceed(args);
             });
         } catch (Throwable t) {
@@ -1603,6 +1613,13 @@ public class Main extends XposedModule {
             XposedInterface.Hooker axisLog = chain -> {
                 String name = chain.getExecutable().getName();
                 Object[] args = chain.getArgs().toArray();
+                // The OEM's own number, before our rescale: it is called every frame on every
+                // TimeView while the clock is being squeezed, so it is that animation's progress.
+                if ("setSizeInternal".equals(name)) ClockMove.noteSize((Float) args[0]);
+                // The variable font's other axis. The ink box is what the size was read from,
+                // and it moves while setSizeInternal does not - which is either the weight or a
+                // second source of the box, and this is the reading that tells the two apart.
+                if ("setWeight".equals(name)) ClockMove.noteWeight((Float) args[0]);
                 boolean scaled = false;
                 if ("setSizeInternal".equals(name) && !Float.isNaN(sSizeScale)) {
                     args[0] = ((Float) args[0]) * sSizeScale;
@@ -1679,6 +1696,7 @@ public class Main extends XposedModule {
                 Float hold = sHoldY;
                 if (hold != null && requested != hold) args[0] = hold;
                 else if (hold == null && !sSelfDriving) args[0] = roomForRows(requested);
+                ClockMove.noteNotifY(requested, (Float) args[0]);
                 // The coerced Y has to reach the original, which is what proceed(args) is for:
                 // this is the one hook whose whole purpose is rewriting an argument.
                 // Nothing is placed from here: the OEM applies parts of this frame later (Folme),
@@ -2687,6 +2705,11 @@ public class Main extends XposedModule {
                         MotionTrace.arm(i.getIntExtra("n", 4));
                     } else if ("geomtrace".equals(op)) {
                         startGeomTrace(i.getIntExtra("ms", 4000));
+                    } else if ("clockmove".equals(op)) {
+                        // --ei ms N arms a recording; without it, reads the last one back.
+                        int ms = i.getIntExtra("ms", 0);
+                        if (ms > 0) ClockMove.arm(ms);
+                        setResultData(ClockMove.read());
                     } else if ("state".equals(op)) {
                         Xp.log(TAG + "state: holdY=" + sHoldY
                                 + " lastSystemY=" + sLastSystemY + " clock " + ClockCollapse.describe()
@@ -3143,7 +3166,7 @@ public class Main extends XposedModule {
      * sInkUnit and the cached box are what the next real placement is made from and a diagnostic
      * that moves them is measuring itself.
      */
-    private static RectF measureLiveBox() {
+    static RectF measureLiveBox() {
         RectF keepBox = sGlyphCache;
         long keepAt = sGlyphAt;
         float keepUnit = sInkUnit;
@@ -3383,7 +3406,7 @@ public class Main extends XposedModule {
     }
 
     /** The pooled glyph box as `l,t,r,b`, or none. */
-    private static String boxOf(RectF b) {
+    static String boxOf(RectF b) {
         if (b == null) return "none";
         return r1(b.left) + "," + r1(b.top) + "," + r1(b.right) + "," + r1(b.bottom);
     }
@@ -5159,6 +5182,7 @@ public class Main extends XposedModule {
         }
         float out = Float.isNaN(top) || top <= requested ? requested : top;
         traceRoom(requested, top, out);
+        ClockMove.noteRoom(requested, top, out);
         return out;
     }
 
@@ -5169,12 +5193,22 @@ public class Main extends XposedModule {
      * other in a frame (2026-09-26). A jump - the rows changing under it, not the OEM's own
      * animation stepping, which moves it a little a frame - is followed over ~300ms instead,
      * the clock asked again every frame meanwhile (reassertClockRoom) until it is there.
+     *
+     * Except for the first stretch of a jump that GIVES the clock room back, which is walked
+     * slowly instead (SOFT_STEP_PX). The clock only answers to the last ~40px of the y before it
+     * is fully open, and an exponential ease is fastest at the start - so pulling the media island
+     * back down, those 40px went by in a single frame while the same 40px on the way up took 22
+     * (measured 2026-09-29, `op clockmove`). Entering that band never had the problem: the ease is
+     * slowest where it ends, which is where the band is. So only the growing direction is changed,
+     * and only its opening: what is walked slowly up there is invisible either way, because the
+     * clock is already fully open until the y comes back down to it.
      */
     private static float easeRoom(float raw) {
         if (Float.isNaN(raw) || raw >= Float.MAX_VALUE / 2f || !sScreenOn) {
             sRoomShown = raw;
             sRoomRaw = raw;
             sRoomEasing = false;
+            sRoomSoft = 0f;
             return raw;
         }
         long now = android.os.SystemClock.uptimeMillis();
@@ -5184,6 +5218,7 @@ public class Main extends XposedModule {
             return raw;
         }
         boolean jump = Math.abs(raw - sRoomRaw) > ROOM_JUMP_PX;
+        ClockMove.noteEase(jump);
         sRoomRaw = raw;
         if (!sRoomEasing) {
             if (!jump) {
@@ -5192,18 +5227,58 @@ public class Main extends XposedModule {
             }
             sRoomEasing = true;
             sRoomAt = now;
+            // Only a jump that gives room back starts slowly; see the note above.
+            sRoomSoft = raw > sRoomShown ? SOFT_START_PX : 0f;
             android.view.Choreographer.getInstance().removeFrameCallback(ROOM_FRAME);
             android.view.Choreographer.getInstance().postFrameCallback(ROOM_FRAME);
             return sRoomShown;
         }
         float dt = Math.min(50f, now - sRoomAt);
         sRoomAt = now;
-        sRoomShown += (raw - sRoomShown) * (1f - (float) Math.exp(-dt / ROOM_TAU_MS));
+        float step = (raw - sRoomShown) * (1f - (float) Math.exp(-dt / ROOM_TAU_MS));
+        if (sRoomSoft > 0f) {
+            float soft = Math.min(Math.abs(step), Math.min(SOFT_STEP_PX, sRoomSoft));
+            sRoomShown += Math.signum(raw - sRoomShown) * soft;
+            sRoomSoft -= soft;
+        } else {
+            sRoomShown += step;
+        }
         if (Math.abs(raw - sRoomShown) < 1f) {
             sRoomShown = raw;
             sRoomEasing = false;
+            sRoomSoft = 0f;
         }
         return sRoomShown;
+    }
+
+    /**
+     * How much of a jump that gives room back is walked at SOFT_STEP_PX a frame.
+     *
+     * Sized for the band measured here - 40px - with a little over. It is a distance, not a
+     * duration, so on a style whose band is wider it covers part of it and the rest is left to
+     * the ease as before: a partial fix, never a worse one. And a style whose band is narrower
+     * spends the extra only where the clock is already fully open, which is time and nothing else.
+     */
+    private static final float SOFT_START_PX = 60f;
+    private static final float SOFT_STEP_PX = 5f;
+    private static float sRoomSoft;
+
+    /** The ease's own state, for the clockmove probe. */
+    static boolean easeRunning() {
+        return sRoomEasing;
+    }
+
+    static float easeShown() {
+        return sRoomShown;
+    }
+
+    static float easeRaw() {
+        return sRoomRaw;
+    }
+
+    /** How much of the soft start is still to be walked, for the clockmove probe. */
+    static float easeSoft() {
+        return sRoomSoft;
     }
 
     private static float sRoomShown = Float.NaN, sRoomRaw = Float.NaN;
@@ -5282,8 +5357,10 @@ public class Main extends XposedModule {
             Object next = triple.getClass().getConstructor(Object.class, Object.class, Object.class)
                     .newInstance(y + sRoomNudge, Boolean.FALSE, Xp.callMethod(triple, "getThird"));
             Xp.callMethod(flow, "setValue", next);
+            ClockMove.noteReassert(y, true);
         } catch (Throwable t) {
             traceRoom(Float.NaN, Float.NaN, Float.NaN);
+            ClockMove.noteReassert(Float.NaN, false);
         }
     }
 
