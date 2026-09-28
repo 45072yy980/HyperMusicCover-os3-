@@ -7071,22 +7071,23 @@ public class Main extends XposedModule {
     }
 
     /**
-     * The bottom edge of the card rectangle on record, in screen pixels, or NaN when what is on
+     * The top edge of the card rectangle on record, in screen pixels, or NaN when what is on
      * record is not a reading.
      *
-     * The bottom rather than the top because of what the lyrics do with it: with no card drawn,
-     * the band takes the space the card would have occupied, and that space ends here. Measured
-     * off the card's own rectangle, so it is the same block the OEM's content would have filled -
-     * on this screen 1700..2257, which stops clear of the shortcut buttons at 2219.
+     * The top rather than the bottom because that is the edge the band is measured against while
+     * the card is up - the live route reads the card's own top - and a fallback that answers a
+     * different edge answers a whole card's height away. On this screen the card is 1700..2257:
+     * the two are 557px apart, 21% of the screen, and the lyrics moved half of that every time
+     * the route changed. See LockLyrics.bandBottomOnScreen() for the wake that measured it.
      *
      * sampleCardRect() only ever writes a settled card in the lower two thirds, and the state file
      * re-applies the same test on load - so a zero, or a reading taken from the shade, is already
      * excluded on the way in. The test is repeated here because sScreenH is the default 2608 until
      * the container attaches, which is after loadState() has run.
      */
-    static float sampledCardBottom() {
+    static float sampledCardTop() {
         if (sCardT <= sScreenH / 3 || sCardH <= 0) return Float.NaN;
-        return sCardT + sCardH;
+        return sCardT;
     }
 
     /**
