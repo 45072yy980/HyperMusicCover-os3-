@@ -7442,9 +7442,12 @@ private class MiniPlayerController(
         view.setToggleShown(primary != null)
         view.setToggleFace(primary?.let { buttonFace(it, note.timer) })
         view.setSecondFace(second?.let { buttonFace(it, note.timer) })
+        // The template's own text, spans and all: a focus protocol writes colour into it and the
+        // row shows it coloured, so flattening it here showed the pill the markup instead
+        // (the user, 2026-09-28).
         view.bind(
-            note.timer?.text() ?: note.title.toString().ifBlank { appLabel(note.pkg) },
-            note.text.toString(),
+            note.timer?.text() ?: note.title.takeUnless { it.isBlank() } ?: appLabel(note.pkg),
+            note.text,
             noteBitmap(note),
             false,
             config,

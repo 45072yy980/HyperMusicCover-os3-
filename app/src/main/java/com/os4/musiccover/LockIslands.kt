@@ -742,7 +742,24 @@ internal object LockIslands {
     }.getOrNull()
 
     /** [pics]: the pictures its first area names, in the order the plugin would try them. */
-    private class Template(val title: String, val text: String, val timer: Timer?, val pics: List<Pic>)
+    private class Template(val title: CharSequence, val text: CharSequence, val timer: Timer?, val pics: List<Pic>)
+
+    /**
+     * A focus template's words as its row draws them. MIUI's protocol puts markup in them -
+     * Taobao Shangou's delivery notice carries `<font color='#0FAD50'>预计34分钟送达</font>` - and
+     * the plugin runs every one of its text modules through Html.fromHtml (the forty-odd moduleV3
+     * holders all call it). Taken raw, the pill showed the tag itself (the user, 2026-09-28).
+     *
+     * Only the tags that protocol uses are read as markup; anything else is left exactly as it is.
+     * A plain notification's own title and text are not put through this: SystemUI never parses
+     * those (no class of its calls Html.fromHtml for a notification), so its row shows them raw
+     * and the island has to show what the row shows.
+     */
+    private fun html(s: String): CharSequence =
+        if (HTML_TAG.containsMatchIn(s)) android.text.Html.fromHtml(s, android.text.Html.FROM_HTML_MODE_LEGACY)
+        else s
+
+    private val HTML_TAG = Regex("</?(font|b|i|u|big|small|a|br)(\\s[^>]*)?>", RegexOption.IGNORE_CASE)
 
     /**
      * A picture a focus notification names, and how the plugin draws a name of its [kind]:
@@ -812,8 +829,8 @@ internal object LockIslands {
         // (a navigation's "直行98米 / 高德导航中"): its title, content and timer at the top, its
         // picture the one it gives the status bar.
         fun flat(o: org.json.JSONObject): Template? {
-            val title = str(o, "title")
-            val content = str(o, "content")
+            val title = html(str(o, "title"))
+            val content = html(str(o, "content"))
             val timer = timerOf(o)
             if (title.isEmpty() && content.isEmpty() && timer == null) return null
             return Template(title, content, timer, ticker(o) + named(o, "picFunction"))
@@ -841,8 +858,8 @@ internal object LockIslands {
             "chatInfo" -> named(info, "picProfileDark", "picProfile")
             else -> named(info, "picFunction")
         }.filter { it.name.isNotEmpty() }
-        Template(str(info, "title"), str(info, "content").ifEmpty { str(info, "subContent") }, timer,
-            pics + ticker(v2))
+        Template(html(str(info, "title")),
+            html(str(info, "content").ifEmpty { str(info, "subContent") }), timer, pics + ticker(v2))
     }.getOrNull()
 
     /**
@@ -878,7 +895,7 @@ internal object LockIslands {
         if (lines.isEmpty()) return null
         val pics = listOf("tickerPicDark", "tickerPic", "aodPic").map { str(root, it) }
             .filter { it.isNotEmpty() }.map { Pic(Pic.BUNDLE, it) }
-        Template(lines[0], lines.drop(1).joinToString(" "), null, islandPics(island) + pics)
+        Template(html(lines[0]), html(lines.drop(1).joinToString(" ")), null, islandPics(island) + pics)
     }.getOrNull()
 
     /**

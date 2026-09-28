@@ -164,8 +164,8 @@ internal class MiniPlayerView(context: Context) : FrameLayout(context) {
     }
 
     fun bind(
-        trackTitle: String,
-        trackArtist: String,
+        trackTitle: CharSequence,
+        trackArtist: CharSequence,
         cover: Bitmap?,
         playing: Boolean,
         config: JSONObject,
@@ -203,8 +203,9 @@ internal class MiniPlayerView(context: Context) : FrameLayout(context) {
             materialLayer.clipToOutline = true
             updateGeometry(config.getDouble(MiniPlayerConfig.HEIGHT_RADIUS).toFloat())
         }
-        if (title.text.toString() != trackTitle) title.text = trackTitle
-        if (artist.text.toString() != trackArtist) artist.text = trackArtist
+        // Equal by their words, so a line the row rewrote as a span is not set again every frame.
+        if (!TextUtils.equals(title.text, trackTitle)) title.text = trackTitle
+        if (!TextUtils.equals(artist.text, trackArtist)) artist.text = trackArtist
         if (lastArtwork !== cover) {
             lastArtwork = cover
             if (artworkOverride == null) artwork.setImageBitmap(cover)
