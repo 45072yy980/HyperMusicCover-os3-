@@ -563,11 +563,38 @@ internal object LockIslands {
         stackFrom = members
         val lead = members.first()
         val n = members.size
-        return Note(STACK_KEY, lead.pkg, lead.title,
-            if (n > 1) "$n 条通知 · ${lead.text}" else lead.text,
+        return Note(STACK_KEY, lead.pkg, lead.title, stackText(lead, n),
             lead.icon, focus = false, time = lead.time, intent = lead.intent, group = null,
             summary = false, redacted = lead.redacted, since = members.maxOf { it.since }, iconFrom = lead.iconFrom)
     }
+
+    /**
+     * The stack island's own line: its newest notification's text, with how many there are when
+     * more than one (「3 条通知 · ...」).
+     *
+     * Hidden content has no text of its own - the lock screen shows SystemUI's
+     * notification_hidden_text in its place ([hiddenText]) - and saying that after the count said
+     * nothing at all: the line read 「3 条通知 · 你有一条新消息」. There the count is the whole
+     * line instead (the user, 2026-09-28): 「你有两条新消息」, and past [HIDDEN_MANY] of them
+     * 「你有多条新消息」. One of them keeps the placeholder it has always shown, which is that
+     * same sentence; a notification with text of its own is left exactly as it was, count and all.
+     */
+    private fun stackText(lead: Note, n: Int): CharSequence {
+        if (!lead.redacted || !android.text.TextUtils.equals(lead.text, hiddenText())) {
+            return if (n > 1) "$n 条通知 · ${lead.text}" else lead.text
+        }
+        return when {
+            n <= 1 -> lead.text
+            n > HIDDEN_MANY -> "你有多条新消息"
+            else -> "你有${HIDDEN_COUNT[n]}条新消息"
+        }
+    }
+
+    /** Hidden notifications past this many are 「多条」; [HIDDEN_COUNT] counts up to it. */
+    private const val HIDDEN_MANY = 5
+
+    /** 零 to 五, for the hidden line's count: 「你有两条新消息」. */
+    private val HIDDEN_COUNT = arrayOf("零", "一", "两", "三", "四", "五")
 
     /** A notification island's standing, released or not; null for one this lock screen has not got. */
     fun rankOf(key: String): Rank? {
@@ -1232,6 +1259,9 @@ internal object LockIslands {
      * The line a redacted row shows for its content: SystemUI's own notification_hidden_text
      * ("你有一条新消息"), not the framework's of the same name ("新通知") - taking the framework's,
      * the island said one thing and the row it opened into another (filmed 2026-09-25).
+     *
+     * It is also how the stack island knows its content is hidden (stackText): a redacted
+     * notification whose public version has nothing to say reads exactly this.
      */
     private fun hiddenText(): CharSequence {
         val ctx = Main.sAppCtx
