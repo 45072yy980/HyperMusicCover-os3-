@@ -34,12 +34,17 @@ object ModuleBridge {
         val auto: Boolean = false,
         val bias: Float = 0.34f,
         val coverStyle: Int = 0,
-        /** The square's side as a share of the room between the clock and the media card. */
-        val coverCardFill: Float = 0.8f,
-        /** Where the square sits in the height it leaves: 0 top, 0.5 centre, 1 bottom. */
+        /**
+         * The square's side as a share of the room between the clock and the media card, and
+         * where it sits in the height that leaves. Both fixed on the module side and neither
+         * adjustable from here; they are still read because the preview draws the square with
+         * them, and the two defaults are the module's own.
+         *
+         * The corners are not here: they are the media card's own radius now, which the preview
+         * already has in [Preview.cardRadius].
+         */
+        val coverCardFill: Float = 1f,
         val coverCardPos: Float = 0.5f,
-        /** How round the square's corners are: 0 square, 1 a circle. */
-        val coverCardCorner: Float = 0.12f,
         /**
          * How tall the collapsed clock's digits are, in dp.
          *
@@ -52,7 +57,9 @@ object ModuleBridge {
         val clockHeightDp: Float = 36f,
         /**
          * The collapsed clock's size as a fraction of the style's full clock, 1 = unchanged.
-         * The module reports what the clock is at even before the slider sets it; 0 = unknown.
+         * The module reports what the clock is at whether or not anything has set it; 0 = the
+         * module has not measured yet - the app's preview draws 0.09 until it does, which is the
+         * size the module is fixed at (Main.DEFAULT_CLOCK_SIZE).
          */
         val clockSize: Float = 0f,
         /** How far the date and clock are moved together, in dp. Positive is down. */
@@ -66,7 +73,8 @@ object ModuleBridge {
          * fades are derived from it too. 0.38 is the OEM's own preset for this transition.
          */
         val clockResponse: Float = 0.38f,
-        val glassEnd: Float = 0.75f,
+        /** The glass clock's end in the OEM's own terms; 0 is fully transparent glass. */
+        val glassEnd: Float = 0f,
         val cardShowing: Boolean = false,
         val lockWallpaperOk: Boolean = false,
         /**
@@ -81,20 +89,28 @@ object ModuleBridge {
         val clockHasGlass: Boolean = false,
         val track: String = "",
         val player: String = "",
-        val mcHideArt: Boolean = false,
-        /** With [mcHideArt] on, show the thumbnail anyway while the lyrics are up. */
-        val mcArtInLyrics: Boolean = false,
+        /**
+         * Whether the media card's thumbnail is hidden. On, and not a setting on either side any
+         * more - see Main.sMcHideArt. Reported because the preview draws the card with the OEM's
+         * own picture of it, and what that picture contains depends on this.
+         */
+        val mcHideArt: Boolean = true,
+        /** With [mcHideArt] on, show the thumbnail anyway while the lyrics are up. Also fixed on. */
+        val mcArtInLyrics: Boolean = true,
         val mcTitleTap: Boolean = false,
         val hideFingerprint: Boolean = false,
         /**
          * Keep cover mode's small clock in the full-screen always-on display, instead of letting
-         * it grow back into the OEM's own AOD clock.
+         * it grow back into the OEM's own AOD clock. On, and not a setting.
          */
-        val aodSmall: Boolean = false,
+        val aodSmall: Boolean = true,
         /** Draw the big clock's colon on the styles that drop it. */
         val forceColon: Boolean = false,
-        /** Lock screen lyrics, between the collapsed clock and the card. */
-        val lyrics: Boolean = false,
+        /**
+         * Lock screen lyrics, between the collapsed clock and the card. On, and not a setting:
+         * the two-finger tap on the lock screen is what asks for the cover instead.
+         */
+        val lyrics: Boolean = true,
         /** Keep the screen lit while lock screen lyrics are playing. */
         val lyricsKeepOn: Boolean = false,
         /** Draw the singing words brighter than white on an HDR screen. */
@@ -107,7 +123,7 @@ object ModuleBridge {
         val lyricPos: Float = 0.5f,
         val lyricSideDp: Float = 30f,
         val lyricSizeSp: Float = 25f,
-        val lyricWeight: Int = 600,
+        val lyricWeight: Int = 500,
         /**
          * A session has actually carried its own lyric since SystemUI started.
          *
@@ -117,6 +133,22 @@ object ModuleBridge {
          * nothing while still being in the package list.
          */
         val sessionLyric: Boolean = false,
+        /**
+         * Which route the lyric on the lock screen came from, in the module's own words -
+         * "session", "lyricon", "local", "amll", "ttmlhub", "netease", "qq", "kugou", "kuwo",
+         * "lrclib" - or "none" when there is no lyric on screen at all.
+         *
+         * A word rather than an ordinal, and deliberately not translated here: what each one is
+         * called on the page is a table in the UI, and the module keeps adding routes. See
+         * LockLyrics.srcName.
+         */
+        val lyricSource: String = "none",
+        /**
+         * Whether a Lyricon central answered. Not a package check - see LyriconSource.installed -
+         * and the other half of the row above: with neither this nor the LyricInfo package
+         * installed, there is nothing on the phone that reads a player's lyric.
+         */
+        val lyriconInstalled: Boolean = false,
         /** 0 system default, 1 never avoid the fingerprint icon, 2 always avoid it. */
         val fpAvoid: Int = 0,
         /**
@@ -211,6 +243,17 @@ object ModuleBridge {
         }
 
 
+    /**
+     * The ops behind settings that no longer have a row in the app: the clock's size, its offset
+     * and the height it used to be worked out from, the glass end, the spring, and the two media
+     * card switches.
+     *
+     * Kept rather than deleted, because the ops themselves are still there on the module side and
+     * still do something - they move the value for the rest of the session, and nothing writes it
+     * down, so a restart puts it back. Deleting these would leave the app unable to reach a
+     * protocol it is still party to. None of them is called from this app any more; the settings
+     * pages and [SettingsBackup] between them no longer offer the values.
+     */
     fun setClockHeight(context: Context, dp: Float) =
         send(context, "clockscale") { putExtra("v", dp) }
 
@@ -240,12 +283,14 @@ object ModuleBridge {
     fun setHideFingerprint(context: Context, on: Boolean) =
         send(context, "hidefp") { putExtra("on", on) }
 
+    /** See the note above [setClockHeight]: no row offers this any more, the op still works. */
     fun setAodSmall(context: Context, on: Boolean) =
         send(context, "aodclock") { putExtra("small", on) }
 
     fun setForceColon(context: Context, on: Boolean) =
         send(context, "colon") { putExtra("on", on) }
 
+    /** The lyrics are always on now; this is how they are turned off for a session. */
     fun setLyrics(context: Context, on: Boolean) =
         send(context, "lyrics") { putExtra("on", on) }
 
@@ -258,7 +303,12 @@ object ModuleBridge {
     fun setLyricsTrans(context: Context, on: Boolean) =
         send(context, "lyrictrans") { putExtra("on", on) }
 
-    /** The module validates every value, including imported settings and adb broadcasts. */
+    /**
+     * One of the five values the lyric band and its type are made of. All five are fixed now and
+     * no page offers them; the op still moves any of them for the rest of the session.
+     *
+     * The module validates every value, including imported settings and adb broadcasts.
+     */
     fun setLyricStyle(context: Context, key: String, value: Float) =
         send(context, "lyricstyle") {
             putExtra("key", key)
@@ -364,6 +414,8 @@ object ModuleBridge {
         val clockHasGlass: Boolean = false,
         /** See State.clockSize. */
         val clockSize: Float = 0f,
+        /** See State.lyricSource. Carried with the pictures so the row keeps up mid-track. */
+        val lyricSource: String = "",
         val left: Shot? = null,
         val right: Shot? = null,
     )
@@ -400,6 +452,7 @@ object ModuleBridge {
             clockGeometry = if (b.getFloat("clockw", 0f) > 0f) clockGeometry(b) else null,
             clockHasGlass = b.getBoolean("clockglass", false),
             clockSize = sizeOf(b),
+            lyricSource = b.getString("lyricsrc") ?: "",
         )
     }
 
@@ -486,26 +539,28 @@ object ModuleBridge {
             auto = b.getBoolean("auto", false),
             bias = b.getFloat("bias", 0.34f),
             coverStyle = b.getInt("coverstyle", 0),
-            coverCardFill = b.getFloat("covercardfill", 0.8f),
+            coverCardFill = b.getFloat("covercardfill", 1f),
             coverCardPos = b.getFloat("covercardpos", 0.5f),
-            coverCardCorner = b.getFloat("covercardcorner", 0.12f),
             clockHeightDp = b.getFloat("clock", 36f),
             clockSize = sizeOf(b),
             clockOffsetDp = b.getFloat("clockoff", 0f),
             clockResponse = b.getFloat("spring", 0.38f),
-            glassEnd = b.getFloat("glass", 0.75f),
+            glassEnd = b.getFloat("glass", 0f),
             cardShowing = b.getBoolean("card", false),
             lockWallpaperOk = b.getBoolean("lockwp", false),
             clockHasGlass = b.getBoolean("clockglass", false),
             track = b.getString("track") ?: "",
             player = b.getString("player") ?: "",
-            mcHideArt = b.getBoolean("mcart", false),
-            mcArtInLyrics = b.getBoolean("mclyricart", false),
+            // The three fixed-on ones fall back to their fixed value here too: the defaults in
+            // the bundle are for a module too old to send the key, and there is no longer a
+            // version of this that would have them off by choice.
+            mcHideArt = b.getBoolean("mcart", true),
+            mcArtInLyrics = b.getBoolean("mclyricart", true),
             mcTitleTap = b.getBoolean("mctap", false),
             hideFingerprint = b.getBoolean("hidefp", false),
-            aodSmall = b.getBoolean("aodsmall", false),
+            aodSmall = b.getBoolean("aodsmall", true),
             forceColon = b.getBoolean("colon", false),
-            lyrics = b.getBoolean("lyrics", false),
+            lyrics = b.getBoolean("lyrics", true),
             lyricsKeepOn = b.getBoolean("lyrickeep", false),
             lyricsHdr = b.getBoolean("lyrichdr", false),
             // Defaults the other way: this one is on for anyone whose module predates the key.
@@ -514,8 +569,10 @@ object ModuleBridge {
             lyricPos = b.getFloat("lyricpos", 0.5f),
             lyricSideDp = b.getFloat("lyricside", 30f),
             lyricSizeSp = b.getFloat("lyricsize", 25f),
-            lyricWeight = b.getInt("lyricweight", 600),
+            lyricWeight = b.getInt("lyricweight", 500),
             sessionLyric = b.getBoolean("sessionlyric", false),
+            lyricSource = b.getString("lyricsrc") ?: "none",
+            lyriconInstalled = b.getBoolean("lyricon", false),
             fpAvoid = b.getInt("fpavoid", 0),
             shade = b.keySet()
                 .filter { it.startsWith("shade_") }

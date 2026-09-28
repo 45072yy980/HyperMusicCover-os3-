@@ -15,12 +15,37 @@ final class CoverCardStyle {
     /** Least room kept to the clock, the media card and the screen edges. */
     static final float GAP_DP = 16f;
     static final float MIN_FILL = 0.4f;
-    static final float DEFAULT_FILL = 0.8f;
-    static final float DEFAULT_POS = 0.5f;
-    /** About the 20dp the corner had at a 300dp square before it was a setting. */
-    static final float DEFAULT_CORNER = 0.12f;
-    /** The top of the old dp size slider: a square set there was filling its room. */
-    private static final float LEGACY_MAX_SIZE_DP = 420f;
+    /**
+     * The square's size and place, both fixed now.
+     *
+     * The app has no sliders for either and the state file is not read for either. They were the
+     * defaults while they were settings, and they are the one pair that reads as a look rather
+     * than as two numbers: a square that fills its room has no room left to move in, so "as big as
+     * fits, centred" is one arrangement. `op coverstyle` still moves both for the rest of the
+     * session.
+     */
+    static final float FIXED_FILL = 1f;
+    static final float FIXED_POS = 0.5f;
+    /**
+     * What the corners fall back to before the media card's own radius has been measured: about
+     * the 20dp a 300dp square was drawn with, which is what they were before they were the media
+     * card's at all. The app's preview falls back to the same share. See [radius].
+     */
+    static final float FALLBACK_CORNER = 0.12f;
+
+    /**
+     * The media card's own corner radius in pixels, pushed in by Main when it measures the card.
+     *
+     * Pushed rather than asked for, and that is the point: this class is reached from the cover's
+     * draw path and from a unit test, and Main is an Xposed entry point that a plain JVM cannot
+     * even load. Nothing here needs SystemUI, so nothing here may name it.
+     */
+    private static volatile float sMediaCardRadiusPx;
+
+    /** See [sMediaCardRadiusPx]. Anything that is not a positive finite number clears it. */
+    static void noteMediaCardRadius(float px) {
+        sMediaCardRadiusPx = Float.isFinite(px) && px > 0f ? px : 0f;
+    }
 
     final int mode;
     /** The side as a share of the largest square that fits the room, MIN_FILL..1. */
@@ -28,20 +53,25 @@ final class CoverCardStyle {
     /** Where the square sits in the height it leaves over: 0 top, 0.5 centre, 1 bottom. */
     final float pos;
     /**
-     * How round the corners are, 0 square to 1 a circle: a share of the side rather than dp, so
-     * the shape holds while the size follows the room.
+     * An override for the corner radius - 0 square to 1 a circle, as a share of the half-side -
+     * or NaN to take the media card's own.
+     *
+     * It used to be the setting, and the corners are the media notification's now: the square
+     * cover and the media card are the same piece of furniture on the same screen, and the 0.12
+     * was only ever an approximation of the card's radius at one particular size. Nothing writes
+     * this down any more. It is reachable from `op coverstyle --es key corner` and nowhere else.
      */
     final float corner;
 
     CoverCardStyle(int mode, float fill, float pos, float corner) {
         this.mode = mode == CARD ? CARD : FULL;
-        this.fill = finite(fill, MIN_FILL, 1f, DEFAULT_FILL);
-        this.pos = finite(pos, 0f, 1f, DEFAULT_POS);
-        this.corner = finite(corner, 0f, 1f, DEFAULT_CORNER);
+        this.fill = finite(fill, MIN_FILL, 1f, FIXED_FILL);
+        this.pos = finite(pos, 0f, 1f, FIXED_POS);
+        this.corner = Float.isFinite(corner) ? Math.max(0f, Math.min(1f, corner)) : Float.NaN;
     }
 
     static CoverCardStyle defaults() {
-        return new CoverCardStyle(FULL, DEFAULT_FILL, DEFAULT_POS, DEFAULT_CORNER);
+        return new CoverCardStyle(FULL, FIXED_FILL, FIXED_POS, Float.NaN);
     }
 
     CoverCardStyle with(String key, float value) {
@@ -52,9 +82,31 @@ final class CoverCardStyle {
         return this;
     }
 
-    /** The corner radius for a card whose shorter side is this. */
+    /**
+     * The corner radius for a card whose shorter side is this.
+     *
+     * The media card's own radius, in pixels, until the square would be a circle - the same
+     * reading its outline is clipped with, so the two cards' corners are the same radius rather
+     * than the same fraction of two different sizes. Before that has been measured, and when an
+     * override is set, a share of the side instead.
+     */
     float radius(float side) {
-        return side * 0.5f * corner;
+        float half = side * 0.5f;
+        if (Float.isFinite(corner)) return half * corner;
+        float r = sMediaCardRadiusPx;
+        return r > 0f ? Math.min(r, half) : half * FALLBACK_CORNER;
+    }
+
+    /**
+     * The same radius as a share of the half-side, which is what the shadow's tile is keyed on.
+     *
+     * Asked for at a card's RESTING side. The live one changes on every frame of the morph, and
+     * the tile cache would then miss on every frame - a fresh software blur per frame, which is
+     * the thing drawShadow exists to avoid. The two agree where it matters: at the landing.
+     */
+    float cornerShare(float side) {
+        float half = side * 0.5f;
+        return half > 0f ? Math.min(1f, radius(side) / half) : FALLBACK_CORNER;
     }
 
     /**
@@ -67,14 +119,6 @@ final class CoverCardStyle {
     static float aspect(float w, float h) {
         if (!(w > 0f && h > 0f)) return 1f;
         return Math.max(1f / MAX_ASPECT, Math.min(MAX_ASPECT, w / h));
-    }
-
-    /**
-     * An old dp size, for a state file or backup from before the shares. Only the slider's top
-     * translates without knowing the room - it meant "as big as fits"; anything else is the default.
-     */
-    static float fillFromLegacySizeDp(float sizeDp) {
-        return sizeDp >= LEGACY_MAX_SIZE_DP ? 1f : DEFAULT_FILL;
     }
 
     static float finite(float v, float lo, float hi, float fallback) {

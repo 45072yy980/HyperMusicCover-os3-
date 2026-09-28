@@ -13,7 +13,9 @@ public class LyricStyleTest {
     @Test public void defaultsPreserveTheOriginalBandAndTextWidth() {
         LyricStyle s = LyricStyle.DEFAULT;
         assertEquals(25f, s.sizeSp, 0f);
-        assertEquals(600, s.weight);
+        // Down from 600 with the sliders: this is the one value of the five that was worth
+        // changing on the way past. See LyricStyle.DEFAULT.
+        assertEquals(500, s.weight);
         assertArrayEquals(new float[]{116f, 484f}, band(s, 100f, 500f, 25f), 0f);
         assertEquals(30f, s.sidePx(360, 360, 1f, 25f), 0f);
     }

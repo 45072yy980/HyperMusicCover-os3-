@@ -21,27 +21,30 @@ object MiniPlayerConfig {
 
     @JvmStatic fun defaultJson(): String = normalizedJson(null)
 
+    /**
+     * The config as the module will use it: [ENABLED] from the input, the three size keys always
+     * at the values above.
+     *
+     * The sizes were sliders and are not settings any more - the app has no rows for them - so a
+     * config that still carries one is not obeyed, whoever wrote it. They stay in the JSON all
+     * the same: the module's runtime, `MiniPlayerGeometry` and the state file all read this map
+     * by key, and a missing key would be read as zero rather than as the default wherever a
+     * caller used `getDouble` directly.
+     *
+     * The values themselves were never arbitrary: 221dp is what fits between the two shortcut
+     * discs on this screen, and both of the others are held to the pill's own height. See
+     * MiniPlayerRuntime, which clamps them again against the room it actually has.
+     */
     @JvmStatic fun normalizedJson(raw: String?): String {
         val input = runCatching { JSONObject(raw.orEmpty()) }.getOrDefault(JSONObject())
         val out = JSONObject()
         defaults.forEach { (key, fallback) ->
-            val value: Any = runCatching {
-                when (fallback) {
-                    is Boolean -> input.getBoolean(key)
-                    is Int -> input.getInt(key)
-                    is Float -> input.getDouble(key).toFloat().takeIf(Float::isFinite) ?: fallback
-                    else -> fallback
-                }
-            }.getOrDefault(fallback)
-            out.put(key, value)
+            out.put(key, if (key == ENABLED) {
+                runCatching { input.getBoolean(key) }.getOrDefault(fallback)
+            } else {
+                fallback
+            })
         }
-        fun decimal(key: String, min: Float, max: Float) {
-            val value = out.getDouble(key).toFloat()
-            out.put(key, if (value.isFinite()) value.coerceIn(min, max) else defaults[key])
-        }
-        decimal(WIDTH, 160f, 360f)
-        decimal(HEIGHT_RADIUS, 24f, 60f)
-        decimal(ART_RADIUS, 0f, 60f)
         return out.toString()
     }
 

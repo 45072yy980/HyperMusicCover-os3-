@@ -378,7 +378,16 @@ public class Main extends XposedModule {
     private static final float CLOCK_HEIGHT_MAX_DP = 256f;
     /** The smallest scale ever written to a view, so no style can collapse itself to nothing. */
     static final float MIN_CLOCK_K = 0.05f;
-    private static final float DEFAULT_GLASS_END = 0.75f;
+    /**
+     * How solid the glass clock goes, in the OEM's own terms: updateGlassValue(0) is transparent
+     * refracting glass and (1) is a solid fill.
+     *
+     * Fixed at 0 - the glass end, no slider, and loadState does not read one. The app's row for it
+     * was labelled "玻璃强度" and shown inverted (1 - this), so 0 is what its right-hand end, 100%,
+     * asked for. `op glassend` still moves it for the rest of the session, in these terms: --ef v 1
+     * is the solid end.
+     */
+    private static final float DEFAULT_GLASS_END = 0f;
     static volatile float sClockHeightDp = DEFAULT_CLOCK_HEIGHT_DP;
     /**
      * A clock size stored before the unit changed, waiting for a measured box to convert with.
@@ -393,16 +402,29 @@ public class Main extends XposedModule {
      * The collapsed clock's size as a fraction of the style's own full-size clock - the one the
      * lock screen shows with cover mode off, before any notification squeezes it. 1 = unchanged.
      *
-     * NaN until the slider is first moved, and then sClockHeightDp still decides: the default
-     * is the 36dp clock, and what fraction that is depends on the style, so it cannot be
-     * written down as one number.
+     * NOT a setting any more: the app has no slider for it and loadState does not read one, so
+     * this is the size every phone gets. 0.09 is the share the 36dp digits come to on the style
+     * they were chosen on. `op clocksize` still moves it for the rest of the session - nothing
+     * writes it down, so a restart puts it back. NaN is what that op asks for to hand the size
+     * back to sClockHeightDp, which is otherwise unused now.
+     *
+     * One thing this number does that NaN did not: it wakes ClockCollapse.targetY, which walks
+     * the OEM's own squeeze so the variable font is DRAWN at the height asked for instead of
+     * being drawn at the floor and scaled up - the two agree in height and not in the width the
+     * font takes at that height. It only moves while the asked-for height is meaningfully above
+     * the OEM's floor, and 36dp came to a share of the full clock that is close to it, so this
+     * should be the same clock. If the digits ever read wider than before, this is the line.
      */
-    static volatile float sClockSize = Float.NaN;
-    /** The smallest size the slider can ask for. */
+    static final float DEFAULT_CLOCK_SIZE = 0.09f;
+    static volatile float sClockSize = DEFAULT_CLOCK_SIZE;
+    /** The smallest size the clock can be set to. */
     static final float CLOCK_SIZE_MIN = 0.05f;
     /**
      * How far the date and the clock are moved together, in dp, from where cover mode puts
      * them. Positive is down.
+     *
+     * Fixed at 0: no slider, and loadState does not read one. `op clockoffset` still moves it
+     * for the rest of the session.
      */
     static volatile float sClockOffsetDp = 0f;
     static final float CLOCK_OFFSET_MIN_DP = -60f;
@@ -483,18 +505,22 @@ public class Main extends XposedModule {
      * every track change and re-laid out constantly, so the look is asserted every frame from a
      * guard rather than set once.
      *
-     * Both are off by default - the card as the OEM draws it is not wrong, only busy - and both
-     * apply in cover mode only, which is when the artwork is already the wallpaper and the
-     * thumbnail is showing it a second time.
+     * Both are ON now, and neither is a setting: the app has no switches for them and loadState
+     * does not read any. Off was the cautious default while they were new; on is the look this
+     * ships with - the artwork is already the wallpaper, so the thumbnail is showing it a second
+     * time. Both apply in cover mode only. `op mediacard` still moves them for the rest of the
+     * session.
      */
-    private static volatile boolean sMcHideArt;
+    private static volatile boolean sMcHideArt = true;
     /**
      * Whether the hidden thumbnail comes back while the lock screen lyrics are up.
      *
      * Only means anything with sMcHideArt on, which is what the app's layout says: it is the
-     * exception to that setting, not a setting of its own.
+     * exception to that setting, not a setting of its own. Also fixed on, and for the same
+     * reason: the lyrics are up for most of a track, and a card that has lost its thumbnail by
+     * then has nothing to come back for.
      */
-    private static volatile boolean sMcArtInLyrics;
+    private static volatile boolean sMcArtInLyrics = true;
     /**
      * Whether tapping the card's title line toggles playback.
      *
@@ -526,8 +552,12 @@ public class Main extends XposedModule {
      * One setting for both views of the lock screen: the lyrics are a layer over cover mode
      * rather than a mode of their own, so "cover" and "lyrics" have no separate AOD to disagree
      * about.
+     *
+     * On, and not a setting: the app has no switch for it and loadState does not read one. The
+     * grow-back was tried and read as the cover being taken away at the moment the screen went
+     * off. `op aodclock` still moves it for the rest of the session.
      */
-    static volatile boolean sAodSmall;
+    static volatile boolean sAodSmall = true;
     /**
      * Whether the wallpaper process is sizing the keyguard texture to the SCREEN rather than to
      * the wallpaper file, which is its default and is the same switch as WallpaperProbe.sTexFit
@@ -788,7 +818,12 @@ public class Main extends XposedModule {
     private static final float CLOCK_RESPONSE_MIN = 0.18f, CLOCK_RESPONSE_MAX = 0.60f;
     /** The wallpaper crossfade that belongs to EASE_COVER[1]. See fadeMsFor(). */
     private static final long EASE_COVER_FADE_MS = 370L;
-    /** What the transition runs on. Starts at the OEM preset and moves with the slider. */
+    /**
+     * What the transition runs on, and the wallpaper crossfade with it (see fadeMsFor).
+     *
+     * Fixed at the OEM preset for this transition: no slider, and loadState does not read one.
+     * `op clockspring` still moves it for the rest of the session.
+     */
     static volatile float sClockResponse = EASE_COVER[1];
 
     /**
@@ -1711,36 +1746,31 @@ public class Main extends XposedModule {
     static void saveState() {
         if (sAppCtx == null) return;
         // Never while loadState is still walking the file. Some of the setters it applies values
-        // through save as part of their own contract - setClockResponse does - and a save taken
-        // mid-parse writes every key the parse has NOT reached yet at its DEFAULT. `spring` sits
-        // ahead of mcart, mctext, mctap, lyrics, lyrickeep and lyrichdr in the file, so restoring
-        // a good file quietly rewrote it with those six off. The run itself looked fine, because
-        // the loop went on to fill memory in correctly from the copy it had already read; the
-        // damage only showed at the NEXT SystemUI start, which is why it read as "installing the
-        // app turns some switches off". loadState saves once at the end instead.
+        // through save as part of their own contract - setClockHeightDp does - and a save taken
+        // mid-parse writes every key the parse has NOT reached yet at its DEFAULT. The keys that
+        // go through a setter sit ahead of mctap, tap, lyrickeep and lyrichdr in the file, so
+        // restoring a good file once quietly rewrote it with those four off. The run itself looked
+        // fine, because the loop went on to fill memory in correctly from the copy it had already
+        // read; the damage only showed at the NEXT SystemUI start, which is why it read as
+        // "installing the app turns some switches off". loadState saves once at the end instead.
         if (sLoading) return;
         try {
             java.io.FileOutputStream f =
                     new java.io.FileOutputStream(new java.io.File(sAppCtx.getFilesDir(), STATE_FILE));
             f.write(("cover=" + (sCoverMode ? 1 : 0)
                     + "\nbias=" + sBias
+                    // Only the mode. The square's size, place and corners, the clock's size and
+                    // offset, the glass end and the spring are all fixed now, and loadState does
+                    // not read any of them - writing them down would be a value nothing could
+                    // ever have set. See loadState.
                     + "\ncoverstyle=" + sCoverCardStyle.mode
-                    + "\ncovercardfill=" + sCoverCardStyle.fill
-                    + "\ncovercardpos=" + sCoverCardStyle.pos
-                    + "\ncovercardcorner=" + sCoverCardStyle.corner
                     // A pending pre-dp value is written as itself: it cannot be converted until
                     // a confirmed box exists, and writing the default over it would lose the
                     // setting the user actually had.
                     + "\nclock=" + (Float.isNaN(sClockLegacyK) ? sClockHeightDp : sClockLegacyK)
-                    + (Float.isNaN(sClockSize) ? "" : "\nclocksize=" + sClockSize)
-                    + "\nclockoff=" + sClockOffsetDp
                     // A measurement, like cardrect: the full clock the size is a fraction of.
                     + (ClockCollapse.fullUnitState() == null ? ""
                             : "\nclockfull=" + ClockCollapse.fullUnitState())
-                    + "\nglass=" + sGlassEnd
-                    + "\nspring=" + sClockResponse
-                    + "\nmcart=" + (sMcHideArt ? 1 : 0)
-                    + "\nmclyricart=" + (sMcArtInLyrics ? 1 : 0)
                     + "\nmctap=" + (sMcTitleTap ? 1 : 0)
                     + "\ntap=" + (sTapToggle ? 1 : 0)
                     + ShadeLayer.dumpCfg()
@@ -1751,10 +1781,11 @@ public class Main extends XposedModule {
                     // geometry is: a fresh SystemUI should not have to relearn it to use it.
                     + "\ncovergap=" + CoverPush.sCoverFadeGapMs
                     + "\nhidefp=" + (sHideFp ? 1 : 0)
-                    + "\naodsmall=" + (sAodSmall ? 1 : 0)
+                    // aodsmall and lyrics are not written: both are fixed on, and loadState does
+                    // not read them. lyrichidden still is - the two-finger tap is the one way the
+                    // lock screen can be asked for the cover instead, and it has to survive.
                     + "\ncolon=" + (HyperTweaks.sForceColon ? 1 : 0)
                     + "\nseekglow=" + (HyperTweaks.sBarGlow ? 1 : 0)
-                    + "\nlyrics=" + (LockLyrics.sEnabled ? 1 : 0)
                     + "\nlyrickeep=" + (LockLyrics.sKeepOn ? 1 : 0)
                     + "\nlyrichidden=" + (LockLyrics.sTapHidden ? 1 : 0)
                     + "\nlyrichdr=" + (LockLyrics.sHdr ? 1 : 0)
@@ -1762,11 +1793,7 @@ public class Main extends XposedModule {
                     // the key did not exist before this setting did, and the lyrics are supposed
                     // to look the way they always have on a file that predates it.
                     + "\nlyrictrans=" + (LockLyrics.sTrans ? 1 : 0)
-                    + "\nlyricfill=" + LockLyrics.sStyle.fill
-                    + "\nlyricpos=" + LockLyrics.sStyle.pos
-                    + "\nlyricside=" + LockLyrics.sStyle.sideDp
-                    + "\nlyricsize=" + LockLyrics.sStyle.sizeSp
-                    + "\nlyricweight=" + LockLyrics.sStyle.weight
+                    // The band's five values are fixed now and are not written; see LyricStyle.
                     // Not a setting - whether the last lookup got its lyric from the session.
                     // Kept across restarts so the settings page does not accuse a working
                     // provider module of doing nothing merely because nothing has played yet;
@@ -1837,27 +1864,16 @@ public class Main extends XposedModule {
                         else if ("bias".equals(k)) sBias = Float.parseFloat(v);
                         else if ("coverstyle".equals(k)) sCoverCardStyle =
                                 sCoverCardStyle.with("mode", Float.parseFloat(v));
-                        else if ("covercardfill".equals(k)) sCoverCardStyle =
-                                sCoverCardStyle.with("fill", Float.parseFloat(v));
-                        else if ("covercardpos".equals(k)) sCoverCardStyle =
-                                sCoverCardStyle.with("pos", Float.parseFloat(v));
-                        else if ("covercardcorner".equals(k)) sCoverCardStyle =
-                                sCoverCardStyle.with("corner", Float.parseFloat(v));
-                        // The dp size from before the shares. The file is rewritten without it,
-                        // so this runs once; the old margin and offset are dropped.
-                        else if ("covercardsize".equals(k)) sCoverCardStyle =
-                                sCoverCardStyle.with("fill", CoverCardStyle
-                                        .fillFromLegacySizeDp(Float.parseFloat(v)));
+                        // covercardfill, covercardpos, covercardcorner and the dp covercardsize
+                        // before them are not read. The square's size, place and corners are
+                        // fixed, and a file from before that is not allowed to hold them open -
+                        // see CoverCardStyle. coverstyle IS read: which of the two shapes the
+                        // cover takes is still the user's.
                         else if ("clock".equals(k)) setClockHeightDp(Float.parseFloat(v));
-                        else if ("clocksize".equals(k)) setClockSize(Float.parseFloat(v));
-                        else if ("clockoff".equals(k)) setClockOffsetDp(Float.parseFloat(v));
                         else if ("clockfull".equals(k)) ClockCollapse.restoreFullUnit(v);
-                        else if ("glass".equals(k)) sGlassEnd = Float.parseFloat(v);
-                        // Through the setter, the way "clock" is: the clamp and the push to the
-                        // wallpaper process are both part of reading the value back.
-                        else if ("spring".equals(k)) setClockResponse(Float.parseFloat(v));
-                        else if ("mcart".equals(k)) sMcHideArt = "1".equals(v);
-                        else if ("mclyricart".equals(k)) sMcArtInLyrics = "1".equals(v);
+                        // clocksize, clockoff, glass and spring are not read either: the clock's
+                        // size and offset, the glass clock's end and the transition's spring are
+                        // all fixed. Each is still reachable from its own op, for the session.
                         else if ("mctap".equals(k)) sMcTitleTap = "1".equals(v);
                         else if ("tap".equals(k)) sTapToggle = "1".equals(v);
                         else if ("fadewp".equals(k)) sFadeWp = "1".equals(v);
@@ -1865,26 +1881,20 @@ public class Main extends XposedModule {
                         else if ("fsmode2".equals(k)) sFadeMode = Integer.parseInt(v);
                         else if ("covergap".equals(k)) CoverPush.sCoverFadeGapMs = Long.parseLong(v);
                         else if ("hidefp".equals(k)) sHideFp = "1".equals(v);
-                        else if ("aodsmall".equals(k)) sAodSmall = "1".equals(v);
                         else if ("colon".equals(k)) HyperTweaks.sForceColon = "1".equals(v);
                         else if ("seekglow".equals(k)) HyperTweaks.sBarGlow = "1".equals(v);
-                        else if ("lyrics".equals(k)) LockLyrics.sEnabled = "1".equals(v);
+                        // aodsmall and lyrics are not read: cover mode keeps its small clock in
+                        // the AOD and the lock screen shows the lyrics, both unconditionally now.
+                        // lyrichidden still is - that is the two-finger tap, and it is how the
+                        // lock screen is asked for the cover instead.
                         else if ("lyrickeep".equals(k)) LockLyrics.sKeepOn = "1".equals(v);
                         else if ("lyrichidden".equals(k)) LockLyrics.sTapHidden = "1".equals(v);
                         else if ("lyrichdr".equals(k)) LockLyrics.sHdr = "1".equals(v);
                         else if ("lyrictrans".equals(k)) LockLyrics.sTrans = "1".equals(v);
                         // The dp lyricoff and lyricgap from before the shares are dropped: what
-                        // they meant depends on the room, which is not known here.
-                        else if ("lyricfill".equals(k)) LockLyrics.sStyle =
-                                LockLyrics.sStyle.with("fill", Float.parseFloat(v));
-                        else if ("lyricpos".equals(k)) LockLyrics.sStyle =
-                                LockLyrics.sStyle.with("pos", Float.parseFloat(v));
-                        else if ("lyricside".equals(k)) LockLyrics.sStyle =
-                                LockLyrics.sStyle.with("side", Float.parseFloat(v));
-                        else if ("lyricsize".equals(k)) LockLyrics.sStyle =
-                                LockLyrics.sStyle.with("size", Float.parseFloat(v));
-                        else if ("lyricweight".equals(k)) LockLyrics.sStyle =
-                                LockLyrics.sStyle.with("weight", Float.parseFloat(v));
+                        // they meant depends on the room, which is not known here. lyricfill,
+                        // lyricpos, lyricside, lyricsize and lyricweight are dropped with them:
+                        // the band and its type are fixed, see LyricStyle.DEFAULT.
                         else if ("sawlyric".equals(k)) {
                             LockLyrics.sSawSessionLyric = "1".equals(v);
                         }
@@ -2560,7 +2570,8 @@ public class Main extends XposedModule {
                         out.putInt("coverstyle", sCoverCardStyle.mode);
                         out.putFloat("covercardfill", sCoverCardStyle.fill);
                         out.putFloat("covercardpos", sCoverCardStyle.pos);
-                        out.putFloat("covercardcorner", sCoverCardStyle.corner);
+                        // No covercardcorner: the square's corners are the media card's own, and
+                        // the app draws them from the cardradius it gets with the pictures.
                         out.putFloat("clock", sClockHeightDp);
                         out.putFloat("clocksize", effectiveClockSize());
                         out.putFloat("clockoff", sClockOffsetDp);
@@ -2591,6 +2602,12 @@ public class Main extends XposedModule {
                         out.putBoolean("colon", HyperTweaks.sForceColon);
                         out.putBoolean("seekglow", HyperTweaks.sBarGlow);
                         out.putBoolean("lyrics", LockLyrics.sEnabled);
+                        // Where the lock screen's words came from right now, and whether there is
+                        // a Lyricon to talk to. The app's lyric-source row is these two: it names
+                        // the source, and warns to install something only when both this and the
+                        // LyricInfo package are absent. See FeaturesPage.
+                        out.putString("lyricsrc", LockLyrics.sourceName());
+                        out.putBoolean("lyricon", LyriconSource.installed());
                         out.putBoolean("lyrickeep", LockLyrics.sKeepOn);
                         out.putBoolean("lyrichdr", LockLyrics.sHdr);
                         out.putBoolean("lyrictrans", LockLyrics.sTrans);
@@ -5416,6 +5433,10 @@ public class Main extends XposedModule {
             out.putFloat("clocksize", effectiveClockSize());
         }
         out.putBoolean("clockglass", clockHasGlass());
+        // Sent with every picture rather than only in the query: which route the lyric came from
+        // changes mid-track - the session's payload turns up after the file, a network lookup
+        // lands after that - and the row that names it is read while this page is open.
+        out.putString("lyricsrc", LockLyrics.sourceName());
         if (diag != null) {
             View date = visibleDate();
             diag.append("\n  date: view=").append(date == null ? "NOT FOUND"
@@ -7444,6 +7465,9 @@ public class Main extends XposedModule {
      * reading 244px above the real one got through.
      */
     private static void sampleCardRect(View card, float p) {
+        // Once, on the way past: the square cover's corners are the media card's own now, and this
+        // is a frame the card is on screen and laid out for. See noteMediaCardRadius().
+        if (!sMediaCardRadiusKnown) noteMediaCardRadius();
         // Not mid-morph. The reading below is of a card that has HELD STILL for CARD_SETTLE_MS,
         // and while the cover is going up or coming down the card is moving on every frame - so
         // the settle test can never pass and the only thing a read here produces is the bill for
@@ -7488,6 +7512,41 @@ public class Main extends XposedModule {
         Xp.log(TAG + "media card at " + sCardL + "," + sCardT + " " + sCardW + "x" + sCardH);
         CoverCardLayer.refresh();
         saveStateSoon();
+    }
+
+    /** How long between attempts to read the media card's radius, for a phone with no card. */
+    private static final long MEDIA_CARD_RADIUS_RETRY_MS = 2000L;
+
+    /** Whether the media card's corner radius has been read off it yet. */
+    private static volatile boolean sMediaCardRadiusKnown;
+    /** When the last attempt was, so a card that cannot be found is not looked for per frame. */
+    private static volatile long sMediaCardRadiusTriedAt;
+
+    /**
+     * Hands the square cover the media card's own corner radius.
+     *
+     * The two are the same piece of furniture on the same screen, and the square's corners were a
+     * share of its own side until this - which is the same radius only at one particular size.
+     * The reading goes to CoverCardStyle rather than being kept here: that class draws the
+     * corners, and it must not have to name this one to do it. See CoverCardStyle.radius.
+     *
+     * The same view previewBundle reads, found the same way, so the two can never disagree about
+     * which card is the lock screen's. Called from the card's own per-frame hook, so it is floor'd
+     * and one-shot: it walks the tree, the radius of a view already on screen does not change, and
+     * a phone with no media card at all would otherwise pay for this walk on every frame.
+     */
+    private static void noteMediaCardRadius() {
+        long now = android.os.SystemClock.uptimeMillis();
+        if (now - sMediaCardRadiusTriedAt < MEDIA_CARD_RADIUS_RETRY_MS) return;
+        sMediaCardRadiusTriedAt = now;
+        View cardView = cardShotRoot(findSysuiView("mi_media_controls"));
+        View bg = cardView == null ? null : findByName(cardView, "media_bg");
+        float r = bg == null ? 0f : outlineRadius(bg);
+        if (r <= 0f) return;
+        sMediaCardRadiusKnown = true;
+        CoverCardStyle.noteMediaCardRadius(r);
+        Xp.log(TAG + "media card radius = " + r + "px (the square cover's corners follow it)");
+        CoverCardLayer.refresh();
     }
 
 

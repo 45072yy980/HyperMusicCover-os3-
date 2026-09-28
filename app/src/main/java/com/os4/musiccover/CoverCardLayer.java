@@ -875,7 +875,9 @@ final class CoverCardLayer extends View implements Choreographer.FrameCallback {
                 drawSide, scale.value * (RISE_FROM + (1f - RISE_FROM) * rise), shownAspect());
         square.set(actual.x, actual.y, actual.x + actual.w, actual.y + actual.h);
         float radius = style.radius(Math.min(actual.w, actual.h));
-        drawShadow(canvas, square, style.corner, opacity, paint);
+        // The shadow is keyed on the corner at the RESTING side, not the moving one - see
+        // CoverCardStyle.cornerShare, and the note on shadowTile below.
+        drawShadow(canvas, square, style.cornerShare(drawSide), opacity, paint);
         int save = canvas.save();
         clipPath.reset();
         clipPath.addRoundRect(square, radius, radius, Path.Direction.CW);

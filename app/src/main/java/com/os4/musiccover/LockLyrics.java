@@ -32,8 +32,17 @@ final class LockLyrics {
 
     static volatile boolean verbose;
 
-    /** The user's switch. Off by default: it fetches from the network inside SystemUI. */
-    static volatile boolean sEnabled;
+    /**
+     * Whether the lyrics are the lock screen's to show.
+     *
+     * ON, and not a switch any more: the app has no row for it and loadState does not read one.
+     * The two-finger tap below is how the lock screen is asked to show the cover instead, and it
+     * is the one that survives - it is what the setting was for most of its life. It does mean
+     * the network fetch happens inside SystemUI without anyone asking for it; that is the trade
+     * the setting was removed for, and `op lyrics` still turns it off for the rest of the
+     * session.
+     */
+    static volatile boolean sEnabled = true;
 
     /**
      * Whether the lock screen's two-finger tap has taken the lyrics away.
@@ -817,6 +826,18 @@ final class LockLyrics {
         sKey = "";
         onTrack(key, c);
         refresh();
+    }
+
+    /**
+     * The route this track's lyric came from, as the settings page names it.
+     *
+     * [srcName]'s words - "session", "local", "qq" and the rest - or "none" when there is no
+     * lyric to speak of. A string rather than the SRC_ constant because the reader is the app in
+     * another process, and it does one thing with it: puts it in a row that says where the words
+     * on the lock screen came from.
+     */
+    static String sourceName() {
+        return sLines.isEmpty() ? "none" : srcName(sSource);
     }
 
     /** The SRC_ constant as something readable in a broadcast result. */

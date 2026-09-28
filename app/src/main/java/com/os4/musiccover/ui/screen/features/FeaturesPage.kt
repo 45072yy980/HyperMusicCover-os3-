@@ -1,11 +1,6 @@
 package com.os4.musiccover.ui.screen.features
 
 import android.content.Intent
-import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.expandVertically
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
-import androidx.compose.animation.shrinkVertically
 import android.graphics.Bitmap
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
@@ -168,8 +163,6 @@ internal fun CoverPageView(
     var art by remember { mutableStateOf<Bitmap?>(null) }
     var shots by remember { mutableStateOf(ModuleBridge.Preview()) }
     var group by remember { mutableIntStateOf(0) }
-    // Bumped when a switch changes the card, to re-take the picture without waiting for the tick.
-    var shotNonce by remember { mutableIntStateOf(0) }
 
     // Re-asked until it answers: this screen is reached straight after "重启全部作用域" as often
     // as not, and a single query then lands before SystemUI has a receiver - leaving every
@@ -182,15 +175,12 @@ internal fun CoverPageView(
     // settings - a query landing mid-drag would snap a slider back to whatever the module had
     // applied a moment ago.
     var artTrack by remember { mutableStateOf("") }
-    LaunchedEffect(refreshKey, module.alive, shotNonce) {
+    LaunchedEffect(refreshKey, module.alive) {
         if (!module.alive) {
             art = null
             shots = ModuleBridge.Preview()
             return@LaunchedEffect
         }
-        // After a switch, the module needs a frame to re-style the card before it is worth
-        // photographing.
-        if (shotNonce > 0) delay(SETTLE_MS)
         while (true) {
             // The shortcuts never change, so they are fetched once and then carried forward.
             val want = shots.left == null || shots.right == null
@@ -207,6 +197,12 @@ internal fun CoverPageView(
             // could not be measured on - which is exactly when the slider looks wrong.
             if (reply.clockHasGlass != module.clockHasGlass) {
                 module = module.copy(clockHasGlass = reply.clockHasGlass)
+            }
+            // Which route the words came from changes mid-track - the file answers first and the
+            // network lands after it, or the session's own payload turns up last - so it rides
+            // the same poll the pictures do. Empty means a module too old to send it.
+            if (reply.lyricSource.isNotEmpty() && reply.lyricSource != module.lyricSource) {
+                module = module.copy(lyricSource = reply.lyricSource)
             }
             reply.clockGeometry?.let { g ->
                 if (g != clockGeometryOf(module)) {
@@ -265,8 +261,6 @@ internal fun CoverPageView(
                 coverStyle = module.coverStyle,
                 coverCardFill = module.coverCardFill,
                 coverCardPos = module.coverCardPos,
-                coverCardCorner = module.coverCardCorner,
-                clockHeightDp = module.clockHeightDp,
                 clockSize = module.clockSize,
                 clockOffsetDp = module.clockOffsetDp,
                 glassEnd = module.glassEnd,
@@ -299,9 +293,7 @@ internal fun CoverPageView(
                         CoverGroup(enabled, module) { module = it }
                         ClockGroup(enabled, module) { module = it }
                     }
-                    1 -> CardGroup(enabled, module, { module = it }) {
-                        shotNonce++
-                    }
+                    1 -> CardGroup(enabled, module) { module = it }
                     else -> LyricsGroup(enabled, module) { module = it }
                 }
             }
@@ -328,6 +320,13 @@ private fun CoverGroup(
                 ModuleBridge.setCoverStyle(context, "mode", it.toFloat())
             },
         )
+        // The square's size, place and corners were sliders here and are fixed - it fills the room
+        // it has, sits in the middle of it, and takes the media card's own corner radius, all of
+        // which are the same answer on every device. See CoverCardStyle.
+        //
+        // The one slider left belongs to the full-screen cover alone, and it is the one that has
+        // to stay a slider: where the cover sits vertically is a share of the screen, and the
+        // screen is not the same on every phone.
         if (module.coverStyle == 0) {
             ValueSlider(
                 title = stringResource(R.string.cover_bias),
@@ -337,61 +336,6 @@ private fun CoverGroup(
                 onValueChange = {
                     onChange(module.copy(bias = it))
                     ModuleBridge.setBias(context, it)
-                },
-            )
-        } else {
-            ValueSlider(
-                title = stringResource(R.string.cover_card_size),
-                value = module.coverCardFill.coerceIn(0.4f, 1f),
-                valueRange = 0.4f..1f,
-                enabled = enabled,
-                label = { "${(it * 100).roundToInt()}%" },
-                onValueChange = {
-                    val value = (it * 100).roundToInt() / 100f
-                    onChange(module.copy(coverCardFill = value))
-                    ModuleBridge.setCoverStyle(context, "fill", value)
-                },
-            )
-            val top = stringResource(R.string.cover_card_pos_top)
-            val centre = stringResource(R.string.cover_card_pos_centre)
-            val bottom = stringResource(R.string.cover_card_pos_bottom)
-            ValueSlider(
-                title = stringResource(R.string.cover_card_pos),
-                value = module.coverCardPos.coerceIn(0f, 1f),
-                valueRange = 0f..1f,
-                // A card that fills its room has no height left to move in.
-                enabled = enabled && module.coverCardFill < 1f,
-                detent = 0.5f,
-                label = {
-                    when ((it * 100).roundToInt()) {
-                        0 -> top
-                        50 -> centre
-                        100 -> bottom
-                        else -> "${(it * 100).roundToInt()}%"
-                    }
-                },
-                onValueChange = {
-                    val value = (it * 100).roundToInt() / 100f
-                    onChange(module.copy(coverCardPos = value))
-                    ModuleBridge.setCoverStyle(context, "pos", value)
-                },
-            )
-            val round = stringResource(R.string.cover_card_corner_round)
-            ValueSlider(
-                title = stringResource(R.string.cover_card_corner),
-                value = module.coverCardCorner.coerceIn(0f, 1f),
-                valueRange = 0f..1f,
-                enabled = enabled,
-                // The corner it had before it was a setting.
-                detent = 0.12f,
-                label = {
-                    val percent = (it * 100).roundToInt()
-                    if (percent == 100) round else "$percent%"
-                },
-                onValueChange = {
-                    val value = (it * 100).roundToInt() / 100f
-                    onChange(module.copy(coverCardCorner = value))
-                    ModuleBridge.setCoverStyle(context, "corner", value)
                 },
             )
         }
@@ -406,97 +350,24 @@ private fun ClockGroup(
 ) {
     val context = LocalContext.current
     Column {
-        // Where the date and the clock sit, moved as one block from where cover mode puts them.
-        ValueSlider(
-            title = stringResource(R.string.clock_height),
-            value = module.clockOffsetDp.coerceIn(CLOCK_OFFSET_MIN_DP, CLOCK_OFFSET_MAX_DP),
-            valueRange = CLOCK_OFFSET_MIN_DP..CLOCK_OFFSET_MAX_DP,
-            enabled = enabled,
-            label = { "${it.roundToInt()} dp" },
-            onValueChange = {
-                // Whole dp: a fraction of one is invisible, and the number reads cleaner.
-                val dp = it.roundToInt().toFloat()
-                onChange(module.copy(clockOffsetDp = dp))
-                ModuleBridge.setClockOffset(context, dp)
-            },
-        )
-        // A fraction of the style's own full clock, the one shown with cover mode off. The
-        // collapse cannot make a clock bigger than that, so 100% is the top.
-        ValueSlider(
-            title = stringResource(R.string.clock_size),
-            value = (if (module.clockSize > 0f) module.clockSize else DEFAULT_CLOCK_SIZE)
-                .coerceIn(CLOCK_SIZE_MIN, 1f),
-            valueRange = CLOCK_SIZE_MIN..1f,
-            enabled = enabled,
-            label = { "${(it * 100f).roundToInt()}%" },
-            onValueChange = {
-                val size = (it * 100f).roundToInt() / 100f
-                onChange(module.copy(clockSize = size))
-                ModuleBridge.setClockSize(context, size)
-            },
-        )
-        // Not a cover setting either, in the same way the colon switch below is not: it is about
-        // the clock the lock screen is showing when the display goes off. About the FULL-SCREEN
-        // always-on display only - the plain AOD is left as the system draws it, and the row no
-        // longer says which of the two it means, so it is worth saying here. Nothing to
-        // re-apply: the module reads it when the screen falls asleep.
-        SwitchPreference(
-            title = stringResource(R.string.clock_aod_small),
-            checked = module.aodSmall,
-            enabled = enabled,
-            onCheckedChange = {
-                onChange(module.copy(aodSmall = it))
-                ModuleBridge.setAodSmall(context, it)
-            },
-        )
-        // The spring the whole transition runs on. The number is miuix's response time in
-        // seconds and it is not flipped, because the label is a description of feel rather than
-        // of the unit: dragging right slows the spring down, and a slower spring with the same
-        // damping ratio is the one that reads as heavier. Zeta is fixed at 0.88 on the module
-        // side and is not on this slider.
-        ValueSlider(
-            title = stringResource(R.string.clock_response),
-            value = module.clockResponse.coerceIn(CLOCK_RESPONSE_MIN, CLOCK_RESPONSE_MAX),
-            valueRange = CLOCK_RESPONSE_MIN..CLOCK_RESPONSE_MAX,
-            enabled = enabled,
-            // The one detent in the app: this slider's own default, and the value every note
-            // about this transition quotes. Nothing is printed for it - the tick is the only
-            // mark, and it is there so the default can be found again without reading the
-            // number off the row.
-            detent = DEFAULT_CLOCK_RESPONSE,
-            onValueChange = {
-                onChange(module.copy(clockResponse = it))
-                ModuleBridge.setClockResponse(context, it)
-            },
-        )
-        // Shown inverted. The module stores the OEM's own number, where updateGlassValue(0) is
-        // transparent refracting glass and (1) is a solid fill - so as "glass strength" it runs
-        // backwards, and dragging right made the effect weaker. The stored value, the adb
-        // glassend op and the exported JSON all keep the OEM's meaning; only this slider is
-        // flipped.
-        // Off on the styles whose clock has no glass to morph. The morph is
-        // AllInOneBase.updateGlassValue(float) - the OEM's own ramp from refracting glass to a
-        // solid fill - and the rhombus, doodle, oriental and magazine clocks have no such thing:
-        // vector digits, bitmaps and plain text, so there is nothing for this slider to move.
-        // It used to say so in a summary; this page carries none now, by the user's choice.
-        val glassAvailable = module.clockHasGlass
-        ValueSlider(
-            title = stringResource(R.string.clock_glass),
-            value = 1f - module.glassEnd,
-            valueRange = 0f..1f,
-            enabled = enabled && glassAvailable,
-            onValueChange = {
-                val glassEnd = 1f - it
-                onChange(module.copy(glassEnd = glassEnd))
-                ModuleBridge.setGlassEnd(context, glassEnd)
-            },
-        )
+        // Four rows were here and are gone: the clock's size, how far the date and the clock are
+        // moved together, how solid the liquid-glass styles go, and the spring the whole
+        // transition runs on. All four are fixed now - the first two at the values cover mode has
+        // always been tuned to, the third at the OEM's own ramp end, and the spring at the OEM's
+        // preset for this transition, which is also what the wallpaper's crossfade is derived
+        // from. A fifth, the full-screen AOD keeping cover mode's small clock, is fixed on. See
+        // Main and LyricStyle for each value.
+        //
         // Not a cover setting and not tied to cover mode: it is the clock the lock screen always
         // has. It sits here because this is the page about the clock, and it is a switch rather
         // than something always on because it changes what the clock looks like - which the
         // other restrictions this module lifts do not.
+        //
+        // The summary is the switch's own caveat, asked for by the user: the hook is on the
+        // clock's isColonShow, so it can only speak for a style that has a colon to show.
         SwitchPreference(
             title = stringResource(R.string.clock_force_colon),
+            summary = stringResource(R.string.clock_force_colon_summary),
             checked = module.forceColon,
             enabled = enabled,
             onCheckedChange = {
@@ -526,35 +397,40 @@ private fun LyricsGroup(
             }
         }
     }
-    // Three states rather than two, and the difference between the last two is the one worth
-    // showing: installed is not the same question as working. LyricInfo is an LSPosed module,
-    // and one that is installed but not enabled - or enabled without the player in its scope -
-    // writes nothing while still sitting in the package list. The package manager cannot tell
-    // those apart; whether a session has carried its lyric is what does, and only the module
-    // knows that.
+    // What this row says, and there are two things it can be saying.
     //
-    // Which player is playing is the other half of the question, and it is the half that was
-    // missing at first. A session lyric is only ever going to appear for a player LyricInfo
-    // knows (see LYRICINFO_PLAYERS); on any other one the lyrics come from the network instead
-    // and "no session lyric" is the normal state of a working phone. Reporting that as "not
-    // working" blames the module for something it never claimed to do - and it is not a corner
-    // case, it is every song on Apple Music.
-    val provider = when {
-        !providerInstalled -> ProviderNotice.Missing
-        module.sessionLyric -> ProviderNotice.Ready
-        module.player in LYRICINFO_PLAYERS -> ProviderNotice.Inactive
-        else -> ProviderNotice.Ready
+    // The one it says nearly always is WHERE the words on the lock screen came from. The module
+    // tries its routes best-first - the session's own lyricInfo, the Lyricon bridge, the song's
+    // own file, then two catalogues over the network - and reports which one answered; the row
+    // names it. That is a better answer than the one this row used to give, which was whether
+    // LyricInfo was installed. A phone with no LyricInfo at all still gets lyrics from its own
+    // files and from the network, and a phone that has it still gets most of them elsewhere: the
+    // old row warned about a problem that in practice was not one, in red, on a working phone.
+    //
+    // The other is the one case worth a warning: neither LyricInfo nor a Lyricon central is on
+    // the phone, so nothing here reads a player's own lyric and every word has to come from a
+    // file or a lookup. Both are checked because they are two different modules doing the same
+    // job - LyricInfo hooks eight players, Lyricon takes whatever publishes to it - and either
+    // one is enough.
+    val missingModule = !providerInstalled && !module.lyriconInstalled
+    val source = lyricSourceLabel(module.lyricSource)
+    val title = when {
+        missingModule -> stringResource(R.string.lyrics_provider_title_missing)
+        source == null -> stringResource(R.string.lyrics_source_none)
+        else -> stringResource(R.string.lyrics_source, source)
     }
+    val summary = if (missingModule) R.string.lyrics_provider_missing
+                  else R.string.lyrics_provider_ready
     // Said twice, because once was not enough. The row standing at the top of the group is
-    // always there; this is the interruption, and it is only worth interrupting for the two
-    // states that need something done about them.
+    // always there; this is the interruption, and it is only worth interrupting for the one
+    // state that asks for something to be done.
     var showNotice by remember { mutableStateOf(false) }
     var countdown by remember { mutableIntStateOf(PROVIDER_NOTICE_SECONDS) }
-    LaunchedEffect(provider, module.alive) {
+    LaunchedEffect(missingModule, module.alive) {
         // Only once the module has answered: before that every field reads as its default, and
-        // "no lyric has ever arrived" would be the state of a phone that had simply not been
-        // asked yet.
-        if (provider != ProviderNotice.Ready && module.alive && !LyricsNotice.seen(context)) {
+        // "there is no provider on this phone" would be the state of one that had simply not
+        // been asked yet.
+        if (missingModule && module.alive && !LyricsNotice.seen(context)) {
             showNotice = true
         }
     }
@@ -568,8 +444,8 @@ private fun LyricsGroup(
     }
     WindowDialog(
         show = showNotice,
-        title = stringResource(provider.title),
-        summary = stringResource(provider.summary),
+        title = title,
+        summary = stringResource(summary),
         // Held for fifteen seconds, and held means held: an outside tap and the back gesture
         // both come through here, so there is no way out of it before the button unlocks. A
         // notice asking for a module to be installed is read by nobody if it can be flicked
@@ -598,108 +474,27 @@ private fun LyricsGroup(
         // dismissed, which is what makes it useful on the visit after the notice was flicked
         // away - or on a phone where the module had not answered yet when the notice was due.
         BasicComponent(
-            title = stringResource(provider.title),
+            title = title,
             titleColor = BasicComponentDefaults.titleColor(
-                color = if (provider.warning) MiuixTheme.colorScheme.error
+                color = if (missingModule) MiuixTheme.colorScheme.error
                         else MiuixTheme.colorScheme.onBackground,
             ),
-            summary = stringResource(provider.summary),
+            summary = stringResource(summary),
         )
-        SwitchPreference(
-            title = stringResource(R.string.lock_lyrics),
-            summary = stringResource(R.string.lock_lyrics_summary),
-            checked = module.lyrics,
-            enabled = enabled,
-            onCheckedChange = {
-                onChange(module.copy(lyrics = it))
-                ModuleBridge.setLyrics(context, it)
-            },
-        )
-        // The same two shares as the square card: how much of the room between the clock and
-        // the media card the band takes, and where it sits in the rest.
-        ValueSlider(
-            title = stringResource(R.string.lyric_band_fill),
-            summary = stringResource(R.string.lyric_band_fill_summary),
-            value = module.lyricFill.coerceIn(0.4f, 1f),
-            valueRange = 0.4f..1f,
-            enabled = enabled && module.lyrics,
-            label = { "${(it * 100).roundToInt()}%" },
-            onValueChange = {
-                val value = (it * 100).roundToInt() / 100f
-                onChange(module.copy(lyricFill = value))
-                ModuleBridge.setLyricStyle(context, "fill", value)
-            },
-        )
-        val top = stringResource(R.string.cover_card_pos_top)
-        val centre = stringResource(R.string.cover_card_pos_centre)
-        val bottom = stringResource(R.string.cover_card_pos_bottom)
-        ValueSlider(
-            title = stringResource(R.string.lyric_band_pos),
-            summary = stringResource(R.string.lyric_band_pos_summary),
-            value = module.lyricPos.coerceIn(0f, 1f),
-            valueRange = 0f..1f,
-            // A band that fills its room has no height left to move in.
-            enabled = enabled && module.lyrics && module.lyricFill < 1f,
-            detent = 0.5f,
-            label = {
-                when ((it * 100).roundToInt()) {
-                    0 -> top
-                    50 -> centre
-                    100 -> bottom
-                    else -> "${(it * 100).roundToInt()}%"
-                }
-            },
-            onValueChange = {
-                val value = (it * 100).roundToInt() / 100f
-                onChange(module.copy(lyricPos = value))
-                ModuleBridge.setLyricStyle(context, "pos", value)
-            },
-        )
-        ValueSlider(
-            title = stringResource(R.string.lyric_horizontal_margin),
-            summary = stringResource(R.string.lyric_horizontal_margin_summary),
-            value = module.lyricSideDp.coerceIn(0f, 64f),
-            valueRange = 0f..64f,
-            enabled = enabled && module.lyrics,
-            label = { "${it.roundToInt()} dp" },
-            onValueChange = {
-                val value = it.roundToInt().toFloat()
-                onChange(module.copy(lyricSideDp = value))
-                ModuleBridge.setLyricStyle(context, "side", value)
-            },
-        )
-        ValueSlider(
-            title = stringResource(R.string.lyric_font_size),
-            summary = stringResource(R.string.lyric_font_size_summary),
-            value = module.lyricSizeSp.coerceIn(18f, 36f),
-            valueRange = 18f..36f,
-            enabled = enabled && module.lyrics,
-            label = { "${it.roundToInt()} sp" },
-            onValueChange = {
-                val value = it.roundToInt().toFloat()
-                onChange(module.copy(lyricSizeSp = value))
-                ModuleBridge.setLyricStyle(context, "size", value)
-            },
-        )
-        ValueSlider(
-            title = stringResource(R.string.lyric_font_weight),
-            summary = stringResource(R.string.lyric_font_weight_summary),
-            value = module.lyricWeight.coerceIn(300, 700).toFloat(),
-            // MiSans VF, the lock screen's font, has a weight axis that ends at 700.
-            valueRange = 300f..700f,
-            enabled = enabled && module.lyrics,
-            // The number shown is the number sent: both go through lyricWeightOf.
-            label = { "${lyricWeightOf(it)}" },
-            onValueChange = {
-                val value = lyricWeightOf(it)
-                onChange(module.copy(lyricWeight = value))
-                ModuleBridge.setLyricStyle(context, "weight", value.toFloat())
-            },
-        )
+        // The one way the lock screen is asked for the cover instead, now that the lyrics have no
+        // switch of their own. A row rather than a summary on one of the switches below: none of
+        // them is about the cover, and this is not a description of any of them.
+        BasicComponent(title = stringResource(R.string.lyrics_two_finger_tap))
+        // The lyrics themselves are not a setting any more: they are drawn whenever the track has
+        // a lyric, and the two-finger tap on the lock screen is how the cover is asked for
+        // instead. Neither is the band they are drawn in - its height, its place in the room, the
+        // margin the lines are held inside and the size and weight of the main line are all fixed
+        // now (see LyricStyle). Everything below is a preference about the words rather than
+        // about where they go, so all three stay.
         SwitchPreference(
             title = stringResource(R.string.lyrics_trans),
             checked = module.lyricsTrans,
-            enabled = enabled && module.lyrics,
+            enabled = enabled,
             onCheckedChange = {
                 onChange(module.copy(lyricsTrans = it))
                 ModuleBridge.setLyricsTrans(context, it)
@@ -708,7 +503,7 @@ private fun LyricsGroup(
         SwitchPreference(
             title = stringResource(R.string.lyrics_hdr),
             checked = module.lyricsHdr,
-            enabled = enabled && module.lyrics,
+            enabled = enabled,
             onCheckedChange = {
                 onChange(module.copy(lyricsHdr = it))
                 ModuleBridge.setLyricsHdr(context, it)
@@ -717,7 +512,7 @@ private fun LyricsGroup(
         SwitchPreference(
             title = stringResource(R.string.lyrics_keep_on),
             checked = module.lyricsKeepOn,
-            enabled = enabled && module.lyrics,
+            enabled = enabled,
             onCheckedChange = {
                 onChange(module.copy(lyricsKeepOn = it))
                 ModuleBridge.setLyricsKeepOn(context, it)
@@ -736,39 +531,14 @@ private fun CardGroup(
     enabled: Boolean,
     module: ModuleBridge.State,
     onChange: (ModuleBridge.State) -> Unit,
-    onCardRestyled: () -> Unit,
 ) {
     val context = LocalContext.current
     Column {
-        SwitchPreference(
-            title = stringResource(R.string.card_hide_art),
-            checked = module.mcHideArt,
-            enabled = enabled,
-            onCheckedChange = {
-                onChange(module.copy(mcHideArt = it))
-                ModuleBridge.setCardHideArt(context, it)
-                onCardRestyled()
-            },
-        )
-        // Unfolds directly under the switch it belongs to, inside the same card: it is not a
-        // fourth media card setting, it is the exception to the one above, and it only exists
-        // while that one is on.
-        AnimatedVisibility(
-            visible = module.mcHideArt,
-            enter = expandVertically() + fadeIn(),
-            exit = shrinkVertically() + fadeOut(),
-        ) {
-            SwitchPreference(
-                title = stringResource(R.string.card_art_in_lyrics),
-                checked = module.mcArtInLyrics,
-                enabled = enabled,
-                onCheckedChange = { on ->
-                    onChange(module.copy(mcArtInLyrics = on))
-                    ModuleBridge.setCardArtInLyrics(context, on)
-                    onCardRestyled()
-                },
-            )
-        }
+        // Two switches were here and are gone: hiding the card's thumbnail, and bringing it back
+        // while the lyrics are up. Both are on and neither is a setting - the artwork is the
+        // wallpaper in this mode, so the thumbnail is a second copy of it, and the exception that
+        // shows it again is what the lyrics being up is for. See Main.sMcHideArt.
+        //
         // Requested for a reason of its own: on this card the real play/pause button sits over
         // the fingerprint sensor, so a thumb aiming for it unlocks the phone instead. The title
         // is the one part of the card that is both big and far from the sensor.
@@ -821,30 +591,6 @@ private fun CardGroup(
         )
     }
 }
-
-/** The date-and-clock offset's range in dp, matching CLOCK_OFFSET_MIN/MAX_DP in the module. */
-private const val CLOCK_OFFSET_MIN_DP = -60f
-private const val CLOCK_OFFSET_MAX_DP = 300f
-
-/** The clock size's floor, matching CLOCK_SIZE_MIN in the module. */
-private const val CLOCK_SIZE_MIN = 0.05f
-/** Where the size thumb sits before the module has said what the clock is at. */
-private const val DEFAULT_CLOCK_SIZE = 0.3f
-
-/**
- * The clock transition's spring response, in seconds, matching CLOCK_RESPONSE_MIN/MAX in the
- * module. 0.18 is the fastest this transition has ever shipped and 0.60 is the slow end of what
- * still reads as one movement.
- */
-private const val CLOCK_RESPONSE_MIN = 0.18f
-private const val CLOCK_RESPONSE_MAX = 0.60f
-
-/**
- * What the module ships with, and the one detent on any slider here: `EASE_COVER[1]` in Main.java,
- * the response the cover itself moves on. Named rather than written at the call site because the
- * detent and the default have to be the same number for either of them to be worth anything.
- */
-private const val DEFAULT_CLOCK_RESPONSE = 0.38f
 
 /**
  * A slider with its current value printed opposite the title. Without the number there is no way
@@ -926,9 +672,6 @@ private fun clockGeometryOf(state: ModuleBridge.State) = ModuleBridge.Geometry(
  */
 private const val SHOT_POLL_MS = 3000L
 
-/** Time for the module's per-frame guard to restyle the card before it is photographed. */
-private const val SETTLE_MS = 200L
-
 /** Two decimals, without dragging java.util.Formatter's locale into it. */
 private fun format(v: Float): String {
     val hundredths = (v * 100f).roundToInt()
@@ -946,59 +689,33 @@ private val LYRIC_PROVIDERS = listOf(
     "com.lidesheng.lyricinfo.lite",
 )
 
-/**
- * The players LyricInfo can write for, read out of its own APK's dex.
- *
- * It hooks a player's internals and republishes what it finds as `lyricInfo` on the media
- * session, so it only covers the players it was written for - and Apple Music is not one of
- * them. That is what the lyrics state on this page turns on: whether a session carries a lyric
- * says nothing about the module unless the player on screen is one the module claims.
- *
- * From `pm path com.lidesheng.lyricinfo`, pulled and grepped out of `classes.dex`; the vendor
- * class names around them (`com.salt.music.service.MusicController`,
- * `com.luna.biz.playing.player.remote.control.*`) are the hook targets themselves. Both
- * soda-music names are here because the app has shipped under both - `com.luna.music` and
- * `com.ikunshare.music.mobile`.
- */
-private val LYRICINFO_PLAYERS = setOf(
-    "com.netease.cloudmusic",
-    "com.tencent.qqmusic",
-    "com.kugou.android",
-    "com.miui.player",
-    "com.salt.music",
-    "com.luna.music",
-    "com.ikunshare.music.mobile",
-    "com.hihonor.cloudmusic",
-)
-
 /** How long the provider notice holds its own dismiss button, in seconds. */
 private const val PROVIDER_NOTICE_SECONDS = 15
 
 /**
- * What the page says about the lyric provider module.
+ * The route the module named, as something to read on the row - or null when it named none, or
+ * named one this build has never heard of, which is what a newer module's new route looks like
+ * from here. A route with no name is shown as "no source" rather than as a raw word: a word out
+ * of LockLyrics.srcName is not something to put in front of a user.
  *
- * Three states rather than two, because "installed" is not the question that matters: LyricInfo
- * is an LSPosed module, and one that is installed but not enabled - or enabled without the
- * player in its scope - writes nothing while still sitting in the package list. Both of the
- * first two are asking for something to be done, which is what [warning] is for; the third is
- * only saying what the module does and does not cover.
+ * The names are the app's, not the module's, and deliberately so: "qq" is what the code calls it
+ * and "QQ 音乐" is what a person calls it, and the mapping is the kind of thing that belongs on
+ * the side that draws the screen.
  */
-private enum class ProviderNotice(
-    val title: Int,
-    val summary: Int,
-    val warning: Boolean,
-) {
-    /** Not in the package list at all. */
-    Missing(R.string.lyrics_provider_title_missing, R.string.lyrics_provider_missing, true),
-    /** Installed, but no session has carried its lyric since SystemUI started. */
-    Inactive(R.string.lyrics_provider_title_inactive, R.string.lyrics_provider_inactive, true),
-    /** Installed and writing. Apps outside its scope can still miss, which is worth saying. */
-    Ready(R.string.lyrics_provider_title_ready, R.string.lyrics_provider_ready, false),
+@Composable
+private fun lyricSourceLabel(source: String): String? = when (source) {
+    "session" -> stringResource(R.string.lyrics_source_session)
+    "lyricon" -> stringResource(R.string.lyrics_source_lyricon)
+    "local" -> stringResource(R.string.lyrics_source_local)
+    "amll" -> stringResource(R.string.lyrics_source_amll)
+    "ttmlhub" -> stringResource(R.string.lyrics_source_ttmlhub)
+    "netease" -> stringResource(R.string.lyrics_source_netease)
+    "qq" -> stringResource(R.string.lyrics_source_qq)
+    "kugou" -> stringResource(R.string.lyrics_source_kugou)
+    "kuwo" -> stringResource(R.string.lyrics_source_kuwo)
+    "lrclib" -> stringResource(R.string.lyrics_source_lrclib)
+    else -> null
 }
-
-/** A slider position as a font weight: the nearest hundred, within what MiSans VF can draw. */
-private fun lyricWeightOf(position: Float): Int =
-    ((position / 100f).roundToInt() * 100).coerceIn(300, 700)
 
 /**
  * Remembers that the lyric-provider notice has been dismissed.

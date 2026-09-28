@@ -79,8 +79,6 @@ fun LockPreview(
     coverStyle: Int,
     coverCardFill: Float,
     coverCardPos: Float,
-    coverCardCorner: Float,
-    clockHeightDp: Float,
     clockSize: Float,
     clockOffsetDp: Float,
     glassEnd: Float,
@@ -163,9 +161,10 @@ fun LockPreview(
                 filterQuality = FilterQuality.High,
             )
             if (coverStyle == 1) {
+                // The square's corners are the media card's, which the same reply carries as
+                // cardRadius - the module draws its cover that way too. See CoverCardStyle.radius.
                 drawSquareCover(cover, k, screenW, screenH, geometry, shownCard,
-                    clockHeightDp, clockSize, clockOffsetDp,
-                    coverCardFill, coverCardPos, coverCardCorner)
+                    clockSize, clockOffsetDp, coverCardFill, coverCardPos, cardRadius)
             }
             // Under the clock, as on the phone: the card is part of the notification area and
             // the collapsed clock sits above it, but a tall cover can bring them close.
@@ -182,7 +181,7 @@ fun LockPreview(
             // The offset moves the date and the clock together, in screen pixels.
             val offset = clockOffsetDp.dp.toPx()
             drawShot(date?.let { it.copy(t = it.t + offset.roundToInt()) }, k)
-            val scale = collapseScale(geometry, clockHeightDp, clockSize)
+            val scale = collapseScale(geometry, clockSize)
             if (clockHour == null && clockMinute == null) {
                 drawClockPlaceholder(k, geometry, scale, offset, glassEnd)
             } else {
@@ -200,18 +199,17 @@ private fun DrawScope.drawSquareCover(
     screenH: Int,
     geometry: ModuleBridge.Geometry,
     media: ModuleBridge.Shot?,
-    clockHeightDp: Float,
     clockSize: Float,
     clockOffsetDp: Float,
     fill: Float,
     pos: Float,
-    corner: Float,
+    cardRadius: Float,
 ) {
     val density = 1.dp.toPx()
     val gap = 16f * density
     val clockBottom = if (geometry.hasClock) {
         geometry.clockY + clockOffsetDp * density +
-            geometry.clockH * collapseScale(geometry, clockHeightDp, clockSize)
+            geometry.clockH * collapseScale(geometry, clockSize)
     } else screenH * 0.18f
     val top = clockBottom.coerceAtLeast(0f) + gap
     val bottom = (if (media != null && media.t > screenH / 3)
@@ -227,7 +225,11 @@ private fun DrawScope.drawSquareCover(
     val cx = screenW / 2f
     val cy = y + side / 2f
     val rect = Rect((cx - w / 2f) * k, (cy - h / 2f) * k, (cx + w / 2f) * k, (cy + h / 2f) * k)
-    val radius = min(w, h) * 0.5f * corner.coerceIn(0f, 1f) * k
+    // The media card's own radius, in screen pixels, capped where the card would be a circle -
+    // the same rule as CoverCardStyle.radius, including the share it falls back to for a reply
+    // that has not measured the card yet.
+    val radius = if (cardRadius > 0f) min(cardRadius * k, min(w, h) * 0.5f * k)
+                 else min(w, h) * 0.5f * FALLBACK_CARD_CORNER * k
     val outline = Path().apply { addRoundRect(RoundRect(rect, CornerRadius(radius))) }
     val cropW = min(cover.width, (cover.height * aspect).roundToInt())
     val cropH = min(cover.height, (cover.width / aspect).roundToInt())
@@ -618,19 +620,20 @@ private val SAMPLE_ART_SLOT = ModuleBridge.ArtSlot(
 /**
  * The collapse scale the phone will apply to the captured glyphs, worked out the way the module
  * works it out. The size is a fraction of the style's full clock, and [ModuleBridge.Geometry.clockFull]
- * is how much bigger that full clock is than the capture - so the two multiply. Without a size
- * (an old module) it is the dp height over the height the captured glyphs measure.
+ * is how much bigger that full clock is than the capture - so the two multiply.
+ *
+ * A module that has not answered yet reports no size, and the size it will report is the fixed
+ * one - see Main.DEFAULT_CLOCK_SIZE. Nothing here is derived from a dp height any more: the
+ * height was only ever how the size was worked out before it was a size.
  */
 private fun DrawScope.collapseScale(
     geometry: ModuleBridge.Geometry,
-    heightDp: Float,
     size: Float,
 ): Float {
     val glyphH = geometry.clockH - 2f * geometry.clockPad
     if (!geometry.hasClock || glyphH <= 0f) return FALLBACK_CLOCK_SCALE
     val full = if (geometry.clockFull > 0f) geometry.clockFull else 1f
-    if (size > 0f) return size.coerceIn(MIN_CLOCK_SCALE, 1f) * full
-    return (heightDp.dp.toPx() / glyphH).coerceIn(MIN_CLOCK_SCALE, 1f)
+    return (if (size > 0f) size else FIXED_CLOCK_SIZE).coerceIn(MIN_CLOCK_SCALE, 1f) * full
 }
 
 // Fallbacks, all measured on the device this was built on (1200x2608 at 480dpi). They only
@@ -643,3 +646,7 @@ private const val FALLBACK_CLOCK_Y = 334f
 /** What the collapse used to be written down as, for a preview with nothing to measure. */
 private const val FALLBACK_CLOCK_SCALE = 0.335f
 private const val MIN_CLOCK_SCALE = 0.05f
+/** The size the module draws the collapsed clock at, for a reply that has not carried one yet. */
+private const val FIXED_CLOCK_SIZE = 0.09f
+/** Corner share for a square drawn before the reply has carried the media card's own radius. */
+private const val FALLBACK_CARD_CORNER = 0.12f

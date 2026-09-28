@@ -78,6 +78,22 @@ object LyriconSource {
     private const val SUBSCRIBER_NAME = "com.github.zyl6932.HyperMusicCover"
 
     /**
+     * Whether there is a Lyricon service on this phone at all - what "Lyricon is installed" means
+     * for the settings page's lyric-source row.
+     *
+     * Not a package to look up: what a subscriber talks to is the Lyricon central, which may be
+     * an app of its own or built into another module's, so the only thing that can answer the
+     * question is whether one replied. "no service" is the connect timeout and is the one state
+     * that means no; "failed" is our own subscriber throwing, which says nothing about the phone
+     * and is left as a no for that reason.
+     */
+    @JvmStatic
+    fun installed(): Boolean = when (sState) {
+        "connected", "reconnected", "disconnected" -> true
+        else -> false
+    }
+
+    /**
      * Start listening, once, from wherever the process first has a Context.
      *
      * Called from the same place and for the same reason as the module's other one-shot

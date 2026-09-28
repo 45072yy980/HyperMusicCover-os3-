@@ -17,22 +17,11 @@
     <string name="cover_style">封面展现形式</string>
     <string name="cover_style_full">全屏封面</string>
     <string name="cover_style_card">方形卡片</string>
-    <string name="cover_card_size">卡片大小</string>
-    <string name="cover_card_pos">卡片位置</string>
-    <string name="cover_card_pos_top">靠上</string>
-    <string name="cover_card_pos_centre">居中</string>
-    <string name="cover_card_pos_bottom">靠下</string>
-    <string name="cover_card_corner">卡片圆角</string>
-    <string name="cover_card_corner_round">圆形</string>
     <string name="clock_section">时钟</string>
     <string name="cover_clock_section">封面与时钟</string>
     <string name="lyrics_section">锁屏歌词</string>
-    <string name="clock_height">时钟高度</string>
-    <string name="clock_size">时钟大小</string>
-    <string name="clock_aod_small">全屏息屏显示保持小时钟</string>
-    <string name="clock_response">缩放动画阻尼</string>
-    <string name="clock_glass">玻璃强度</string>
     <string name="clock_force_colon">时钟强制显示冒号</string>
+    <string name="clock_force_colon_summary">部分样式不生效</string>
     <string name="restart_menu">重启</string>
     <string name="restart_systemui">重启系统界面</string>
     <string name="restart_wallpaper">重启壁纸</string>
@@ -133,32 +122,30 @@
     <string name="donate_saved">已保存到相册</string>
     <string name="donate_save_failed">保存失败</string>
     <string name="card_section">媒体卡片</string>
-    <string name="card_hide_art">隐藏封面缩略图</string>
-    <string name="card_art_in_lyrics">锁屏歌词播放时显示缩略图</string>
     <string name="card_title_tap">点击歌名暂停播放</string>
-    <string name="lock_lyrics">锁屏歌词</string>
-    <string name="lock_lyrics_summary">封面模式下在时钟和卡片之间显示歌词，双指单击可在封面和歌词之间切换</string>
-    <string name="lyric_band_fill">歌词区域高度</string>
-    <string name="lyric_band_fill_summary" formatted="false">占时钟与媒体卡片之间空间的比例，100% 为铺满</string>
-    <string name="lyric_band_pos">歌词区域位置</string>
-    <string name="lyric_band_pos_summary">区域未铺满时，在剩余空间里靠上或靠下</string>
-    <string name="lyric_horizontal_margin">左右留白</string>
-    <string name="lyric_horizontal_margin_summary">歌词文字到屏幕两侧的距离</string>
-    <string name="lyric_font_size">主歌词字号</string>
-    <string name="lyric_font_size_summary">翻译与和声字号按现有比例一起变化</string>
-    <string name="lyric_font_weight">主歌词字重</string>
-    <string name="lyric_font_weight_summary">数值越大，主歌词笔画越粗</string>
+    <string name="lyrics_two_finger_tap">双指单击封面切换歌词</string>
     <!-- The provider module, in three states rather than two. "Installed" is not the question
          that matters - LyricInfo is an LSPosed module, and one that is installed but not enabled,
          or enabled without the player in its scope, writes nothing while still being in the
          package list. Each state is a title and what it means, and the same pair is used by the
          standing row and by the notice that opens once. -->
-    <string name="lyrics_provider_title_missing">未安装 LyricInfo</string>
-    <string name="lyrics_provider_missing">显示歌词可能不准或缺失；如未安装 LyricInfo 带来的问题请勿向开发者反馈</string>
-    <string name="lyrics_provider_title_inactive">LyricInfo 已安装但未生效</string>
-    <string name="lyrics_provider_inactive">检查 LSPosed 作用域：确认模块已启用、勾选你用的播放器，然后重启系统界面</string>
-    <string name="lyrics_provider_title_ready">LyricInfo 已安装</string>
+    <!-- The lyric source row. Its title names where the words on the lock screen came from, or
+         says there is none; only when neither provider module is on the phone does it warn. -->
+    <string name="lyrics_provider_title_missing">未安装歌词模块</string>
+    <string name="lyrics_provider_missing">显示歌词可能不准或缺失；如未正确安装 LyricInfo 或Lyricon带来的问题请勿向开发者反馈</string>
     <string name="lyrics_provider_ready">作用域外的应用仍存在匹配失败可能</string>
+    <string name="lyrics_source">取词方式：%1$s</string>
+    <string name="lyrics_source_none">无歌词来源</string>
+    <string name="lyrics_source_session">播放器提供</string>
+    <string name="lyrics_source_lyricon">Lyricon 插件</string>
+    <string name="lyrics_source_local">歌曲文件</string>
+    <string name="lyrics_source_amll">AMLL 数据库</string>
+    <string name="lyrics_source_ttmlhub">AMLL TTML 库</string>
+    <string name="lyrics_source_netease">网易云音乐</string>
+    <string name="lyrics_source_qq">QQ 音乐</string>
+    <string name="lyrics_source_kugou">酷狗音乐</string>
+    <string name="lyrics_source_kuwo">酷我音乐</string>
+    <string name="lyrics_source_lrclib">LrcLib</string>
     <string name="lyrics_provider_got_it">知道了</string>
     <string name="lyrics_provider_got_it_wait">知道了 (%1$d)</string>
     <string name="lyrics_trans">显示翻译</string>

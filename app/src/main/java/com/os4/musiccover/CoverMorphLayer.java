@@ -279,7 +279,10 @@ final class CoverMorphLayer extends View implements Choreographer.FrameCallback 
         float endRadius = cardMode ? style.radius(Math.min(cover.w, cover.h)) : 0f;
         float radius = startRadius + (endRadius - startRadius) * p;
         float decoration = cardMode ? CoverMorphMotion.cardDecoration(motion.value) : 0f;
-        CoverCardLayer.drawShadow(canvas, drawn, style.corner, decoration, paint);
+        // `cover` is the landing box, so the corner share it asks for is the one the card will
+        // have when it gets there - which is where this shadow is read. See cornerShare.
+        CoverCardLayer.drawShadow(canvas, drawn,
+                style.cornerShare(Math.min(cover.w, cover.h)), decoration, paint);
         paint.setStyle(Paint.Style.FILL);
         paint.setColor(0xFFFFFFFF);
         // The full wallpaper already contains the final sharp band. Hand its pixels over near
