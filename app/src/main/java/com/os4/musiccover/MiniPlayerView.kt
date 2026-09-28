@@ -87,7 +87,6 @@ internal class MiniPlayerView(context: Context) : FrameLayout(context) {
     private var tracking = false
     private var toggleShown = true
     private var lastHeightRadiusDp = 27f
-    private var lastArtRadiusDp = 12f
 
     init {
         clipToOutline = true
@@ -202,8 +201,7 @@ internal class MiniPlayerView(context: Context) : FrameLayout(context) {
             // morph's changing corner - is ours.
             materialLayer.outlineProvider = outlineProvider
             materialLayer.clipToOutline = true
-            updateGeometry(config.getDouble(MiniPlayerConfig.HEIGHT_RADIUS).toFloat(),
-                config.getDouble(MiniPlayerConfig.ART_RADIUS).toFloat())
+            updateGeometry(config.getDouble(MiniPlayerConfig.HEIGHT_RADIUS).toFloat())
         }
         if (title.text.toString() != trackTitle) title.text = trackTitle
         if (artist.text.toString() != trackArtist) artist.text = trackArtist
@@ -296,7 +294,7 @@ internal class MiniPlayerView(context: Context) : FrameLayout(context) {
     fun setArtworkBare(bare: Boolean) {
         if (artworkBare == bare) return
         artworkBare = bare
-        if (lastHeightRadiusDp > 0f) updateGeometry(lastHeightRadiusDp, lastArtRadiusDp)
+        if (lastHeightRadiusDp > 0f) updateGeometry(lastHeightRadiusDp)
         slot.clipToOutline = !bare
         slot.background = if (bare) null else rounded(Color.rgb(55, 55, 55), artworkRadiusPx)
         artwork.scaleType = if (bare) ImageView.ScaleType.FIT_CENTER else ImageView.ScaleType.CENTER_CROP
@@ -350,13 +348,13 @@ internal class MiniPlayerView(context: Context) : FrameLayout(context) {
     private fun setToggleWide(px: Int) {
         if (toggleWidePx == px) return
         toggleWidePx = px
-        updateGeometry(lastHeightRadiusDp, lastArtRadiusDp)
+        updateGeometry(lastHeightRadiusDp)
     }
 
     private fun setToggle2Wide(px: Int) {
         if (toggle2WidePx == px) return
         toggle2WidePx = px
-        updateGeometry(lastHeightRadiusDp, lastArtRadiusDp)
+        updateGeometry(lastHeightRadiusDp)
     }
 
     fun setSecondFace(face: ActionFace?) {
@@ -776,7 +774,7 @@ internal class MiniPlayerView(context: Context) : FrameLayout(context) {
         if (toggleShown == shown) return
         toggleShown = shown
         toggle.visibility = if (shown) View.VISIBLE else View.GONE
-        updateGeometry(lastHeightRadiusDp, lastArtRadiusDp)
+        updateGeometry(lastHeightRadiusDp)
     }
 
     /**
@@ -861,18 +859,20 @@ internal class MiniPlayerView(context: Context) : FrameLayout(context) {
         toggle2.setRenderEffect(effect)
     }
 
-    private fun updateGeometry(heightRadiusDp: Float, artworkRadiusDp: Float) {
+    /**
+     * The pill's bits, from its height. The picture is the small island's picture: its share of
+     * the height, on the same centre, cut to the same circle - one cover drawn at two sizes and
+     * two shapes read as two different pictures (2026-09-28). A bare one (a focus template's,
+     * already round where LockIslands.roundIcon left it) is that size already and is not cut.
+     */
+    private fun updateGeometry(heightRadiusDp: Float) {
         lastHeightRadiusDp = heightRadiusDp
-        lastArtRadiusDp = artworkRadiusDp
         val height = dp(heightRadiusDp * 2f).coerceAtLeast(dp(48))
         val verticalPadding = max(dp(7), height / 9)
-        val artworkSize = ((height - verticalPadding * 2) * .75f).toInt().coerceAtLeast(dp(24))
+        val artworkSize = (height * ShortcutDisc.ICON_SHARE).toInt().coerceAtLeast(dp(24))
         val horizontalPadding = max(dp(10), height / 7)
-        // A bare picture is the small island's size, its share of the height, on the same centre:
-        // the same picture in both islands was two sizes (2026-09-25).
-        val side = if (artworkBare) (height * ShortcutDisc.ICON_SHARE).toInt() else artworkSize
-        slot.layoutParams = LayoutParams(side, side, Gravity.CENTER_VERTICAL).apply {
-            leftMargin = horizontalPadding + (artworkSize - side) / 2
+        slot.layoutParams = LayoutParams(artworkSize, artworkSize, Gravity.CENTER_VERTICAL).apply {
+            leftMargin = horizontalPadding
         }
         val toggleSize = dp(40).coerceAtMost((height - verticalPadding * 2).coerceAtLeast(dp(34)))
         val toggleW = max(toggleSize, toggleWidePx)
@@ -892,7 +892,7 @@ internal class MiniPlayerView(context: Context) : FrameLayout(context) {
             leftMargin = horizontalPadding + artworkSize + max(dp(10), height / 8)
             rightMargin = textRightBase + ((toggle2W + toggleGapPx) * secondShown).toInt()
         }
-        val radius = dp(artworkRadiusDp).coerceIn(0, artworkSize / 2).toFloat()
+        val radius = artworkSize / 2f
         artworkRadiusPx = radius
         slot.background = if (artworkBare) null else rounded(Color.rgb(55, 55, 55), radius)
         slot.outlineProvider = object : ViewOutlineProvider() {

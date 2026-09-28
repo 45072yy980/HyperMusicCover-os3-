@@ -34,6 +34,10 @@ object MiniPlayerConfig {
      * The values themselves were never arbitrary: 221dp is what fits between the two shortcut
      * discs on this screen, and both of the others are held to the pill's own height. See
      * MiniPlayerRuntime, which clamps them again against the room it actually has.
+     *
+     * [ART_RADIUS] is not read at all: the picture is the small island's circle now, its share of
+     * the height, and a corner setting has nothing left to say (2026-09-28). The key stays in the
+     * JSON for the reason above.
      */
     @JvmStatic fun normalizedJson(raw: String?): String {
         val input = runCatching { JSONObject(raw.orEmpty()) }.getOrDefault(JSONObject())
