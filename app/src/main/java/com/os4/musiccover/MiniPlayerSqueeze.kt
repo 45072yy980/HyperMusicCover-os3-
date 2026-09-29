@@ -56,6 +56,10 @@ internal class ShortcutDisc(context: Context) : FrameLayout(context) {
     }
 
     init {
+        // In keyguard_root_view it is a ConstraintLayout's child, and every child there needs an
+        // id: the OEM's ConstraintSet.clone of that view, on each change of the lock screen's
+        // blueprint, threw for one without and took SystemUI down - nine times on 2026-09-29.
+        id = View.generateViewId()
         outlineProvider = frameShape
         clipToOutline = true
         outlineAmbientShadowColor = Color.TRANSPARENT
