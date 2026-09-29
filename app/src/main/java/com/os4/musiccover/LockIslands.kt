@@ -186,7 +186,7 @@ internal object LockIslands {
     fun openSceneKey(): String? = sceneKey
 
     private fun sceneOf(key: String): ImmersiveScene? =
-        noteFor(key)?.let { runCatching { ImmersiveHost.sceneFor(it.pkg, it.focus) }.getOrNull() }
+        noteFor(key)?.let { runCatching { ImmersiveHost.sceneFor(it.pkg, it.focus, key) }.getOrNull() }
 
     /** What a clear of [released] leaves: the open page's island, if there is one. */
     private fun clearReleased() {
@@ -612,6 +612,9 @@ internal object LockIslands {
         pending.clear()
         stamp(all, lockedRun)
         if (lockedRun) checkSceneNote(all)
+        // Only a locked run says what is there: the unlocked ones read nothing.
+        if (lockedRun) runCatching { CountdownScene.INSTANCE.onNotes(all) }
+            .onFailure { Xp.log("MCIsland: countdown not told: $it") }
         lockedRun = false
         // A group shows as its children; its summary only when it has none here.
         val grouped = all.filter { !it.summary && it.group != null }.mapNotNull { it.group }.toSet()

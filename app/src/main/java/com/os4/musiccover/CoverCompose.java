@@ -357,7 +357,7 @@ final class CoverCompose {
      * halving is a box average), run a real separable box blur at the small size where it costs
      * almost nothing, then double back up, so nothing is ever interpolated across a big jump.
      */
-    private static Bitmap blur(Bitmap src, int smallW, int radius, int passes) {
+    static Bitmap blur(Bitmap src, int smallW, int radius, int passes) {
         Bitmap cur = src;
         while (cur.getWidth() / 2 > smallW) {
             Bitmap next = Bitmap.createScaledBitmap(cur,

@@ -94,6 +94,7 @@ final class ImmersiveHost {
 
     static {
         SCENES.add(AmapNavScene.INSTANCE);
+        SCENES.add(CountdownScene.INSTANCE);
     }
 
     /**
@@ -187,9 +188,9 @@ final class ImmersiveHost {
     }
 
     /** The scene a tap on this focus island opens; null for an island that has none. */
-    static ImmersiveScene sceneFor(String pkg, boolean focus) {
+    static ImmersiveScene sceneFor(String pkg, boolean focus, String key) {
         for (ImmersiveScene s : SCENES) {
-            if (s.serves(pkg, focus)) return s;
+            if (s.serves(pkg, focus) && s.servesKey(key)) return s;
         }
         return null;
     }
@@ -199,6 +200,8 @@ final class ImmersiveHost {
     /** A gesture began on the open page's tap target: all of it is ours, to its end. */
     private static boolean sTapOwned;
     private static View sTapView;
+    /** The gesture is on the page's own target (ImmersiveScene.pageHit), not its row's. */
+    private static boolean sTapPage;
     private static ImmersiveScene sTapScene;
     private static float sTapX, sTapY;
     /** The finger left the target's slop: the gesture ends as nothing. */
@@ -220,24 +223,26 @@ final class ImmersiveHost {
         if (a == android.view.MotionEvent.ACTION_DOWN) {
             endTap();
             View target = tapTargetAt(ev.getRawX(), ev.getRawY());
-            if (target == null) return false;
+            boolean page = target == null && pageTargetAt(ev.getRawX(), ev.getRawY());
+            if (target == null && !page) return false;
             sTapOwned = true;
             sTapView = target;
+            sTapPage = page;
             sTapScene = sOpen;
             sTapX = ev.getRawX();
             sTapY = ev.getRawY();
-            press(target, true);
+            pressTap(true);
             return true;
         }
         if (!sTapOwned) return false;
-        View v = sTapView;
+        View v = sTapView != null ? sTapView : sSlot;
         switch (a) {
             case android.view.MotionEvent.ACTION_MOVE:
                 if (!sTapGone && v != null) {
                     int slop = android.view.ViewConfiguration.get(v.getContext()).getScaledTouchSlop();
                     if (Math.hypot(ev.getRawX() - sTapX, ev.getRawY() - sTapY) > slop) {
                         sTapGone = true;
-                        press(v, false);
+                        pressTap(false);
                     }
                 }
                 break;
@@ -245,22 +250,24 @@ final class ImmersiveHost {
                 ImmersiveScene scene = sTapScene;
                 // Still the page on screen that the finger landed on.
                 boolean fire = !sTapGone && scene != null && scene == sOpen && sShown;
-                if (v != null) {
-                    press(v, false);
-                    if (fire) v.performHapticFeedback(android.view.HapticFeedbackConstants.CONTEXT_CLICK);
+                if (!sTapGone) pressTap(false);
+                if (fire && v != null) {
+                    v.performHapticFeedback(android.view.HapticFeedbackConstants.CONTEXT_CLICK);
                 }
                 if (fire) {
-                    Xp.log(TAG + scene.id() + ": row tap on " + scene.rowTapTarget());
+                    Xp.log(TAG + scene.id() + ": " + (sTapPage ? "page tap"
+                            : "row tap on " + scene.rowTapTarget()));
                     try {
-                        scene.onRowTap();
+                        if (sTapPage) scene.onPageTap();
+                        else scene.onRowTap();
                     } catch (Throwable t) {
-                        Xp.log(TAG + scene.id() + " row tap failed: " + t);
+                        Xp.log(TAG + scene.id() + " tap failed: " + t);
                     }
                 }
                 endTap();
                 break;
             case android.view.MotionEvent.ACTION_CANCEL:
-                if (v != null) press(v, false);
+                if (!sTapGone) pressTap(false);
                 endTap();
                 break;
             default:
@@ -272,6 +279,7 @@ final class ImmersiveHost {
     private static void endTap() {
         sTapOwned = false;
         sTapView = null;
+        sTapPage = false;
         sTapScene = null;
         sTapGone = false;
     }
@@ -300,6 +308,30 @@ final class ImmersiveHost {
         float pad = TAP_PAD_DP * v.getResources().getDisplayMetrics().density;
         return x >= at[0] - pad && x <= at[0] + v.getWidth() + pad
                 && y >= at[1] - pad && y <= at[1] + v.getHeight() + pad ? v : null;
+    }
+
+    /** The open page's own tap target is under the finger - same conditions as tapTargetAt. */
+    private static boolean pageTargetAt(float x, float y) {
+        ImmersiveScene open = sOpen;
+        if (open == null || sYield || !sHolding || !sShown || !litNow()) return false;
+        try {
+            return open.pageHit(x, y);
+        } catch (Throwable t) {
+            Xp.log(TAG + open.id() + " page hit failed: " + t);
+            return false;
+        }
+    }
+
+    /** The pressed look, on whichever the gesture is on. */
+    private static void pressTap(boolean down) {
+        if (sTapView != null) {
+            press(sTapView, down);
+        } else if (sTapPage && sTapScene != null) {
+            try {
+                sTapScene.pagePress(down);
+            } catch (Throwable ignored) {
+            }
+        }
     }
 
     /**

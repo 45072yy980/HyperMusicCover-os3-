@@ -27,6 +27,14 @@ interface ImmersiveScene {
     boolean serves(String pkg, boolean focus);
 
     /**
+     * And whether it is this very notification: an app can post more than one focus island and
+     * only one of them be this scene's - the clock's countdown is, its stopwatch is not.
+     */
+    default boolean servesKey(String key) {
+        return true;
+    }
+
+    /**
      * Whether the page could be shown: the app is in the state that has one (高德 navigating).
      * A scene that stops being ready is closed and let go by the host.
      */
@@ -82,6 +90,23 @@ interface ImmersiveScene {
 
     /** {@link #rowTapTarget} was tapped while the page was on the lit lock screen. */
     default void onRowTap() {
+    }
+
+    /**
+     * Whether a finger landing here, in screen coordinates, is on something of the page's own
+     * that takes a tap - a page drawn in this process under the keyguard's views never gets a
+     * touch of its own, so the host hands it over (ImmersiveHost.routeTouch).
+     */
+    default boolean pageHit(float rawX, float rawY) {
+        return false;
+    }
+
+    /** The finger is down on {@link #pageHit}'s target, or has left it or lifted. */
+    default void pagePress(boolean down) {
+    }
+
+    /** {@link #pageHit}'s target was tapped. */
+    default void onPageTap() {
     }
 
     /** One line for the probe. */
