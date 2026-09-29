@@ -43,6 +43,17 @@ internal class MiniPlayerView(context: Context) : FrameLayout(context) {
      * moves, fades, turns or rounds the artwork does it to this, so a view in it goes along.
      */
     private val slot = FrameLayout(context)
+
+    /**
+     * Everything but the glass - the picture's slot, the lines, the buttons - in one layer: the
+     * one view a content blur goes on, as ColorOS blurs a capsule's whole content view
+     * (SystemUIPlugin u4.m, CapsuleContentViewState). Blurred piece by piece, a card morph was
+     * five blurs a frame on this side alone, and the GPU ran ~110 offscreen passes a frame through
+     * a run of taps (trace 2026-09-30). At the pill's own origin, so every piece's place in the
+     * pill is what it was; a morph grows it with the frame (setMorphFrame), since a blurred layer
+     * is cut to its own bounds.
+     */
+    private val content = FrameLayout(context)
     private var liveArt: View? = null
     private val title = EdgeBlurText(context)
     private val artist = EdgeBlurText(context)
@@ -107,12 +118,13 @@ internal class MiniPlayerView(context: Context) : FrameLayout(context) {
         materialLayer.clipToOutline = true
         materialLayer.shape = outlineProvider
         addView(materialLayer, LayoutParams(-1, -1))
+        addView(content, LayoutParams(-1, -1))
         artwork.scaleType = ImageView.ScaleType.CENTER_CROP
         slot.clipToOutline = true
         slot.background = rounded(Color.rgb(55, 55, 55), dp(12).toFloat())
         slot.clipChildren = false
         slot.addView(artwork, LayoutParams(-1, -1))
-        addView(slot)
+        content.addView(slot)
         title.apply {
             setTextColor(Color.WHITE)
             textSize = 12.8f
@@ -150,19 +162,19 @@ internal class MiniPlayerView(context: Context) : FrameLayout(context) {
             bottomMargin = -room
         })
         artist.translationY = -dp(2).toFloat()
-        addView(textColumn)
+        content.addView(textColumn)
         toggle.scaleType = ImageView.ScaleType.CENTER
         toggle.setPadding(dp(8), dp(8), dp(8), dp(8))
         toggle.background = null
         toggle.contentDescription = "播放或暂停"
         toggle.setOnClickListener { (toggleFaceClick ?: onToggle)?.invoke() }
-        addView(toggle)
+        content.addView(toggle)
         toggle2.scaleType = ImageView.ScaleType.FIT_CENTER
         toggle2.setPadding(dp(6), dp(6), dp(6), dp(6))
         toggle2.background = null
         toggle2.visibility = View.GONE
         toggle2.setOnClickListener { secondFaceClick?.invoke() }
-        addView(toggle2)
+        content.addView(toggle2)
         contentDescription = "锁屏超级岛"
     }
 
@@ -299,7 +311,13 @@ internal class MiniPlayerView(context: Context) : FrameLayout(context) {
         // and its row lets it (clipChildren false up the row): at rest the pill clipped each
         // child to its bounds, and the light came out cut to a square (2026-09-26). The pill's
         // own outline still bounds it.
-        if (!morphing) clipChildren = view == null
+        if (!morphing) clipPieces(view == null)
+    }
+
+    /** Each piece cut to its own bounds, or not: the content layer is their parent now, not the pill. */
+    private fun clipPieces(on: Boolean) {
+        clipChildren = on
+        content.clipChildren = on
     }
 
     fun setArtworkBare(bare: Boolean) {
@@ -683,7 +701,7 @@ internal class MiniPlayerView(context: Context) : FrameLayout(context) {
         // as tall as the pill, and the artist, moved onto the card's, was cut through by its
         // bottom edge - filmed as a hairline across the name. The pill's own outline still
         // clips everything to the container.
-        clipChildren = false
+        clipPieces(false)
         textColumn.clipChildren = false
         finish()
     }
@@ -712,6 +730,7 @@ internal class MiniPlayerView(context: Context) : FrameLayout(context) {
         if (resized) {
             traced("MC f.bounds") { setLeftTopRightBottom(left, top, left + morphW, top + morphH) }
             traced("MC f.matBounds") { materialLayer.setLeftTopRightBottom(0, 0, morphW, morphH) }
+            growContent()
         }
         translationX = box.x - xy[0] - left
         translationY = box.y - xy[1] - top
@@ -752,7 +771,10 @@ internal class MiniPlayerView(context: Context) : FrameLayout(context) {
         slot.alpha = if (artworkHidden) 0f else 1f
         materialLayer.alpha = 1f
         textColumn.clipChildren = true
-        clipChildren = liveArt == null
+        clipPieces(liveArt == null)
+        // Laid out at the rest size again by the pass asked for below.
+        contentW = 0
+        contentH = 0
         translationZ = 0f
         toggle.isEnabled = interactionsEnabled
         toggle2.isEnabled = toggle.isEnabled
@@ -775,6 +797,31 @@ internal class MiniPlayerView(context: Context) : FrameLayout(context) {
         super.onLayout(changed, left, top, left + restWidth(), top + restHeight())
         setLeftTopRightBottom(left, top, left + morphW, top + morphH)
         materialLayer.layout(0, 0, morphW, morphH)
+        // The pass laid the content layer out at the rest size too: back to the size it had grown
+        // to, its pieces staying where the pass put them.
+        if (contentW > content.width || contentH > content.height) {
+            content.setLeftTopRightBottom(0, 0, max(contentW, content.width), max(contentH, content.height))
+        }
+        growContent()
+    }
+
+    /** The content layer's bounds through a morph: grown ahead of the frame, never shrunk. */
+    private var contentW = 0
+    private var contentH = 0
+
+    /**
+     * The content layer at least as big as the frame, so a blur on it cuts nothing the frame
+     * shows. Grown in steps with room to spare rather than every frame: a blurred layer's
+     * offscreen image is remade whenever its size changes, which is the reallocation the trace
+     * counted 137 times a second (2026-09-30). Its pieces are not laid out again.
+     */
+    private fun growContent() {
+        val w = max(content.width, contentW)
+        val h = max(content.height, contentH)
+        if (morphW <= w && morphH <= h) return
+        contentW = max(w, (morphW * CONTENT_ROOM).roundToInt())
+        contentH = max(h, (morphH * CONTENT_ROOM).roundToInt())
+        content.setLeftTopRightBottom(0, 0, contentW, contentH)
     }
 
     /**
@@ -859,45 +906,38 @@ internal class MiniPlayerView(context: Context) : FrameLayout(context) {
      * place and coming into focus as it arrives there.
      */
     fun setContentBlur(radius: Float) {
-        val r = if (radius < 0.5f) 0f else radius
-        // A morph's blur (setMorphContentBlur) is on the same pieces: taken off first, for real.
-        if (morphBlur.any { it != 0f }) setMorphContentBlur(0f)
-        if (kotlin.math.abs(r - contentBlur) < 0.25f && (r == 0f) == (contentBlur == 0f)) return
-        contentBlur = r
-        val effect = if (r == 0f) null
-            else android.graphics.RenderEffect.createBlurEffect(r, r, android.graphics.Shader.TileMode.DECAL)
-        slot.setRenderEffect(effect)
-        textColumn.setRenderEffect(effect)
-        toggle.setRenderEffect(effect)
-        toggle2.setRenderEffect(effect)
+        contentBlur = if (radius < 0.5f) 0f else radius
+        pushContentBlur()
     }
 
-    /** The radius each piece was last blurred at by setMorphContentBlur, in its own pixels. */
-    private val morphBlur = FloatArray(5)
+    /** The radius a card morph last asked for (setMorphContentBlur); it wins over a switch's while set. */
+    private var morphBlur = 0f
 
     /**
      * All of the content blurred together by [radius] screen pixels, the glass left sharp - as
      * ColorOS blurs a capsule's whole content view (SystemUIPlugin CapsuleContentViewState) -
-     * through a card morph, which scales and moves each piece on its own: the picture's slot, the
-     * two lines, the two buttons, every one of them at the same radius on screen (each divided by
-     * its own scale). Every piece, not only the lines flying to the card's: blurred one by one
-     * in 2d269db, the buttons and the picture showed sharp through it. The lines themselves and
-     * not their column, whose layer - its own bounds - cut them off straight down once they were
-     * moved out of it (filmed 2026-09-30). DECAL, so a piece's blur fades out at its bounds
-     * rather than stretching its edge into a hard block.
+     * through a card morph, which scales and moves each piece on its own inside the layer. One
+     * blur on the content layer, in its own pixels, which are the screen's: the layer is never
+     * scaled, only the pieces in it. It is grown with the morph's frame (growContent), so a line
+     * moved out of its column is not cut off at the layer's edge the way it was at the column's
+     * (filmed 2026-09-30). DECAL, so the blur fades out at the layer's bounds rather than
+     * stretching its edge into a hard block.
      */
     fun setMorphContentBlur(radius: Float) {
-        val kids = arrayOf<View>(slot, title, artist, toggle, toggle2)
-        for (i in kids.indices) {
-            val v = kids[i]
-            val scale = kotlin.math.max(0.05f, kotlin.math.max(v.scaleX, v.scaleY))
-            val r = if (radius < 0.5f) 0f else radius / scale
-            if (kotlin.math.abs(r - morphBlur[i]) < 0.25f && (r == 0f) == (morphBlur[i] == 0f)) continue
-            morphBlur[i] = r
-            if (v is EdgeBlurText) v.setMorphBlur(r)
-            else v.setRenderEffect(if (r == 0f) null
-                else android.graphics.RenderEffect.createBlurEffect(r, r, android.graphics.Shader.TileMode.DECAL))
-        }
+        morphBlur = if (radius < 0.5f) 0f else radius
+        pushContentBlur()
+    }
+
+    /** The radius on the content layer now; none yet, so the first is always written. */
+    private var contentBlurred = -1f
+
+    private fun pushContentBlur() {
+        val r = if (morphBlur > 0f) morphBlur else contentBlur
+        if (contentBlurred >= 0f && kotlin.math.abs(r - contentBlurred) < 0.25f &&
+            (r == 0f) == (contentBlurred == 0f)) return
+        contentBlurred = r
+        content.setRenderEffect(if (r == 0f) null
+            else android.graphics.RenderEffect.createBlurEffect(r, r, android.graphics.Shader.TileMode.DECAL))
     }
 
     /**
@@ -1004,6 +1044,9 @@ private const val OFFSET_RESPONSE = 0.32f
 /** Above every sibling while a morph runs; CoverMorphLayer sits above this again. */
 internal const val MORPH_Z = 10000f
 
+/** How far past the frame the content layer grows at a time (growContent). */
+private const val CONTENT_ROOM = 1.3f
+
 /**
  * A plugin view at the size the row's layout gives it, scaled into whatever box it is shown in:
  * its pictures and glow are pixels for that size (FlashLightView's textures are its own bitmaps,
@@ -1099,29 +1142,14 @@ internal class EdgeBlurText(context: Context) : TextView(context) {
         push()
     }
 
-    /** The ends' blur, and a card morph's over the whole line, in this line's own pixels. */
-    private var edgeEffect: android.graphics.RenderEffect? = null
-    private var morphBlur = 0f
-
     /**
-     * A card morph's blur of the whole line, on top of its ends' own: the line itself, not the
-     * column it is in - the column's layer is its own bounds, and a line scaled and moved out of
-     * them on the way to the card was cut off straight down (filmed 2026-09-30).
+     * The ends' blur, in this line's own pixels. A card morph's blur of the whole content is the
+     * pill's content layer's (MiniPlayerView.setMorphContentBlur), not the line's.
      */
-    fun setMorphBlur(radius: Float) {
-        if (radius == morphBlur) return
-        morphBlur = radius
-        push()
-    }
+    private var edgeEffect: android.graphics.RenderEffect? = null
 
     private fun push() {
-        val blur = if (morphBlur <= 0f) null
-            else android.graphics.RenderEffect.createBlurEffect(morphBlur, morphBlur, android.graphics.Shader.TileMode.DECAL)
-        val edge = edgeEffect
-        setRenderEffect(when {
-            blur != null && edge != null -> android.graphics.RenderEffect.createChainEffect(blur, edge)
-            else -> blur ?: edge
-        })
+        setRenderEffect(edgeEffect)
     }
 
     private companion object {
