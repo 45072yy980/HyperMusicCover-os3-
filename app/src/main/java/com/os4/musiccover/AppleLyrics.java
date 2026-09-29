@@ -49,7 +49,7 @@ final class AppleLyrics {
      * previous build - and a change that only shows up as a line NOT being logged looks
      * identical to not having loaded at all. It cost a round trip once.
      */
-    private static final String BUILD = "duet-other-1";
+    private static final String BUILD = "respace-1";
 
     /** The player's package, and the only process this class ever runs in. */
     static final String PKG = "com.apple.android.music";
@@ -248,12 +248,48 @@ final class AppleLyrics {
                         l.bg.add(word);
                     }
                 }
+                respace(l.text, l.words);
+                Object bgText = call(native_, "getHtmlBackgroundVocalsLineText");
+                if (bgText == null) {
+                    bgText = call(native_, "getHtmlBackgroundVocalsLineText", false);
+                }
+                respace(html(str(bgText)), l.bg);
                 if (l.text != null && !l.text.isEmpty()) {
                     out.add(l);
                 }
             }
         }
         return out;
+    }
+
+    /**
+     * The spaces between the words, put back from the line they were cut out of.
+     *
+     * A word arrives as bare text - "Fifty,", "fifty", "under", "ground" - and a line's words
+     * joined that way read "Fifty,fiftyfeetupunderground" (issue #29). Whether a space follows a
+     * word cannot be told from the word itself - "under" and "ground" are one word sung in two -
+     * so it is read off the line's own text, which does have them: each word is found in the line
+     * from where the last one ended, and whatever lies between is hung on the end of the word
+     * before, where every word-timed format here keeps it. A line the words cannot be found in
+     * is left as it came; from the first word that is not found on, nothing is guessed.
+     */
+    private static void respace(String line, List<Word> words) {
+        if (line == null || line.isEmpty() || words.size() < 2) {
+            return;
+        }
+        int at = 0;
+        Word prev = null;
+        for (Word w : words) {
+            int i = line.indexOf(w.text, at);
+            if (i < 0) {
+                return;
+            }
+            if (prev != null && i > at) {
+                prev.text += line.substring(at, i);
+            }
+            at = i + w.text.length();
+            prev = w;
+        }
     }
 
     /** How many lines carry a background vocal, for the account in the log. */
