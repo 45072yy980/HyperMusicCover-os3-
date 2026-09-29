@@ -860,6 +860,8 @@ internal class MiniPlayerView(context: Context) : FrameLayout(context) {
      */
     fun setContentBlur(radius: Float) {
         val r = if (radius < 0.5f) 0f else radius
+        // A morph's blur (setMorphContentBlur) is on the same pieces: taken off first, for real.
+        if (morphBlur.any { it != 0f }) setMorphContentBlur(0f)
         if (kotlin.math.abs(r - contentBlur) < 0.25f && (r == 0f) == (contentBlur == 0f)) return
         contentBlur = r
         val effect = if (r == 0f) null
@@ -868,6 +870,34 @@ internal class MiniPlayerView(context: Context) : FrameLayout(context) {
         textColumn.setRenderEffect(effect)
         toggle.setRenderEffect(effect)
         toggle2.setRenderEffect(effect)
+    }
+
+    /** The radius each piece was last blurred at by setMorphContentBlur, in its own pixels. */
+    private val morphBlur = FloatArray(5)
+
+    /**
+     * All of the content blurred together by [radius] screen pixels, the glass left sharp - as
+     * ColorOS blurs a capsule's whole content view (SystemUIPlugin CapsuleContentViewState) -
+     * through a card morph, which scales and moves each piece on its own: the picture's slot, the
+     * two lines, the two buttons, every one of them at the same radius on screen (each divided by
+     * its own scale). Every piece, not only the lines flying to the card's: blurred one by one
+     * in 2d269db, the buttons and the picture showed sharp through it. The lines themselves and
+     * not their column, whose layer - its own bounds - cut them off straight down once they were
+     * moved out of it (filmed 2026-09-30). DECAL, so a piece's blur fades out at its bounds
+     * rather than stretching its edge into a hard block.
+     */
+    fun setMorphContentBlur(radius: Float) {
+        val kids = arrayOf<View>(slot, title, artist, toggle, toggle2)
+        for (i in kids.indices) {
+            val v = kids[i]
+            val scale = kotlin.math.max(0.05f, kotlin.math.max(v.scaleX, v.scaleY))
+            val r = if (radius < 0.5f) 0f else radius / scale
+            if (kotlin.math.abs(r - morphBlur[i]) < 0.25f && (r == 0f) == (morphBlur[i] == 0f)) continue
+            morphBlur[i] = r
+            if (v is EdgeBlurText) v.setMorphBlur(r)
+            else v.setRenderEffect(if (r == 0f) null
+                else android.graphics.RenderEffect.createBlurEffect(r, r, android.graphics.Shader.TileMode.DECAL))
+        }
     }
 
     /**
@@ -1056,7 +1086,8 @@ internal class EdgeBlurText(context: Context) : TextView(context) {
 
     private fun applyEdges(l: Float, r: Float) {
         if (l == 0f && r == 0f || width <= 0) {
-            setRenderEffect(null)
+            edgeEffect = null
+            push()
             return
         }
         val s = shader ?: android.graphics.RuntimeShader(EDGE_BLUR).also { shader = it }
@@ -1064,7 +1095,33 @@ internal class EdgeBlurText(context: Context) : TextView(context) {
         s.setFloatUniform("edgeL", edgePx * l)
         s.setFloatUniform("edgeR", edgePx * r)
         s.setFloatUniform("maxBlur", blurPx)
-        setRenderEffect(android.graphics.RenderEffect.createRuntimeShaderEffect(s, "content"))
+        edgeEffect = android.graphics.RenderEffect.createRuntimeShaderEffect(s, "content")
+        push()
+    }
+
+    /** The ends' blur, and a card morph's over the whole line, in this line's own pixels. */
+    private var edgeEffect: android.graphics.RenderEffect? = null
+    private var morphBlur = 0f
+
+    /**
+     * A card morph's blur of the whole line, on top of its ends' own: the line itself, not the
+     * column it is in - the column's layer is its own bounds, and a line scaled and moved out of
+     * them on the way to the card was cut off straight down (filmed 2026-09-30).
+     */
+    fun setMorphBlur(radius: Float) {
+        if (radius == morphBlur) return
+        morphBlur = radius
+        push()
+    }
+
+    private fun push() {
+        val blur = if (morphBlur <= 0f) null
+            else android.graphics.RenderEffect.createBlurEffect(morphBlur, morphBlur, android.graphics.Shader.TileMode.DECAL)
+        val edge = edgeEffect
+        setRenderEffect(when {
+            blur != null && edge != null -> android.graphics.RenderEffect.createChainEffect(blur, edge)
+            else -> blur ?: edge
+        })
     }
 
     private companion object {

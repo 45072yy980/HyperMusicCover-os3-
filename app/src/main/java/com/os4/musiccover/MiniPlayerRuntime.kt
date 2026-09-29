@@ -9363,7 +9363,8 @@ private const val HIDDEN_SCALE = 0.6f
 private const val CUTOUT_SHARE = 0.55f
 
 /** How far an island's content goes out of focus leaving the big island's place. */
-private const val SWAP_BLUR_DP = 10f
+/** ColorOS's capsule content blur, 9dp (SystemUIPlugin u4.k / u4.b0: j6.j.a(ctx, 9f)). */
+private const val SWAP_BLUR_DP = 9f
 
 /** The music's place in the row of islands, beside the notifications' keys. */
 private const val MUSIC_ISLAND = "\u0000music"

@@ -8,6 +8,7 @@ import android.view.View
 import android.view.ViewOutlineProvider
 import android.view.ViewTreeObserver
 import android.widget.TextView
+import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToInt
@@ -381,6 +382,7 @@ internal class MiniCardMorph(
      */
     private fun measure(): Boolean {
         if (!header.isAttachedToWindow || header.width <= 0 || header.height <= 0) return false
+        cardContent = contentViews(header)
         pieces.forEach { piece ->
             val n = piece.native
             piece.paired = n != null && n.isAttachedToWindow && n.visibility == View.VISIBLE
@@ -415,6 +417,12 @@ internal class MiniCardMorph(
         if (!header.clipToOutline) header.clipToOutline = true
         header.invalidateOutline()
         header.transitionAlpha = saved.transitionAlpha * nativeIn(c)
+
+        // Both ends' whole content in and out of focus, the glass of neither: the pill's going
+        // out as it heads for the card, the card's coming in once the pill's glass leaves it.
+        // In the card's own pixels, which the stack's transform and the morph's scale s shrink.
+        blurCard(blurPx * (1f - cardFocus(c)) / max(s, 0.05f))
+        mini.setMorphContentBlur(blurPx * pillBlur(c))
 
         // The mini player's frame is the container itself; its material fades last.
         boxDrawn = box
@@ -503,8 +511,9 @@ internal class MiniCardMorph(
             v.translationX = tx - layoutX - ax * kx
             v.translationY = ty - layoutY - ay * ky
             val asPill = if (piece.paired) pairedOut(c) else earlyOut(c)
-            // No blur on the way (2026-09-26): the super island's 40px content blur across the
-            // crossing was tried (2d269db) and the user did not want it.
+            // The blur is on the two ends' whole content (blurCard, setMorphContentBlur), not the
+            // pieces: per piece (2d269db, 2026-09-26) the unpaired buttons, rings and pictures
+            // showed sharp through it, and it was taken out.
             v.alpha = when {
                 piece.art && bridged -> 0f
                 piece.art -> asPill
@@ -538,7 +547,75 @@ internal class MiniCardMorph(
         listener.onSettled(this, toNative, completed)
     }
 
+    // ---------------------------------------------------------------- the ends' content blur
+
+    /** ColorOS's capsule content blur (SystemUIPlugin u4.k / u4.b0: 9dp at its far end). */
+    private val blurPx = mini.resources.displayMetrics.density * BLUR_DP
+
+    /** The card's template: its content views, beside which its glass background is drawn. */
+    private var cardContent: List<View> = emptyList()
+    /** The radius last written; none yet, so the first is always written. */
+    private var cardBlurred = -1f
+
+    /**
+     * A notification row's content views - NotificationContentView, the template inside it and
+     * nothing of the row's background views, which draw its glass. A media card has none of
+     * them and is not blurred: its glass is inside its own content.
+     */
+    private fun contentViews(root: View): List<View> {
+        if (!root.javaClass.name.contains("ExpandableNotificationRow")) return emptyList()
+        val out = ArrayList<View>()
+        fun walk(v: View, depth: Int) {
+            if (v.javaClass.name.contains("NotificationContentView")) {
+                out.add(v)
+                return
+            }
+            if (depth >= 3 || v !is android.view.ViewGroup) return
+            for (i in 0 until v.childCount) walk(v.getChildAt(i), depth + 1)
+        }
+        walk(root, 0)
+        return out
+    }
+
+    /**
+     * DECAL, not CLAMP: clamped, the edge pixels were stretched out to the content view's bounds
+     * and the blur stood there as a hard-edged block (filmed 2026-09-30, "竖状裁切").
+     */
+    private fun blurCard(radius: Float) {
+        val r = if (radius < 0.5f) 0f else radius
+        if (cardBlurred >= 0f && abs(r - cardBlurred) < 0.25f && (r == 0f) == (cardBlurred == 0f)) return
+        cardBlurred = r
+        val effect = if (r == 0f) null
+            else android.graphics.RenderEffect.createBlurEffect(r, r, android.graphics.Shader.TileMode.DECAL)
+        cardContent.forEach { v ->
+            runCatching { v.setRenderEffect(effect) }
+            if (effect == null) blurOwners.remove(v) else blurOwners[v] = this
+        }
+    }
+
+    /**
+     * This morph's blur off its card - written through, whatever it thinks it wrote - and any
+     * other card's whose morph is no longer running: a morph dropped for the next one in a run of
+     * taps never finished, and its row stayed blurred at rest (filmed 2026-09-30).
+     */
+    private fun clearBlur() {
+        cardContent.forEach { v ->
+            if (blurOwners[v].let { it == null || it === this }) {
+                runCatching { v.setRenderEffect(null) }
+                blurOwners.remove(v)
+            }
+        }
+        cardBlurred = 0f
+        val stale = blurOwners.entries.filter { !it.value.running }.map { it.key }
+        stale.forEach { v ->
+            runCatching { v.setRenderEffect(null) }
+            blurOwners.remove(v)
+        }
+    }
+
     private fun restore() {
+        clearBlur()
+        mini.setMorphContentBlur(0f)
         pieces.forEach { piece ->
             val v = piece.view
             v.scaleX = 1f
@@ -776,6 +853,18 @@ internal class MiniCardMorph(
 
         /** The card comes in under the mini player's material, which still covers it. */
         fun nativeIn(p: Float) = smooth(0.1f, 0.5f, p)
+
+        /** The two ends' content blur at its far end, ColorOS's 9dp. */
+        const val BLUR_DP = 9f
+
+        /** Every card content view blurred now, and the morph that blurred it. */
+        private val blurOwners = java.util.WeakHashMap<View, MiniCardMorph>()
+
+        /** The pill's content goes out of focus on its way to the card, all of it by the middle. */
+        fun pillBlur(p: Float) = smooth(0f, 0.6f, p)
+
+        /** The card's comes into focus as the pill's glass leaves it, sharp once the pill has gone. */
+        fun cardFocus(p: Float) = smooth(0.4f, 0.95f, p)
 
         /**
          * The mini player's material leaves last and alone. Crossfading the two materials at
