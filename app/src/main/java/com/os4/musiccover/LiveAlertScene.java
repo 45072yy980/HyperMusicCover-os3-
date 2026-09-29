@@ -186,8 +186,109 @@ class LiveAlertScene implements ImmersiveScene {
     @Override
     public void setFade(float alpha) {
         if (mFade == alpha) return;
+        float last = mFade;
         mFade = alpha;
         applyFade();
+        followFade(last, alpha);
+    }
+
+    // ---------------------------------------------------------------- the page's scale
+
+    /**
+     * Where the app's page grows or shrinks from as it fades in, and back to as it fades out;
+     * 1 is none. ColorOS's host scales the page surface itself (SystemUIPlugin a6.l,
+     * enterContent/exitContent): 1.1 for the navigation map, 0.4 for the countdown.
+     */
+    float enterScale() {
+        return 1f;
+    }
+
+    private static final float SCALE_RESPONSE = 0.45f;
+    /** The map's scale spring has no bounce (a6.k: d(0) for type 1). */
+    private static final float SCALE_BOUNCE = 0f;
+
+    private float mScale = 1f;
+    private float mScaleTo = 1f;
+    private android.animation.ValueAnimator mScaleAnim;
+    private SurfaceControlViewHost.SurfacePackage mPackage;
+    private final SurfaceControl.Transaction mScaleTx = new SurfaceControl.Transaction();
+
+    /** The scale follows the fade's direction, as the host's springs both start on one call. */
+    private void followFade(float last, float alpha) {
+        float from = enterScale();
+        if (from == 1f) return;
+        if (alpha <= 0f) {
+            stopScale();
+            mScaleTo = from;
+            applyScale(from);
+        } else if (alpha >= 1f && last <= 0f) {
+            // Nothing to full in one step - a wake, a relock - is a cut, not a fade.
+            stopScale();
+            mScaleTo = 1f;
+            applyScale(1f);
+        } else if (alpha > last) {
+            if (mScaleTo != 1f) scaleTo(1f);
+        } else if (alpha < last) {
+            if (mScaleTo != from) scaleTo(from);
+        }
+    }
+
+    private void stopScale() {
+        android.animation.ValueAnimator a = mScaleAnim;
+        mScaleAnim = null;
+        if (a != null) a.cancel();
+    }
+
+    private void scaleTo(final float to) {
+        stopScale();
+        mScaleTo = to;
+        final float from = mScale;
+        android.animation.ValueAnimator a = android.animation.ValueAnimator.ofFloat(0f, 1f);
+        a.setDuration(PageSpring.durationMs(SCALE_RESPONSE, SCALE_BOUNCE));
+        a.setInterpolator(PageSpring.interpolator(SCALE_RESPONSE, SCALE_BOUNCE));
+        a.addUpdateListener(an -> {
+            if (mScaleAnim == an) applyScale(from + (to - from) * (float) an.getAnimatedValue());
+        });
+        a.addListener(new android.animation.AnimatorListenerAdapter() {
+            @Override
+            public void onAnimationEnd(android.animation.Animator an) {
+                if (mScaleAnim != an) return;
+                mScaleAnim = null;
+                applyScale(to);
+            }
+        });
+        mScaleAnim = a;
+        a.start();
+    }
+
+    /**
+     * The page surface scaled about the SurfaceView's centre, as a6.l.A does it: the package's
+     * own SurfaceControl, which the SurfaceView parents and leaves where it is put.
+     */
+    private void applyScale(float s) {
+        mScale = s;
+        SurfaceView sv = mSurface;
+        SurfaceControl sc = packageControl();
+        if (sv == null || sc == null || !sc.isValid()) return;
+        float cx = sv.getWidth() / 2f;
+        float cy = sv.getHeight() / 2f;
+        try {
+            mScaleTx.setScale(sc, s, s);
+            mScaleTx.setPosition(sc, cx * (1f - s), cy * (1f - s));
+            mScaleTx.apply();
+        } catch (Throwable t) {
+            Xp.log(mTag + "scale not applied: " + t);
+        }
+    }
+
+    private SurfaceControl packageControl() {
+        SurfaceControlViewHost.SurfacePackage p = mPackage;
+        if (p == null) return null;
+        try {
+            return (SurfaceControl) p.getClass().getMethod("getSurfaceControl").invoke(p);
+        } catch (Throwable t) {
+            return null;
+        }
     }
 
     /**
@@ -234,6 +335,10 @@ class LiveAlertScene implements ImmersiveScene {
         mSurface = null;
         mShown = false;
         mFade = 1f;
+        stopScale();
+        mPackage = null;
+        mScale = 1f;
+        mScaleTo = 1f;
         boolean had = mContent;
         mContent = false;
         Xp.log(mTag + "released");
@@ -310,6 +415,9 @@ class LiveAlertScene implements ImmersiveScene {
                 return;
             }
             mSurface.setChildSurfacePackage(pkg);
+            mPackage = pkg;
+            // A new page takes the scale the fade has it at.
+            applyScale(mScale);
             boolean first = !mContent;
             mContent = true;
             send(MSG_STATE, stateData(mShown ? 1 : 2));

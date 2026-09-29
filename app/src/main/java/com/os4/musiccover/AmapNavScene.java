@@ -57,6 +57,12 @@ final class AmapNavScene extends LiveAlertScene {
     private final Handler mMain = new Handler(Looper.getMainLooper());
     private final Runnable mFlush = this::flushOverview;
 
+    /** ColorOS's host grows the map in from 1.1 (a6.l, type 1). */
+    @Override
+    float enterScale() {
+        return 1.1f;
+    }
+
     @Override
     public String rowTapTarget() {
         return "focus_large_icon";
