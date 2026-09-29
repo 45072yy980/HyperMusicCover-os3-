@@ -12,18 +12,22 @@ object MiniPlayerConfig {
     const val HEIGHT_RADIUS = "heightRadiusDp"
     const val ART_RADIUS = "artRadiusDp"
 
+    /** The row takes the room a switched-off torch or camera leaves (MiniPlayerRuntime.pillRest). */
+    const val ADAPTIVE_WIDTH = "adaptiveWidth"
+
     private val defaults = linkedMapOf<String, Any>(
         ENABLED to false,
         WIDTH to 221f,
         HEIGHT_RADIUS to 27f,
         ART_RADIUS to 12f,
+        ADAPTIVE_WIDTH to false,
     )
 
     @JvmStatic fun defaultJson(): String = normalizedJson(null)
 
     /**
-     * The config as the module will use it: [ENABLED] from the input, the three size keys always
-     * at the values above.
+     * The config as the module will use it: [ENABLED] and [ADAPTIVE_WIDTH] from the input, the
+     * three size keys always at the values above.
      *
      * The sizes were sliders and are not settings any more - the app has no rows for them - so a
      * config that still carries one is not obeyed, whoever wrote it. They stay in the JSON all
@@ -43,7 +47,7 @@ object MiniPlayerConfig {
         val input = runCatching { JSONObject(raw.orEmpty()) }.getOrDefault(JSONObject())
         val out = JSONObject()
         defaults.forEach { (key, fallback) ->
-            out.put(key, if (key == ENABLED) {
+            out.put(key, if (key == ENABLED || key == ADAPTIVE_WIDTH) {
                 runCatching { input.getBoolean(key) }.getOrDefault(fallback)
             } else {
                 fallback

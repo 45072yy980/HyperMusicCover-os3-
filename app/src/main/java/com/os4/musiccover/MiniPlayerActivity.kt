@@ -58,15 +58,21 @@ private fun MiniPlayerPage(blur: Boolean, onBack: () -> Unit) {
 
     PageScaffold(title = "锁屏超级岛", isBlurEnabled = blur, onBack = onBack) {
         item {
-            // One switch, and that is the whole page now. The pill's width, its height and the
-            // roundness of the thumbnail in it were three sliders and are fixed - see
-            // MiniPlayerConfig, which no longer reads them from anything the app sends.
+            // The pill's width, its height and the roundness of the thumbnail in it were three
+            // sliders and are fixed - see MiniPlayerConfig, which no longer reads them from
+            // anything the app sends. What is left is whether it is on, and whether it widens
+            // into a switched-off shortcut's place.
             Card(Modifier.padding(horizontal = 12.dp, vertical = 12.dp)) {
                 Column {
                     SwitchPreference(title = "启用锁屏超级岛",
                         summary = if (alive) "普通锁屏的底部快捷按钮之间显示" else "等待 SystemUI 模块响应",
                         checked = config.optBoolean(MiniPlayerConfig.ENABLED), enabled = alive,
                         onCheckedChange = { push(MiniPlayerConfig.ENABLED, it) })
+                    SwitchPreference(title = "快捷方式关闭时加宽",
+                        summary = "手电筒或相机在系统设置里关掉后，超级岛占用空出的位置",
+                        checked = config.optBoolean(MiniPlayerConfig.ADAPTIVE_WIDTH),
+                        enabled = alive && config.optBoolean(MiniPlayerConfig.ENABLED),
+                        onCheckedChange = { push(MiniPlayerConfig.ADAPTIVE_WIDTH, it) })
                 }
             }
         }

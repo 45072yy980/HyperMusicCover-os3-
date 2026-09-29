@@ -15,6 +15,18 @@ internal object MiniPlayerScene {
         private set
     @Volatile var aodActive = false
         private set
+    @Volatile private var fullScreenAod = false
+
+    /**
+     * The doze is the full-screen AOD, the one that keeps the row (holdButtonsThroughDoze).
+     * Any other AOD - the plugin's or the linkage style - is the OEM's alone: the row goes
+     * out with the lock screen's own fade and stays out until the wake.
+     */
+    val fullScreenAodActive: Boolean
+        get() = aodActive && fullScreenAod
+
+    val customAodActive: Boolean
+        get() = aodActive && !fullScreenAod
 
     val hasBlockingOverlay: Boolean
         get() = editorActive || chargingActive || controlCenterActive
@@ -89,7 +101,10 @@ internal object MiniPlayerScene {
     private fun setAodActive(active: Boolean) {
         val keyguardExitReset = active && keyguardGoingAway
         if (keyguardExitReset) keyguardGoingAway = false
-        if (aodActive == active && !keyguardExitReset) return
+        // Asked once per change of the doze, not per frame: it reflects into the AOD manager.
+        val fullScreen = active && (aodActive && fullScreenAod || Main.fullAodOn())
+        if (aodActive == active && fullScreenAod == fullScreen && !keyguardExitReset) return
+        fullScreenAod = fullScreen
         aodActive = active
         if (!active) MiniPlayerRuntime.aodEnded()
         MiniPlayerRuntime.refresh()

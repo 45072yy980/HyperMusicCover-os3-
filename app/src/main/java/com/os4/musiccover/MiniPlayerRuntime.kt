@@ -165,6 +165,12 @@ object MiniPlayerRuntime {
         }
     }
 
+    /**
+     * Where the shortcut row was last seen, as a share of the window's height: the row's place
+     * for a controller made with both shortcuts switched off (MiniPlayerController.rowCentreY).
+     */
+    @Volatile internal var rowCentreShare = Float.NaN
+
     /** Bumped whenever the card is dressed; part of the pill's appearance key. */
     @Volatile internal var materialGeneration = 0
         private set
@@ -432,6 +438,12 @@ object MiniPlayerRuntime {
      */
     private var aodDimLook: Pair<IntArray, FloatArray?>? = null
     private var aodDimDepth = -1f
+
+    /**
+     * A frame with the background blur off put the AOD's own flat item background on a view:
+     * nothing eases that back, so the wake has to dress it again however deep the run ended.
+     */
+    private var aodDimFlat = false
     private var aodController: WeakReference<Any>? = null
     private var aodDimFrames = 0
     private var blendMethod: Method? = null
@@ -514,6 +526,7 @@ object MiniPlayerRuntime {
                 bg.mutate()
                 bg.setColor(args[2] as Int)
                 view.background = bg
+                aodDimFlat = true
             }
         }
     }
@@ -586,8 +599,9 @@ object MiniPlayerRuntime {
         // Eased all the way back to the card's own material: already dressed as it, and a
         // dressing again only risks a change on a pill that should not change.
         // The views out of their window missed the frames: those are dressed when they return.
-        val home = aodDimLook != null && aodDimDepth in 0f..0.01f
+        val home = aodDimLook != null && aodDimDepth in 0f..0.01f && !aodDimFlat
         aodDimLook = null
+        aodDimFlat = false
         val cl = loader ?: return
         var later = 0
         for (view in dressedViews.toList()) {
@@ -1594,7 +1608,7 @@ private class MiniPlayerController(
      * buttons themselves: its centre on the midpoint of where the two are drawn, its scale the
      * ratio of their drawn spacing to their resting spacing.
      *
-     * In the doze the buttons are put away while the pill stays; there it takes only
+     * In the full-screen doze the buttons are put away while the pill stays; there it takes only
      * keyguard_root_view's own zoom and fade, and it goes back to the buttons once they have
      * faded all the way back in after the wake - switching earlier, it dropped with their fade
      * and came back: a flash.
@@ -1631,7 +1645,7 @@ private class MiniPlayerController(
         // each frame, and rowFade is whatever was last written - the wake's 0.04, or the 1 the
         // hold wrote a frame ago. Waking, the pill let go on one and took the other: the row
         // dropped to nothing and faded in beside buttons that stayed (filmed 2026-09-26).
-        if (MiniPlayerScene.aodActive || holdButtons) rowHeldOff = true
+        if (MiniPlayerScene.fullScreenAodActive || holdButtons) rowHeldOff = true
         else if (rowHeldOff && rowFade >= 0.99f) rowHeldOff = false
         followRowFade = rowFade
         // The lock screen's editor button, up after a long press on the clock, is where the row
@@ -1640,7 +1654,13 @@ private class MiniPlayerController(
         fade *= 1f - editShown
         view.yieldTouches = editShown > 0.01f
         val matrix = followRelative
-        if (!rowHeldOff && left.isShown && right.isShown) {
+        // With a shortcut switched off the row rides on the one left, or on the row's own frame
+        // with neither; it used to take only the keyguard's zoom then, and stood still while
+        // the swipe up carried the buttons away.
+        val lOn = !switchedOff(left)
+        val rOn = !switchedOff(right)
+        val single = if (lOn != rOn) (if (lOn) left else right) else null
+        if (!rowHeldOff && lOn && rOn && left.isShown && right.isShown) {
             fade *= rowFade
             // Where each button is drawn now and where it rests, both in the host's pixels.
             if (!drawnCentre(left, drawnL) || !drawnCentre(right, drawnR)) return
@@ -1660,6 +1680,29 @@ private class MiniPlayerController(
             matrix.setTranslate(-(restL[0] + restR[0]) / 2f, -(restL[1] + restR[1]) / 2f)
             matrix.postScale(scale, scale)
             matrix.postTranslate((restL[0] + restR[0]) / 2f + mx, (restL[1] + restR[1]) / 2f + my)
+        } else if (!rowHeldOff && single != null && single.isShown) {
+            fade *= rowFade
+            // Moved as its centre is, and zoomed about it as it is.
+            if (!drawnCentre(single, drawnL)) return
+            restCentre(single, restL)
+            var scale = drawnZoom(single)
+            var mx = drawnL[0] - restL[0]
+            var my = drawnL[1] - restL[1]
+            if (kotlin.math.abs(scale - 1f) < 0.0005f) scale = 1f
+            if (kotlin.math.abs(mx) < 0.25f) mx = 0f
+            if (kotlin.math.abs(my) < 0.25f) my = 0f
+            matrix.reset()
+            matrix.setTranslate(-restL[0], -restL[1])
+            matrix.postScale(scale, scale)
+            matrix.postTranslate(restL[0] + mx, restL[1] + my)
+        } else if (!rowHeldOff && !lOn && !rOn && row.isShown) {
+            fade *= rowFade
+            // The row's own zoom and movement, as the keyguard's below.
+            matrix.reset()
+            row.transformMatrixToGlobal(matrix)
+            matrix.postConcat(hostInverse)
+            restOrigin(row, restL)
+            matrix.preTranslate(-restL[0], -restL[1])
         } else if (keyguardRoot != null) {
             // The keyguard's own zoom only, as a matrix from its untransformed slot.
             matrix.reset()
@@ -1670,6 +1713,7 @@ private class MiniPlayerController(
         } else {
             matrix.reset()
         }
+        fade = unheldInDoze(fade)
         placeSmallIsland(matrix, fade)
         // Into the pill's own frame: conjugated by its slot in the host.
         matrix.preTranslate(view.left.toFloat(), view.top.toFloat())
@@ -6464,8 +6508,15 @@ private class MiniPlayerController(
 
     private val discs = arrayOfNulls<ShortcutDisc>(2)
 
-    /** The lock screen is the mini player's: the discs go behind the buttons. updateVisibility. */
+    /** The lock screen is locked with the mini player on: the discs go behind the buttons. updateVisibility. */
     private var discsWanted = false
+
+    /**
+     * There is a row - an island, or one out as its row - and so something for the full-screen
+     * AOD to keep the buttons for (holdButtonsThroughDoze). With none, the doze takes the buttons
+     * and their discs out as it always has.
+     */
+    private var rowWanted = false
 
     private val squeeze = MiniSqueeze(dp(MiniPlayerGeometry.DISC_GAP_DP).toFloat()) { onSqueezeFrame() }
     private val buttonSqueeze = arrayOf(Matrix(), Matrix())
@@ -6555,7 +6606,7 @@ private class MiniPlayerController(
             val cx = discPoint[0] + outward * squeeze.discShift(side) * d * zoom
             // Placed and zoomed with the button; its squeeze is its shape, at its own pixels.
             setIfChanged(disc, cx - frame / 2f - disc.left, discPoint[1] - frame / 2f - disc.top,
-                zoom, zoom, chainFade(button))
+                zoom, zoom, unheldInDoze(chainFade(button)))
             disc.setShape((d * squeeze.discScaleX(side)).roundToInt().coerceIn(1, frame),
                 (d * squeeze.discScaleY(side)).roundToInt().coerceIn(1, frame))
             squeezeButton(side, button, d)
@@ -6584,11 +6635,18 @@ private class MiniPlayerController(
     private fun holdButtonsThroughDoze() {
         val root = followRoot?.get()
         val now = android.os.SystemClock.uptimeMillis()
-        if (MiniPlayerScene.aodActive && discsWanted && root != null) {
+        if (MiniPlayerScene.fullScreenAodActive && rowWanted && root != null) {
             holdButtons = true
             holdSince = now
         }
         if (!holdButtons) return
+        // Any other AOD is the OEM's: its fade is let through (unheldInDoze).
+        if (MiniPlayerScene.customAodActive) {
+            holdButtons = false
+            backSince = 0L
+            traceDoze(1f)
+            return
+        }
         // The lower of the two chains as the doze left it this frame, before it is put back.
         var natural = 1f
         for (side in 0..1) {
@@ -6716,6 +6774,17 @@ private class MiniPlayerController(
     }
 
     /** A view's fade on screen: its own and every ancestor's, up to the host. */
+    /**
+     * A doze that does not hold the buttons (holdButtonsThroughDoze) - any AOD but the
+     * full-screen one, or that one with no row - takes the pill, the small island and the discs
+     * out on the lock screen's own fade, with the buttons. That fade ends near a hundredth, not
+     * at nothing; the rest is taken to nothing, so no glass is left on the AOD. Their islands
+     * stay as they are - hiding the pill instead let every island's notification back into the
+     * stack for the doze and out again at the wake.
+     */
+    private fun unheldInDoze(fade: Float): Float =
+        if (MiniPlayerScene.aodActive && !holdButtons && fade < DOZE_GONE) 0f else fade
+
     private fun chainFade(v: View): Float {
         var fade = 1f
         var cur: View? = v
@@ -8129,11 +8198,11 @@ private class MiniPlayerController(
         val sceneVisible = keyguardOwned && presentable && !MiniPlayerScene.blocksMiniPlayer
         // Unlocking or a session ending mid-morph: straight to where it was going.
         if (!keyguardOwned) morph?.cancel()
-        // The discs stay while any island is out as its row: the last notification pulled out
-        // of a row with no music left the row empty, and the torch and camera lost their glass
-        // with it (2026-09-25) - where the music, out as its card, still counts as an island.
-        discsWanted = keyguardOwned || enabled && !MiniPlayerScene.keyguardGoingAway &&
-            Main.keyguardLocked() && LockIslands.releasedKeys().isNotEmpty()
+        // The discs are the lock screen's, not the row's: with no island at all - no music, no
+        // notification, or the last one pulled out as its row - the torch and camera kept losing
+        // their glass (2026-09-25, and #10/#17 after it). They stay wherever the row could be.
+        discsWanted = enabled && !MiniPlayerScene.keyguardGoingAway && Main.keyguardLocked()
+        rowWanted = keyguardOwned || discsWanted && LockIslands.releasedKeys().isNotEmpty()
         val controlCenterOpen = keyguardOwned &&
             (MiniPlayerScene.controlCenterIsActive || Main.miniPlayerControlCenterUp())
         val nativeRequested = MiniPlayerRuntime.nativeRequested(current?.sessionToken)
@@ -8285,14 +8354,19 @@ private class MiniPlayerController(
         // Where the buttons are laid out, not where they are drawn: whatever moves them on top
         // of their layout (the swipe, the doze) reaches the pill through followShortcuts.
         // Taking their drawn place here as well moved the pill twice as far as they went.
-        val laidOut = left.width > 0 && right.width > 0 && left.height > 0 && right.height > 0
-        val l = if (laidOut) restCentre(left) else null
-        val r = if (laidOut) restCentre(right) else null
+        // Only the ones switched on: one switched off takes no disc, and gives no room up.
+        // Both had to be laid out before - one switched off since SystemUI started never was,
+        // and the row went to the middle of the screen (#13).
+        val l = if (placesRow(left)) restCentre(left) else null
+        val r = if (placesRow(right)) restCentre(right) else null
         val centerX = if (l != null && r != null) (l[0] + r[0]) / 2f else host.width / 2f
-        val centerY = if (l != null && r != null) (l[1] + r[1]) / 2f else host.height / 2f
         val config = this.config
         val requestedWidth = dp(config.getDouble(MiniPlayerConfig.WIDTH).toFloat())
         val height = dp(MiniPlayerConfig.visibleHeightDp(config.toString()))
+        val centerY = rowCentreY(l, r, height)
+        if ((l == null || r == null) && config.optBoolean(MiniPlayerConfig.ADAPTIVE_WIDTH)) {
+            widenedRest(l, r, small, height, centerY)?.let { return it }
+        }
         // Clear of the discs, a circle as tall as the pill on each button. Laid out rather than
         // shown: the buttons are put away in the doze, and the pill must not widen for it.
         val width = MiniPlayerGeometry.clearOfDiscsPx(
@@ -8310,6 +8384,71 @@ private class MiniPlayerController(
                 centerX, l?.get(0), r?.get(0), height.toFloat(), gap.toFloat(), 0),
             height, gap, dp(MiniPlayerGeometry.MIN_PILL_DP))
         return PillRest(pillWidth, height, centerX, centerY)
+    }
+
+    /**
+     * A shortcut switched off in the lock screen's settings: the OEM makes its image and its
+     * frame GONE and leaves both in the tree (ShortcutViewLayoutController.updateShortcutView).
+     * Put away for the doze or the PIN pad it is still switched on - that is the row's fade,
+     * and the row must not widen for it.
+     */
+    private fun switchedOff(button: View): Boolean = button.visibility == View.GONE
+
+    /** A button the row is laid out by: switched on, and laid out. */
+    private fun placesRow(button: View): Boolean =
+        !switchedOff(button) && button.width > 0 && button.height > 0
+
+    /**
+     * The row's height on the screen: the buttons', or where one switched off was laid out
+     * last - GONE is not laid out again, it keeps its place - or, with neither ever laid out,
+     * where a row was last seen in this SystemUI, as a share of the screen. Only a SystemUI
+     * started with both switched off has none of those, and the row sits above the
+     * navigation bar.
+     */
+    private fun rowCentreY(l: FloatArray?, r: FloatArray?, height: Int): Float {
+        val y = when {
+            l != null && r != null -> (l[1] + r[1]) / 2f
+            l != null -> l[1]
+            r != null -> r[1]
+            left.height > 0 -> restCentre(left)[1]
+            right.height > 0 -> restCentre(right)[1]
+            else -> null
+        }
+        if (y != null) {
+            MiniPlayerRuntime.rowCentreShare = y / host.height
+            return y
+        }
+        val share = MiniPlayerRuntime.rowCentreShare
+        if (!share.isNaN()) return share * host.height
+        val inset = runCatching {
+            host.rootWindowInsets?.getInsetsIgnoringVisibility(
+                android.view.WindowInsets.Type.systemBars())?.bottom
+        }.getOrNull() ?: 0
+        return (host.height - inset - dp(12f) - height / 2f).coerceAtLeast(height / 2f)
+    }
+
+    /**
+     * The row across the room a switched-off shortcut leaves (MiniPlayerConfig.ADAPTIVE_WIDTH):
+     * from the disc still there, or from where the missing disc's outer edge would be, across
+     * to the other side - the pill and its small island centred in it as one group. Null when
+     * that room is narrower than the pill's least width.
+     */
+    private fun widenedRest(l: FloatArray?, r: FloatArray?, small: Boolean, height: Int,
+                            centerY: Float): PillRest? {
+        val gap = dp(MiniPlayerGeometry.DISC_GAP_DP)
+        // The discs' outer margin, from a button still laid out, switched off or not.
+        val margin = listOf(left, right).firstOrNull { it.width > 0 && it.height > 0 }
+            ?.let { restCentre(it)[0] }
+            ?.let { cx -> (min(cx, host.width - cx) - height / 2f).coerceAtLeast(dp(12f).toFloat()) }
+            ?: dp(12f).toFloat()
+        val start = l?.let { it[0] + height / 2f + gap } ?: margin
+        val end = r?.let { it[0] - height / 2f - gap } ?: (host.width - margin)
+        val room = (end - start).toInt()
+        val least = dp(MiniPlayerGeometry.MIN_PILL_DP)
+        if (room < least) return null
+        val pillWidth = if (!small) room
+            else MiniPlayerGeometry.pillBesideIslandPx(room, room, height, gap, least)
+        return PillRest(pillWidth, height, (start + end) / 2f, centerY)
     }
 
     private fun position() {
@@ -8398,6 +8537,9 @@ private const val HOLD_MAX_MS = 2000L
 
 /** ...and once its own alpha has been back at full for this long. */
 private const val HOLD_SETTLE_MS = 300L
+
+/** In a doze that does not hold the buttons, the row faded below this is gone (unheldInDoze). */
+private const val DOZE_GONE = 0.05f
 
 /** The full-screen AOD's colour run quiet this long: over, whether or not it said so. */
 private const val AOD_DIM_SETTLE_MS = 600L
