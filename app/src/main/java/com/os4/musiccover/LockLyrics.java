@@ -76,9 +76,16 @@ final class LockLyrics {
     private static boolean sHolding;
 
     /**
-     * The third switch: a held note's glow brighter than white on an HDR screen. Off by default:
-     * the HDR colour mode is the whole shade window's, and with it on the media card's material
-     * changes colour too (reported 2026-09-16). Doing it without that needs its own window.
+     * The third switch: a held note's glow brighter than white on an HDR screen.
+     *
+     * Off by default, and it was off for a reason that has since been fixed: the colour mode is a
+     * whole window's, and the lyrics used to share the lock screen's with the clock and the media
+     * card, so the card's material was drawn as HDR content and brightened (reported 2026-09-16,
+     * still there on 2026-09-29 with the headroom request removed - SurfaceFlinger picks its own
+     * 5.00). With this switch on the lyrics have a window of their own, and only it is switched
+     * - see {@link LyricWindow}; with it off they stay in the keyguard's layer, since the window
+     * costs them the lock screen's z-order (see attach). Off by default until that has been
+     * lived with.
      */
     static volatile boolean sHdr = false;
     /**
@@ -101,13 +108,6 @@ final class LockLyrics {
         if (view != null) view.kick();
         return true;
     }
-    /** How far above SDR white the window may go; the text asks for less than this. */
-    private static final float HDR_HEADROOM = 4f;
-    private static Object sShadeWindow;
-    private static boolean sHdrApplied;
-    private static boolean sModeOwned;
-    private static int sOrigColorMode;
-    private static float sOrigHeadroom;
 
     /** A lookup is in the air; the blur is held rather than dropped while it is. */
     private static boolean sLoading;
@@ -298,6 +298,149 @@ final class LockLyrics {
         return wanted() && Main.coverModeOn() && hasLyrics();
     }
 
+    /**
+     * Whether the lyric page should be *drawn* right now: the cover's answer, and the lock screen
+     * actually being the thing in front.
+     *
+     * The second half is new with the window. The view used to be a child of the keyguard, so it
+     * went away with it for free; a window of its own does not, and cover mode outlives the lock
+     * screen (the media card is the switch, and the card is still there in the unlocked shade).
+     * Without this the lyrics hang over the desktop after an unlock (user, 2026-09-29).
+     *
+     * Drawing only - NOT the window's lifetime, which is wantsAttached()'s. Detaching on an
+     * unlock was the first try and cost the page until the next track change: the window came down
+     * and cover mode had not exited, so nothing ever called attach() again on the way back to the
+     * lock screen (user, 2026-09-29). Left up and empty instead, the view's own tick is still
+     * running when the lock screen returns, and it brings the lines back by itself.
+     */
+    static boolean wantsWindow() {
+        if (!wantsAttached()) return false;
+        // In the keyguard's own layer the lock screen going takes the view with it, as it always
+        // did; only the window needs telling.
+        if (!sHdr) return true;
+        return !lockScreenGone();
+    }
+
+    /**
+     * The lock screen has gone, or has said it is going: the keyguard reads unlocked, or one of
+     * the leaving hooks fired within the last LEAVING_MAX_MS. This is what the window's page is
+     * cut on (LyricView.step's `gone`) - both halves, because the hook fires while the keyguard
+     * still reads locked, and that stretch is exactly the residue the cut is for.
+     */
+    static boolean lockScreenGone() {
+        if (!Main.keyguardLocked()) {
+            // The keyguard's own answer has caught up: whatever "leaving" was for is spent.
+            sLeaving = false;
+            return true;
+        }
+        if (sLeaving && SystemClock.uptimeMillis() - sLeavingAt > LEAVING_MAX_MS) {
+            // Told the lock screen was leaving, and it did not: a false alarm must not keep the
+            // page out for the rest of the session.
+            sLeaving = false;
+        }
+        return sLeaving;
+    }
+
+    /**
+     * The lock screen is leaving, as told by whoever sees it start (Main hooks the keyguard
+     * service's exit animation and MIUI's own injector, and names which in the probe).
+     *
+     * Deliberately not the KeyguardManager reading: at the start of the OEM's exit animation that
+     * answer can still be "locked" for a few hundred ms - the animation is the dismissal - and the
+     * page has to go *with* the lock screen rather than after it. This is also why the page is
+     * cut rather than faded here (LyricView.step's `gone`): there is no lock screen left to fade
+     * against, only the desktop behind it.
+     */
+    static void lockScreenLeaving(String by) {
+        sLeavingBy = by;
+        sLeavingAt = SystemClock.uptimeMillis();
+        sLastLeave = by + "@" + sLeavingAt;
+        sLeaving = true;
+    }
+
+    /** When and by which door the lock screen last left, for the probe. Survives the clear. */
+    static String lastLeave() {
+        return sLastLeave.isEmpty() ? "none" : sLastLeave;
+    }
+
+    private static volatile String sLastLeave = "";
+
+    /**
+     * A light heartbeat while the page is up.
+     *
+     * It asks the keyguard question - cached for 150ms, so this is not a binder call every time -
+     * and wakes the view the moment the answer changes what the page should do. Without it the
+     * page only finds out on its next frame, and an idle page has none: it waits for the tick, up
+     * to 500ms. That gap is exactly the "一瞬间的残留" an unlock left over the desktop (user,
+     * 2026-09-29): the trace in `op lyricstate` caught the cut landing on a frame where the
+     * keyguard already read unlocked, and `lastLeave=` says whether one of the leaving hooks saw
+     * the lock screen go before the keyguard did.
+     */
+    private static final long WATCH_MS = 120L;
+    /** The same beat in a doze, where it does nothing but keep the beat. See WATCH. */
+    private static final long WATCH_AOD_MS = 1000L;
+    private static final Runnable WATCH = new Runnable() {
+        @Override
+        public void run() {
+            LyricView v = sView;
+            if (v == null) return;
+            // A doze (or a screen that is off) asks nothing and wakes nothing: an unlock cannot
+            // happen without a wake, the wake path re-reads the keyguard anyway, and eight wakeups
+            // a second under a display that is trying to sit still is exactly what the AOD's own
+            // 1Hz discipline is there to avoid (see aod-still-mode-lyrics). The beat stays because
+            // the page is still up in there - the lyrics are shown in the held AOD.
+            boolean doze = !Main.screenOnCached() || inHeldAod();
+            if (!doze && v.pageWanted() != wantsWindow()) v.kick();
+            // Unlocked and lit: the page is out and there is nothing left to watch for until the
+            // lock screen comes back, which is a screen off (resumeWatch) or an attach. Beating on
+            // here would be two binder calls every other beat for as long as music plays with
+            // the phone in use - cover mode outlives the unlock.
+            if (!doze && !Main.keyguardLocked()) return;
+            Main.main().postDelayed(this, doze ? WATCH_AOD_MS : WATCH_MS);
+        }
+    };
+
+    /** (Re)starts the heartbeat - only the window needs one; see WATCH. */
+    private static void watch() {
+        Main.main().removeCallbacks(WATCH);
+        if (sHdr && LyricWindow.owns(sView)) Main.main().postDelayed(WATCH, WATCH_MS);
+    }
+
+    /** The screen went off or on: the lock screen may be back, so the heartbeat is too. */
+    static void resumeWatch() {
+        if (sView != null) watch();
+    }
+
+    /**
+     * Which of the doorways into "the lock screen is going" armed, for the probe: `+tag` armed,
+     * `!tag` did not. Which one fires on an unlock is a question only the phone answers, and the
+     * answer is the difference between a working signal and a hook that quietly is not there.
+     */
+    static void armed(String tag) {
+        sHooks = sHooks.isEmpty() ? tag : sHooks + " " + tag;
+    }
+
+    static String hooks() {
+        return sHooks.isEmpty() ? "none" : sHooks;
+    }
+
+    private static volatile String sHooks = "";
+
+    /** For the probe: who said so, or `-`. */
+    static String leavingWhy() {
+        return sLeaving ? "leave" + sLeavingBy : "-";
+    }
+
+    /**
+     * How long "the lock screen is leaving" is believed without the keyguard agreeing. Short: it
+     * only has to outlive the walk from the hook to the page, and a signal that fired on something
+     * else has to give the page back quickly rather than keep it out until the next unlock.
+     */
+    private static final long LEAVING_MAX_MS = 800L;
+    private static volatile boolean sLeaving;
+    private static volatile long sLeavingAt;
+    private static volatile String sLeavingBy = "?";
+
     /** The lyric page a tap into cover mode will land on. */
     static boolean willAttachOnEntry() {
         return hasLyrics() && CoverMorphRoute.lyricsAfterEntry(sEnabled, sTapHidden, sDemo);
@@ -317,7 +460,7 @@ final class LockLyrics {
      * now, so through the flight they follow it down instead.
      */
     static boolean wantsShown() {
-        if (!wantsAttached()) return false;
+        if (!wantsWindow()) return false;
         // Hold the band back until the cover's blur transition has settled, so it does not
         // land over an artwork that is still sharpening. blurSettled() answers true when there
         // is no blur pending, so the held-AOD path below still shows through untouched.
@@ -705,49 +848,95 @@ final class LockLyrics {
         if (v != null) v.kick();
     }
 
-    /** Cover mode came on. Puts the view in the keyguard if the switch is on. */
+    /**
+     * Cover mode came on. Puts the view in the keyguard if the switch is on - in the keyguard's
+     * foreground layer, or, with the HDR highlight on, in a window of its own.
+     *
+     * Two homes because the window is paid for in everything the view used to inherit for free
+     * (see {@link LyricWindow}): the lock screen's alpha, visibility and zoom, and its z-order -
+     * the PIN pad and the shade over the lock screen are drawn in the same window and used to be
+     * above the lyrics. The HDR colour mode is the only thing that needs the window, so only the
+     * switch that asks for it pays for it; with it off the view lives where it always did.
+     * Flipping the switch moves the view: `lyrichdr` refreshes, and the refresh lands here.
+     */
     static void attach() {
         updateBlur();
+        // wantsAttached(), not wantsWindow(): the view's life is the cover's, and whether the
+        // lines are drawn is also the lock screen's. See wantsWindow().
         if (!wantsAttached()) return;
         final View anchor = Main.sContainer;
         if (anchor == null) return;
         try {
-            int id = anchor.getResources().getIdentifier(
-                    "keyguard_foreground_layer", "id", "com.android.systemui");
-            View layer = id == 0 ? null : anchor.getRootView().findViewById(id);
-            if (!(layer instanceof ViewGroup)) {
-                Xp.log(TAG + "keyguard_foreground_layer not found");
-                return;
-            }
-            if (sView == null || sView.getContext() != anchor.getContext()) {
-                sView = new LyricView(anchor.getContext());
-            }
-            LyricView v = sView;
-            if (v.getParent() != layer) {
-                if (v.getParent() instanceof ViewGroup) ((ViewGroup) v.getParent()).removeView(v);
-                ((ViewGroup) layer).addView(v, new ViewGroup.LayoutParams(
-                        ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
-                Xp.log(TAG + "view attached, " + sLines.size() + " lines");
-            }
+            LyricView v = sHdr ? inWindow(anchor) : inLayer(anchor);
+            if (v == null) return;
+            sView = v;
             v.kick();
             startTick();
+            watch();
         } catch (Throwable t) {
             Xp.log(TAG + "attach failed: " + Log.getStackTraceString(t));
+        }
+    }
+
+    /** HDR on: the lyrics' own window, so the colour mode is theirs and not the media card's. */
+    private static LyricView inWindow(View anchor) {
+        LyricView old = sView;
+        if (old != null && !LyricWindow.owns(old)) unhost(old);
+        return LyricWindow.add(anchor);
+    }
+
+    /** HDR off: the keyguard's foreground layer, beside the clock and the card. */
+    private static LyricView inLayer(View anchor) {
+        LyricView old = sView;
+        if (old != null && LyricWindow.owns(old)) unhost(old);
+        int id = anchor.getResources().getIdentifier(
+                "keyguard_foreground_layer", "id", "com.android.systemui");
+        View layer = id == 0 ? null : anchor.getRootView().findViewById(id);
+        if (!(layer instanceof ViewGroup)) {
+            Xp.log(TAG + "keyguard_foreground_layer not found");
+            return null;
+        }
+        if (sView == null || sView.getContext() != anchor.getContext()) {
+            sView = new LyricView(anchor.getContext());
+        }
+        LyricView v = sView;
+        if (v.getParent() != layer) {
+            if (v.getParent() instanceof ViewGroup) ((ViewGroup) v.getParent()).removeView(v);
+            ((ViewGroup) layer).addView(v, new ViewGroup.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+            Xp.log(TAG + "view attached, " + sLines.size() + " lines");
+        }
+        return v;
+    }
+
+    /**
+     * Takes a view out of whichever home it is in, and lets go of the screen if it was the one
+     * holding it - the flag is the view's, so the view that replaces it has to ask again, and the
+     * tick does.
+     */
+    private static void unhost(LyricView v) {
+        if (v == null) return;
+        if (sHolding) {
+            sHolding = false;
+            v.setKeepScreenOn(false);
+        }
+        if (LyricWindow.owns(v)) {
+            // The window's view is the window's: a new one comes with the next window.
+            LyricWindow.remove();
+            if (sView == v) sView = null;
+        } else if (v.getParent() instanceof ViewGroup) {
+            // The layer's view is kept and put back by the next attach, as it always was.
+            ((ViewGroup) v.getParent()).removeView(v);
+            Xp.log(TAG + "view detached");
         }
     }
 
     /** Called by the view itself once it has faded out with no reason to stay. */
     static void detach(LyricView v) {
         if (wantsAttached()) return;
-        if (sHolding) {
-            sHolding = false;
-            v.setKeepScreenOn(false);
-        }
-        if (v.getParent() instanceof ViewGroup) {
-            ((ViewGroup) v.getParent()).removeView(v);
-            Xp.log(TAG + "view detached");
-        }
+        unhost(v);
         Main.main().removeCallbacks(TICK);
+        Main.main().removeCallbacks(WATCH);
     }
 
     /** Anything that may change whether the view should be showing. */
@@ -914,6 +1103,8 @@ final class LockLyrics {
                 + " shown=" + wantsShown() + " blurSettled=" + blurSettled()
                 + " blurElapsed=" + (sBlurStartedAt > 0 ? (SystemClock.uptimeMillis() - sBlurStartedAt) + "ms" : "none")
                 + " tick=" + sTicking
+                + " hooks=" + hooks()
+                + " " + LyricWindow.describe()
                 + " view={" + (v == null ? "none" : v.describe()) + "}";
     }
 
@@ -1386,16 +1577,11 @@ final class LockLyrics {
         Xp.log(TAG + (want ? "holding the screen on" : "screen may sleep again"));
     }
 
-    /** The shade window controller, seen on its first apply. */
-    static void noteShadeWindow(Object controller) {
-        sShadeWindow = controller;
-    }
-
     /** Whether the singing words should be drawn in HDR right now. */
     static boolean hdrWanted() {
-        // Never in a doze: the colour mode is the whole shade window's and the headroom is 4x,
-        // which is the opposite of what a display that has just dimmed itself wants. The glow
-        // that arms this needs the lyrics on screen, so without this the AOD would ask for HDR.
+        // Never in a doze: the window would go bright and ask the display for headroom, which is
+        // the opposite of what a display that has just dimmed itself wants. The glow that arms
+        // this needs the lyrics on screen, so without this the AOD would ask for HDR too.
         return sHdr && sGlowing && wantsShown() && !inHeldAod() && !sLines.isEmpty();
     }
 
@@ -1425,39 +1611,15 @@ final class LockLyrics {
     }
 
     /**
-     * Writes the colour mode into the shade window's pending attributes, or puts back what the
-     * OEM had there. Called inside the OEM's own apply, so it lands in the same update.
+     * Asks the lyrics' own window for HDR, or for plain SDR again.
+     *
+     * This used to be written into the lock screen window's pending attributes from inside the
+     * OEM's own apply, which is exactly what made the media card brighten: the colour mode is the
+     * whole window's and the card is in it. Now it is one window's own layout params, and that
+     * window holds nothing but the lyrics - see {@link LyricWindow}. The dedupe lives there too.
      */
-    static void applyHdrTo(android.view.WindowManager.LayoutParams lp) {
-        if (lp == null) return;
-        if (hdrWanted()) {
-            if (!sModeOwned) {
-                sOrigColorMode = lp.getColorMode();
-                sOrigHeadroom = lp.getDesiredHdrHeadroom();
-                sModeOwned = true;
-            }
-            lp.setColorMode(android.content.pm.ActivityInfo.COLOR_MODE_HDR);
-            lp.setDesiredHdrHeadroom(HDR_HEADROOM);
-        } else if (sModeOwned) {
-            lp.setColorMode(sOrigColorMode);
-            lp.setDesiredHdrHeadroom(sOrigHeadroom);
-            sModeOwned = false;
-        }
-    }
-
-    /** Asks the OEM to re-apply its window attributes when what we want of them has changed. */
     static void updateHdr() {
-        boolean want = hdrWanted();
-        if (want == sHdrApplied) return;
-        Object w = sShadeWindow;
-        if (w == null) return;
-        sHdrApplied = want;
-        try {
-            Xp.callMethod(w, "applyWindowLayoutParams");
-            Xp.log(TAG + "lock screen window HDR " + (want ? "on" : "off"));
-        } catch (Throwable t) {
-            Xp.log(TAG + "applyWindowLayoutParams failed: " + t);
-        }
+        LyricWindow.setHdr(hdrWanted());
     }
 
     /** Every string in the session's metadata, and lyricInfo written to a file whole. */

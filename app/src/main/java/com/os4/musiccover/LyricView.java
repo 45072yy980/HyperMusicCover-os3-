@@ -367,6 +367,11 @@ final class LyricView extends View {
                 } finally { android.os.Trace.endSection(); } }
             };
 
+    /** For LyricWindow, which adds the same pre-draw to the keyguard's tree. */
+    ViewTreeObserver.OnPreDrawListener preDrawListener() {
+        return preDraw;
+    }
+
     LyricView(Context ctx) {
         super(ctx);
         density = getResources().getDisplayMetrics().density;
@@ -480,6 +485,7 @@ final class LyricView extends View {
         lastStep = now;
 
         boolean changed = followAodDim();
+        changed |= followHostAlpha();
         changed |= followBouncer(dt);
         // Before the band below, which reads this view's scale.
         changed |= followSwipeZoom();
@@ -488,7 +494,15 @@ final class LyricView extends View {
         // is a line away, so nothing eases - each value is put where it is heading. See
         // LockLyrics.still().
         boolean still = LockLyrics.still();
-        float dtTo = still ? Float.POSITIVE_INFINITY : dt;
+        // Leaving the lock screen, in the window (LyricWindow): the keyguard is gone and the
+        // desktop is what is behind, so there is nothing left to fade against - the page goes on
+        // the frame the lock screen does rather than after it (user, 2026-09-29: "解锁的时候歌词
+        // 会有一瞬间的残留"). Gone is also "a leaving hook has fired", not only the keyguard
+        // reading unlocked: that reading lags the start of the OEM's exit animation, and the lag
+        // is the residue. As a child of the keyguard the lock screen takes the view with it.
+        boolean gone = LyricWindow.owns(this) && LockLyrics.lockScreenGone();
+        pageWanted = LockLyrics.wantsWindow();
+        float dtTo = still || gone ? Float.POSITIVE_INFINITY : dt;
         // Not before the first layout: a width of zero would wrap every line a character a row.
         // Leaving, the lines are frozen like the band below: switching the lyrics off empties
         // them, and laying the empty set out at once cut the lines off in one frame instead of
@@ -540,9 +554,13 @@ final class LyricView extends View {
             changed = true;
             why |= 4;
         }
+        trace(now, gone);
         if (show == 0f && showTo == 0f && !LockLyrics.wantsAttached()) {
-            // Faded out with nothing to come back for: leave the keyguard's tree, and let the
-            // frozen lines and their pictures go if the switch emptied them.
+            // Faded out with nothing to come back for: leave the keyguard's tree or take the
+            // window down, and let the frozen lines and their pictures go if the switch emptied
+            // them. wantsAttached() and not
+            // wantsWindow(): a page that faded out because the phone was unlocked still has the
+            // cover waiting for it behind the lock screen (see LockLyrics.wantsWindow).
             if (LockLyrics.lines().isEmpty() && !lines.isEmpty()) layOut();
             post(new Runnable() {
                 @Override
@@ -831,7 +849,7 @@ final class LyricView extends View {
         if (!LockLyrics.inHeldAod()) return swipeFade();
         View s = dimSource;
         if (s == null || !s.isAttachedToWindow()) {
-            View root = getRootView();
+            View root = keyguardRoot();
             int id = getContext().getResources()
                     .getIdentifier("keyguard_info_layer", "id", "com.android.systemui");
             s = id == 0 || root == null ? null : root.findViewById(id);
@@ -849,7 +867,7 @@ final class LyricView extends View {
     private View swipeSource() {
         View s = swipeSource;
         if (s == null || !s.isAttachedToWindow()) {
-            View root = getRootView();
+            View root = keyguardRoot();
             int id = getContext().getResources()
                     .getIdentifier("shared_notification_container", "id", "com.android.systemui");
             s = id == 0 || root == null ? null : root.findViewById(id);
@@ -868,7 +886,31 @@ final class LyricView extends View {
     private float swipeFade() {
         if (ClockCollapse.phase() == ClockCollapse.Phase.AOD) return 1f;
         View s = swipeSource();
-        return s == null ? 1f : Math.max(s.getTransitionAlpha(), bouncerP);
+        float t = s == null ? 1f : s.getTransitionAlpha();
+        // In a window of its own the page is above the pad, not under it (LyricWindow), so
+        // staying and blurring would put blurred lines over the digits: it goes with the pad.
+        if (LyricWindow.owns(this)) return t * (1f - bouncerP);
+        return s == null ? 1f : Math.max(t, bouncerP);
+    }
+
+    /**
+     * The keyguard's root, where the card's container and the AOD's dim layer are looked up: this
+     * view's own as a child of the keyguard, the lock screen window's when this view is a window
+     * of its own (LyricWindow), whose tree holds nothing but it.
+     */
+    private View keyguardRoot() {
+        return LyricWindow.owns(this) ? LyricWindow.hostRoot() : getRootView();
+    }
+
+    /**
+     * The keyguard's own alpha and visibility, which a child inherits and a window does not. See
+     * LyricWindow.hostAlpha. 1 as a child, so that path is exactly what it always was.
+     */
+    private boolean followHostAlpha() {
+        float want = LyricWindow.owns(this) ? LyricWindow.hostAlpha() : 1f;
+        if (getAlpha() == want) return false;
+        setAlpha(want);
+        return true;
     }
 
     /**
@@ -882,20 +924,61 @@ final class LyricView extends View {
      */
     private boolean followSwipeZoom() {
         float want = 1f, pivotX = getPivotX(), pivotY = getPivotY();
-        View s = ClockCollapse.phase() == ClockCollapse.Phase.AOD ? null : swipeSource();
-        if (s != null && getParent() instanceof View) {
-            View parent = (View) getParent();
-            float sc = chainScaleY(s), sp = chainScaleY(parent);
-            if (sp > 0f && Math.abs(sc / sp - 1f) > 1e-3f) {
-                want = sc / sp;
+        boolean aod = ClockCollapse.phase() == ClockCollapse.Phase.AOD;
+        View s = aod ? null : swipeSource();
+        if (!LyricWindow.owns(this)) {
+            if (s != null && getParent() instanceof View) {
+                View parent = (View) getParent();
+                float sc = chainScaleY(s), sp = chainScaleY(parent);
+                if (sp > 0f && Math.abs(sc / sp - 1f) > 1e-3f) {
+                    want = sc / sp;
+                    // The container's pivot on screen, and where that point is in this view.
+                    s.getLocationOnScreen(loc);
+                    float sx = loc[0] + chainScaleX(s) * s.getPivotX();
+                    float sy = loc[1] + sc * s.getPivotY();
+                    parent.getLocationOnScreen(loc);
+                    float spx = chainScaleX(parent);
+                    pivotX = spx > 0f ? (sx - loc[0]) / spx - getLeft() - getTranslationX() : pivotX;
+                    pivotY = (sy - loc[1]) / sp - getTop() - getTranslationY();
+                }
+            }
+        } else {
+            // A window of its own (LyricWindow): nothing above this view carries any of the
+            // keyguard's zoom, so the whole of it is applied here - the card container's, which
+            // already includes the keyguard's own since the container is under it, or with no
+            // container (the doze) the keyguard's alone, which used to arrive as an ancestor's.
+            float sc = s == null ? Float.NaN : chainScaleY(s);
+            View host = LyricWindow.host();
+            if (!Float.isNaN(sc) && Math.abs(sc - 1f) > 1e-3f) {
+                want = sc;
                 // The container's pivot on screen, and where that point is in this view.
                 s.getLocationOnScreen(loc);
                 float sx = loc[0] + chainScaleX(s) * s.getPivotX();
                 float sy = loc[1] + sc * s.getPivotY();
-                parent.getLocationOnScreen(loc);
-                float spx = chainScaleX(parent);
-                pivotX = spx > 0f ? (sx - loc[0]) / spx - getLeft() - getTranslationX() : pivotX;
-                pivotY = (sy - loc[1]) / sp - getTop() - getTranslationY();
+                // The WINDOW's origin on screen, not this view's: this view's own location
+                // already has its scale about its current pivot in it, and taking the pivot from
+                // it fed each frame's pivot into the next - it swung for a few frames and settled
+                // at sy/(2-sc) rather than sy. Screen minus window location is the window's
+                // offset exactly, both being rounded from the same point.
+                getLocationOnScreen(loc);
+                getLocationInWindow(winLoc);
+                pivotX = sx - (loc[0] - winLoc[0]) - getLeft() - getTranslationX();
+                pivotY = sy - (loc[1] - winLoc[1]) - getTop() - getTranslationY();
+            } else if (host != null) {
+                // The keyguard's own zoom - 0.95 on keyguard_root_view in the doze, and on its
+                // way back to 1 through a wake. Uniform, about the column's own centre for x (the
+                // lines are centred) and this view's top for y. Where that puts the lines is not
+                // a guess: the band is laid out through ClockCollapse.unzoomY, which inverts this
+                // view's scale about wherever it puts this view's origin, so the lines still sit
+                // against the clock and the card as drawn. The composite of the OEM's scales
+                // about their own pivots is one scale about this corner, which is the only
+                // difference, and it is in `op lyricstate` (`win=... scale= pivot=`).
+                float k = chainScaleY(host);
+                if (Math.abs(k - 1f) > 1e-3f) {
+                    want = k;
+                    pivotX = getWidth() / 2f;
+                    pivotY = 0f;
+                }
             }
         }
         if (getScaleY() == want && (want == 1f
@@ -910,6 +993,8 @@ final class LyricView extends View {
         setScaleY(want);
         return true;
     }
+
+    private final int[] winLoc = new int[2];
 
     private static float chainScaleY(View v) {
         float k = 1f;
@@ -2056,6 +2141,70 @@ final class LyricView extends View {
     private final StringBuilder gapLog = new StringBuilder();
     private long vsyncMs;
 
+    // ---- the probe's little timeline
+
+    /** What the last step made of the page's fate; the watch in LockLyrics compares against it. */
+    private boolean pageWanted = true;
+
+    boolean pageWanted() {
+        return pageWanted;
+    }
+
+    private static final int TRACE_N = 16;
+    private final String[] trace = new String[TRACE_N];
+    private int traceN;
+    private boolean traceGone;
+    private float traceShow = -1f;
+    private long traceAt, traceBurst;
+
+    /**
+     * One line per frame that moved, kept for the probe: what the page did while the lock screen
+     * was leaving, and which reading was late with it (user, 2026-09-29: "解锁的时候歌词会有一瞬间
+     * 的残留"). Only frames that move are kept, so one event is one burst, and a burst restarts
+     * after a quiet gap so the times are relative to the first frame of *this* event.
+     *
+     * Columns: ms since the burst began, `show`, `G` while the page is being cut (the keyguard is
+     * gone or has said it is leaving), `a` the view's own transition alpha, `w` the swipe fade
+     * read off the card's container, `k` the keyguard reading that frame used, and which signal
+     * said the lock screen was leaving.
+     */
+    private void trace(long now, boolean gone) {
+        if (gone == traceGone && Math.abs(show - traceShow) < 0.02f) return;
+        if (now - traceAt < 32L) return;
+        if (now - traceAt > 700L) traceBurst = now;
+        traceAt = now;
+        traceGone = gone;
+        traceShow = show;
+        trace[traceN++ % TRACE_N] = "@" + now + " +" + (now - traceBurst) + "ms "
+                + r2(show) + (gone ? "G" : "g")
+                + " a" + r2(getTransitionAlpha()) + " w" + r2(swipeFade())
+                + " k" + (Main.keyguardLocked() ? 1 : 0)
+                + " c" + (Main.coverModeOn() ? 1 : 0) + " t" + (LockLyrics.wantsAttached() ? 1 : 0)
+                + " s" + (Main.screenOnCached() ? 1 : 0) + " p" + ClockCollapse.phase()
+                + " " + LockLyrics.leavingWhy() + " L" + LockLyrics.lastLeave();
+    }
+
+    private static String r2(float v) {
+        return String.valueOf(Math.round(v * 100f) / 100f);
+    }
+
+    /**
+     * The trace, oldest first. NOT read-and-cleared like the other counters: an unlock is easy to
+     * follow with a re-lock, and the times on each line are absolute, so a burst that is not the
+     * one asked about can be told apart instead of being read as it.
+     */
+    private String traceText() {
+        StringBuilder sb = new StringBuilder();
+        int n = Math.min(traceN, TRACE_N);
+        for (int i = 0; i < n; i++) {
+            String s = trace[(traceN - n + i) % TRACE_N];
+            if (s == null) continue;
+            if (sb.length() > 0) sb.append(" | ");
+            sb.append(s);
+        }
+        return sb.toString();
+    }
+
     private void noteFrameGap(long now) {
         if (vsyncMs == 0L) {
             android.view.Display disp = getDisplay();
@@ -2112,6 +2261,10 @@ final class LyricView extends View {
                 // be told apart from one that was measured.
                 + " band=" + (bandOk ? Math.round(bandTop) + ".." + Math.round(bandBottom)
                         + "(" + LockLyrics.bandSource() + ")" : "none")
-                + " looping=" + looping + " parent=" + (getParent() instanceof ViewGroup);
+                + " looping=" + looping + " parent=" + (getParent() instanceof ViewGroup)
+                // The last few frames that moved, oldest first: what the page did while the lock
+                // screen was leaving, and which reading was late with it. Only frames that move
+                // are in it, so a burst is one event. See trace().
+                + " trace=[" + traceText() + "]";
     }
 }

@@ -841,6 +841,49 @@ public class Main extends XposedModule {
         return Math.round(EASE_COVER_FADE_MS * response / EASE_COVER[1]);
     }
 
+    /**
+     * The lyrics' page, told that the keyguard's state may have changed: the cached reading is
+     * dropped and asked for again, and the view is woken, so the page can go on the frame the
+     * lock screen does rather than on its next tick (up to 500ms later, and 150ms of that is the
+     * cache in front of it). Posted by the lock screen's exit hook - see onPackageLoaded.
+     */
+    private static final Runnable kickLyrics = new Runnable() {
+        @Override
+        public void run() {
+            forgetSysReads();
+            LockLyrics.refresh();
+        }
+    };
+
+    /**
+     * Arms one method as "the lock screen is going away", tagged so the lyrics probe can name the
+     * one that fired. Its own try, like every hook here: a build without the method must not cost
+     * the others. `cls` is a class name looked up now, `owner` a class already in hand.
+     */
+    private static void armLeave(ClassLoader cl, String cls, String method, String tag) {
+        try {
+            armLeave(Xp.findClass(cls, cl), method, tag);
+        } catch (Throwable t) {
+            LockLyrics.armed("!" + tag);
+            Xp.log(TAG + "leaving hook " + tag + " has no class: " + t);
+        }
+    }
+
+    private static void armLeave(Class<?> owner, String method, String tag) {
+        try {
+            Xp.hookAll(owner, method, chain -> {
+                LockLyrics.lockScreenLeaving(tag);
+                main().post(kickLyrics);
+                main().postDelayed(kickLyrics, 160L);
+                return chain.proceed();
+            });
+            LockLyrics.armed("+" + tag);
+        } catch (Throwable t) {
+            LockLyrics.armed("!" + tag);
+            Xp.log(TAG + "leaving hook " + tag + " failed: " + t);
+        }
+    }
+
     @Override
     public void onModuleLoaded(ModuleLoadedParam param) {
         Xp.attach(this);
@@ -1012,26 +1055,10 @@ public class Main extends XposedModule {
             Xp.log(TAG + "onDetachedFromWindow hook failed: " + t);
         }
 
-        // The lock screen lyrics' HDR highlight needs the shade window in HDR colour mode, and that
-        // window's attributes are rebuilt from mLpChanged on every apply - so the mode is written
-        // into mLpChanged right before each one, not set once and overwritten on the next.
-        try {
-            Class<?> nsw = Xp.findClass(
-                    "com.android.systemui.shade.NotificationShadeWindowControllerImpl", cl);
-            Xp.hookAll(nsw, "applyWindowLayoutParams", chain -> {
-                Object self = chain.getThisObject();
-                try {
-                    LockLyrics.noteShadeWindow(self);
-                    LockLyrics.applyHdrTo((android.view.WindowManager.LayoutParams)
-                            Xp.getObjectField(self, "mLpChanged"));
-                } catch (Throwable t) {
-                    Xp.log(TAG + "lyrics HDR not applied: " + t);
-                }
-                return chain.proceed();
-            });
-        } catch (Throwable t) {
-            Xp.log(TAG + "shade window hook failed, lyrics stay SDR: " + t);
-        }
+        // The lyrics' HDR highlight no longer has a hook here: it needs a colour mode, a colour
+        // mode is a whole window's, and the lyrics have a window of their own now (LyricWindow).
+        // It used to be written into the shade window's mLpChanged from inside the OEM's own
+        // apply, which is where the media card got dragged into HDR with it.
 
         // The keyguard service hears about sleep and wake before anything is laid out for either.
         //
@@ -1054,6 +1081,25 @@ public class Main extends XposedModule {
                 });
                 return result;
             });
+            // The lock screen leaving, at the moment it starts to leave.
+            //
+            // With the HDR highlight on the lyrics are drawn in a window of their own, so the lock
+            // screen going does not take them with it: their page is gated on the keyguard instead
+            // (LockLyrics.wantsWindow), and the cached answer to that is up to 150ms old - which
+            // was the whole of the residue left over the desktop on an unlock (user, 2026-09-29).
+            // Ask again now, and once more a beat later in case the state flips behind this call.
+            // Each has its own try: a build without the method must not cost the hooks below.
+            //
+            // Only the two that are unambiguously "the lock screen is going away"; the probe
+            // (`lyricstate`'s `hooks=`, and the tag on every trace line) says which armed and
+            // which fired. The others were armed for a round and taken back out: `setOccluded` is
+            // called with true when the AOD occludes the keyguard and with false when the lock
+            // screen comes back, so both ends of a doze read as a dismissal and the lyrics vanished
+            // on every screen-off (user, 2026-09-29), and `hideLocked`/`keyguardDone` are not the
+            // unlock on this build.
+            armLeave(ks, "startKeyguardExitAnimation", "exit");
+            armLeave(cl, "com.android.keyguard.injector.KeyguardViewMediatorInjector",
+                    "startKeyguardExitAnimationByInteractiveOrFullAODUnlockAnimation", "inj");
             Xp.hookAll(ks, "onStartedWakingUp", chain -> {
                 ClockCollapse.noteWaking();
                 main().post(new Runnable() {
@@ -2790,6 +2836,9 @@ public class Main extends XposedModule {
                 // Every one of these three changes the answer to one of the two cached readings,
                 // so the timer below is not what anyone waits on at the moments that matter.
                 forgetSysReads();
+                // The lyric window's heartbeat stops while the phone is unlocked; a screen going
+                // off or on is where the lock screen can be back. See LockLyrics.WATCH.
+                if (!Intent.ACTION_USER_PRESENT.equals(a)) LockLyrics.resumeWatch();
                 if (Intent.ACTION_SCREEN_ON.equals(a)) {
                     sScreenOn = true;
                     sAodGrey = Float.NaN;
