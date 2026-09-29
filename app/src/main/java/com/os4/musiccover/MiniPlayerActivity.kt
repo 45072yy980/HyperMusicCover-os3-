@@ -18,6 +18,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import com.os4.musiccover.ui.screen.features.IslandDemo
 import com.os4.musiccover.ui.theme.AppTheme
 import com.os4.musiccover.ui.util.PageScaffold
 import org.json.JSONObject
@@ -57,6 +58,12 @@ private fun MiniPlayerPage(blur: Boolean, onBack: () -> Unit) {
     }
 
     PageScaffold(title = "锁屏超级岛", isBlurEnabled = blur, onBack = onBack) {
+        item {
+            // What the islands do, played on a drawn phone, before the switches that turn them on.
+            Card(Modifier.padding(horizontal = 12.dp).padding(top = 12.dp)) {
+                IslandDemo(Modifier.padding(top = 16.dp))
+            }
+        }
         item {
             // The pill's width, its height and the roundness of the thumbnail in it were three
             // sliders and are fixed - see MiniPlayerConfig, which no longer reads them from
