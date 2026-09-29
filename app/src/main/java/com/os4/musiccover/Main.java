@@ -1554,6 +1554,13 @@ public class Main extends XposedModule {
                         sGestureOnCharge = chargeAnimUp();
                         if (sGestureOnCharge) cancelPendingTap("gesture began on the charging animation");
                     }
+                    // A tap on the open immersive page's own target in its row - 高德's turn
+                    // arrow - is the page's, and the row must not see it. See
+                    // ImmersiveHost.routeTouch.
+                    try {
+                        if (ImmersiveHost.routeTouch(ev)) return Boolean.TRUE;
+                    } catch (Throwable ignored) {
+                    }
                     // The one case this hook does more than watch. Returning true without
                     // proceeding takes the gesture out of the dispatch entirely, which is the
                     // only way the artwork can mean something other than "open the player".

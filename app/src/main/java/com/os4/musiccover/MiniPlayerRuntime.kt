@@ -1357,6 +1357,9 @@ object MiniPlayerRuntime {
     private fun live(): List<MiniPlayerController> =
         synchronized(controllers) { controllers.values.map { it.controller } }
 
+    /** A notification's row in the stack, for ImmersiveHost: the open page's turn arrow is in it. */
+    @JvmStatic fun rowOf(key: String): View? = live().firstNotNullOfOrNull { it.rowOf(key) }
+
     /**
      * A tap from the mini player into the cover or lyrics: the pill becomes the card that the
      * scene keeps. False when the mini player is not what is showing, and the OEM card's own
@@ -6671,6 +6674,9 @@ private class MiniPlayerController(
 
     /** A notification's row in the stack, by its key. */
     private fun rowFor(key: String): View? = findRow(key)?.first
+
+    /** [rowFor], for MiniPlayerRuntime.rowOf. */
+    fun rowOf(key: String): View? = rowFor(key)
 
     fun rowTree(match: String): String {
         val stack = notificationStack() ?: return "no stack"

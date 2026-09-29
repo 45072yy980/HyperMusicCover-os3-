@@ -193,6 +193,147 @@ final class ImmersiveHost {
         return null;
     }
 
+    // ---------------------------------------------------------------- the row's own tap
+
+    /** A gesture began on the open page's tap target: all of it is ours, to its end. */
+    private static boolean sTapOwned;
+    private static View sTapView;
+    private static ImmersiveScene sTapScene;
+    private static float sTapX, sTapY;
+    /** The finger left the target's slop: the gesture ends as nothing. */
+    private static boolean sTapGone;
+
+    /** How far past the target's edges a finger still lands on it. */
+    private static final float TAP_PAD_DP = 12f;
+    private static final float PRESS_SCALE = 0.88f;
+
+    /**
+     * The shade window's touches, before anything else sees them (Main's dispatchTouchEvent
+     * hook). A gesture that begins on the open page's {@link ImmersiveScene#rowTapTarget} in its
+     * row is taken out of the dispatch whole: the row never sees it - a tap there would otherwise
+     * open the app, which on the lock screen is the bouncer - and neither does swipe-to-unlock.
+     * Returns whether the event was ours.
+     */
+    static boolean routeTouch(android.view.MotionEvent ev) {
+        int a = ev.getActionMasked();
+        if (a == android.view.MotionEvent.ACTION_DOWN) {
+            endTap();
+            View target = tapTargetAt(ev.getRawX(), ev.getRawY());
+            if (target == null) return false;
+            sTapOwned = true;
+            sTapView = target;
+            sTapScene = sOpen;
+            sTapX = ev.getRawX();
+            sTapY = ev.getRawY();
+            press(target, true);
+            return true;
+        }
+        if (!sTapOwned) return false;
+        View v = sTapView;
+        switch (a) {
+            case android.view.MotionEvent.ACTION_MOVE:
+                if (!sTapGone && v != null) {
+                    int slop = android.view.ViewConfiguration.get(v.getContext()).getScaledTouchSlop();
+                    if (Math.hypot(ev.getRawX() - sTapX, ev.getRawY() - sTapY) > slop) {
+                        sTapGone = true;
+                        press(v, false);
+                    }
+                }
+                break;
+            case android.view.MotionEvent.ACTION_UP:
+                ImmersiveScene scene = sTapScene;
+                // Still the page on screen that the finger landed on.
+                boolean fire = !sTapGone && scene != null && scene == sOpen && sShown;
+                if (v != null) {
+                    press(v, false);
+                    if (fire) v.performHapticFeedback(android.view.HapticFeedbackConstants.CONTEXT_CLICK);
+                }
+                if (fire) {
+                    Xp.log(TAG + scene.id() + ": row tap on " + scene.rowTapTarget());
+                    try {
+                        scene.onRowTap();
+                    } catch (Throwable t) {
+                        Xp.log(TAG + scene.id() + " row tap failed: " + t);
+                    }
+                }
+                endTap();
+                break;
+            case android.view.MotionEvent.ACTION_CANCEL:
+                if (v != null) press(v, false);
+                endTap();
+                break;
+            default:
+                break;
+        }
+        return true;
+    }
+
+    private static void endTap() {
+        sTapOwned = false;
+        sTapView = null;
+        sTapScene = null;
+        sTapGone = false;
+    }
+
+    /**
+     * The open page's tap target under the finger, or null: only while the page is on the lit
+     * lock screen, and only where its row is drawn - a row folded away (the stack's number state)
+     * or faded out is not there to be tapped.
+     */
+    private static View tapTargetAt(float x, float y) {
+        ImmersiveScene open = sOpen;
+        if (open == null || sYield || !sHolding || !sShown || !litNow()) return null;
+        String name = open.rowTapTarget();
+        if (name == null) return null;
+        String key = LockIslands.INSTANCE.openSceneKey();
+        if (key == null) return null;
+        View row = MiniPlayerRuntime.rowOf(key);
+        if (row == null || !row.isShown() || row.getAlpha() < 0.5f
+                || row.getTransitionAlpha() < 0.5f) {
+            return null;
+        }
+        View v = findNamed(row, name);
+        if (v == null || v.getWidth() == 0) return null;
+        int[] at = new int[2];
+        v.getLocationOnScreen(at);
+        float pad = TAP_PAD_DP * v.getResources().getDisplayMetrics().density;
+        return x >= at[0] - pad && x <= at[0] + v.getWidth() + pad
+                && y >= at[1] - pad && y <= at[1] + v.getHeight() + pad ? v : null;
+    }
+
+    /**
+     * The first shown view under root with this id name, breadth first. By name: the row's ids
+     * are the notification plugin's, not SystemUI's.
+     */
+    private static View findNamed(View root, String name) {
+        java.util.ArrayDeque<View> queue = new java.util.ArrayDeque<>();
+        queue.add(root);
+        while (!queue.isEmpty()) {
+            View v = queue.removeFirst();
+            if (v.getId() != View.NO_ID && v.isShown()) {
+                String n = null;
+                try {
+                    n = v.getResources().getResourceEntryName(v.getId());
+                } catch (Throwable ignored) {
+                }
+                if (name.equals(n)) return v;
+            }
+            if (v instanceof ViewGroup) {
+                ViewGroup g = (ViewGroup) v;
+                for (int i = 0; i < g.getChildCount(); i++) queue.add(g.getChildAt(i));
+            }
+        }
+        return null;
+    }
+
+    /** The target sinks under the finger and comes back up when it lifts. */
+    private static void press(View v, boolean down) {
+        float s = down ? PRESS_SCALE : 1f;
+        v.animate().scaleX(s).scaleY(s).setDuration(down ? 90L : 220L)
+                .setInterpolator(new android.view.animation.DecelerateInterpolator())
+                .start();
+    }
+
     // ---------------------------------------------------------------- what the rest tells
 
     /** From LockIslands: the scene's island was tapped open. */
@@ -275,8 +416,31 @@ final class ImmersiveHost {
 
     /** The phone was unlocked (ACTION_USER_PRESENT). Main thread. */
     static void onUnlocked() {
+        armRelease("user present");
+    }
+
+    /** A let-go is counting down. */
+    private static boolean sReleasePending;
+
+    /**
+     * Starts the count to letting the pages go. Two things start it: the unlock broadcast, and
+     * the host's own frame that finds the lit screen off the lock screen - the frame that hides
+     * the page. The first alone never fired on this phone (2026-09-29: unlocked for ten seconds,
+     * no let-go); the second is the same reading that hid the page, so it cannot disagree.
+     */
+    private static void armRelease(String why) {
+        if (sPrepared.isEmpty() || sReleasePending) return;
+        sReleasePending = true;
         sMain.removeCallbacks(RELEASE_UNLOCKED);
-        if (!sPrepared.isEmpty()) sMain.postDelayed(RELEASE_UNLOCKED, UNLOCKED_RELEASE_MS);
+        sMain.postDelayed(RELEASE_UNLOCKED, UNLOCKED_RELEASE_MS);
+        Xp.log(TAG + "pages go in " + UNLOCKED_RELEASE_MS + "ms unless locked again (" + why + ")");
+    }
+
+    private static void cancelRelease(String why) {
+        if (!sReleasePending) return;
+        sReleasePending = false;
+        sMain.removeCallbacks(RELEASE_UNLOCKED);
+        Xp.log(TAG + "pages kept: " + why);
     }
 
     /**
@@ -284,7 +448,7 @@ final class ImmersiveHost {
      * is asked to draw, so the doze's first frame prepares it.
      */
     static void onScreenOff() {
-        sMain.removeCallbacks(RELEASE_UNLOCKED);
+        cancelRelease("screen off");
         if (sSlot != null) sSlot.invalidate();
     }
 
@@ -292,13 +456,13 @@ final class ImmersiveHost {
     private static final Runnable RELEASE_UNLOCKED = new Runnable() {
         @Override
         public void run() {
-            boolean locked;
-            try {
-                locked = Main.keyguardLocked();
-            } catch (Throwable t) {
-                locked = true;
+            sReleasePending = false;
+            // The host's own reading, the one that hides the page - not a second cached one.
+            boolean locked = onLockScreen();
+            if (locked || sPrepared.isEmpty()) {
+                Xp.log(TAG + "let-go skipped: " + (locked ? "on the lock screen" : "nothing held"));
+                return;
             }
-            if (locked || sPrepared.isEmpty()) return;
             List<ImmersiveScene> prepared = new ArrayList<>(sPrepared);
             sPrepared.clear();
             for (ImmersiveScene s : prepared) {
@@ -549,6 +713,15 @@ final class ImmersiveHost {
         if (sSlot == null) return false;
         ImmersiveScene page = holding ? open : sLeaving;
         boolean shown = page != null && mayShow();
+        // The lit screen off the lock screen is the unlock, seen from here; back on it, the count
+        // stops. See armRelease.
+        if (!sPrepared.isEmpty()) {
+            if (!onLockScreen()) {
+                if (screenOn()) armRelease("off the lock screen");
+            } else {
+                cancelRelease("on the lock screen");
+            }
+        }
         boolean dozing = shown && !screenOn();
         veil(dozing ? DOZE_VEIL : 0f, shown);
         beat(dozing && page.needsDozeBeat());
@@ -785,6 +958,8 @@ final class ImmersiveHost {
                             ((LiveAlertScene) scene).setArmed("arm".equals(w));
                         }
                         break;
+                    // What a tap on the row's target does, without the tap.
+                    case "rowtap": scene.onRowTap(); break;
                     default: break;
                 }
             });

@@ -313,9 +313,14 @@ class LiveAlertScene implements ImmersiveScene {
             boolean first = !mContent;
             mContent = true;
             send(MSG_STATE, stateData(mShown ? 1 : 2));
+            onPage();
             if (first) ImmersiveHost.contentChanged(LiveAlertScene.this);
         }
     });
+
+    /** A page came back (21): the first, or a new one after the app re-rendered. */
+    void onPage() {
+    }
 
     private Bundle resizeData() {
         Bundle data = new Bundle();
@@ -369,7 +374,7 @@ class LiveAlertScene implements ImmersiveScene {
         return extra;
     }
 
-    private boolean send(int what, Bundle data) {
+    boolean send(int what, Bundle data) {
         Messenger server = mServer;
         if (server == null) return false;
         Message m = Message.obtain(null, what);

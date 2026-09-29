@@ -182,6 +182,9 @@ internal object LockIslands {
     private var sceneKey: String? = null
     private var scene: ImmersiveScene? = null
 
+    /** The open page's notification: its row is in the stack while the page is up. */
+    fun openSceneKey(): String? = sceneKey
+
     private fun sceneOf(key: String): ImmersiveScene? =
         noteFor(key)?.let { runCatching { ImmersiveHost.sceneFor(it.pkg, it.focus) }.getOrNull() }
 

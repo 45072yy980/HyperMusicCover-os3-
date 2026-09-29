@@ -2,6 +2,10 @@ package com.os4.musiccover;
 
 import android.content.Context;
 import android.content.Intent;
+import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
+import android.os.SystemClock;
 
 /**
  * 高德's walking and cycling navigation map, the first immersive page.
@@ -28,6 +32,90 @@ final class AmapNavScene extends LiveAlertScene {
 
     private AmapNavScene() {
         super(ID, PKG, "com.autonavi.minimap.immersenavi.AMapImmerseNaviService", "536879184");
+    }
+
+    /**
+     * 高德's own message on the same Messenger: data{openOverview} 1 = the whole route
+     * (isPreview true to its page), 2 = back to following you. ColorOS's card sends it from the
+     * button beside the map; here the turn arrow in the island's row does.
+     */
+    private static final int MSG_OVERVIEW = 10000003;
+
+    /**
+     * How long 高德's camera takes to get there. A switch sent while the last one is still moving
+     * loses its zoom and only turns the map (2026-09-30: taps ~1-1.5s apart, the map turned
+     * north-up and back but stayed at the same scale), so switches are spaced at least this far
+     * apart and the ones in between are folded into the last.
+     */
+    private static final long OVERVIEW_SETTLE_MS = 1500L;
+
+    /** What the taps asked for: the whole route. */
+    private boolean mOverview;
+    /** What 高德's page was last told, and when. The page is 高德's; this is only our side. */
+    private boolean mSentOverview;
+    private long mSentAt;
+    private final Handler mMain = new Handler(Looper.getMainLooper());
+    private final Runnable mFlush = this::flushOverview;
+
+    @Override
+    public String rowTapTarget() {
+        return "focus_large_icon";
+    }
+
+    @Override
+    public void onRowTap() {
+        mOverview = !mOverview;
+        flushOverview();
+    }
+
+    /**
+     * A page re-rendered after a let-go is a new one, following you as 高德 starts it: told again
+     * what it was showing.
+     */
+    @Override
+    void onPage() {
+        mSentOverview = false;
+        mSentAt = 0L;
+        flushOverview();
+    }
+
+    /** The navigation ended: the next one starts following. */
+    @Override
+    void setArmed(boolean armed) {
+        if (!armed) {
+            mMain.removeCallbacks(mFlush);
+            mOverview = false;
+            mSentOverview = false;
+            mSentAt = 0L;
+        }
+        super.setArmed(armed);
+    }
+
+    /** Tells 高德 what the taps asked for, once its camera has had the time to finish the last. */
+    private void flushOverview() {
+        mMain.removeCallbacks(mFlush);
+        if (mOverview == mSentOverview) return;
+        long wait = mSentAt + OVERVIEW_SETTLE_MS - SystemClock.uptimeMillis();
+        if (wait > 0) {
+            mMain.postDelayed(mFlush, wait);
+            Xp.log("MCImmersive: " + ID + ": overview " + (mOverview ? "on" : "off")
+                    + " held " + wait + "ms for the last switch to land");
+            return;
+        }
+        Bundle data = new Bundle();
+        data.putInt("openOverview", mOverview ? 1 : 2);
+        boolean sent = send(MSG_OVERVIEW, data);
+        if (sent) {
+            mSentOverview = mOverview;
+            mSentAt = SystemClock.uptimeMillis();
+        }
+        Xp.log("MCImmersive: " + ID + ": overview " + (mOverview ? "on" : "off")
+                + (sent ? "" : " NOT sent (not connected)"));
+    }
+
+    @Override
+    public String describe() {
+        return super.describe() + " overview=" + mOverview + " sent=" + mSentOverview;
     }
 
     /**

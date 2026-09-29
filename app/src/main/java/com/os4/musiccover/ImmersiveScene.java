@@ -70,6 +70,20 @@ interface ImmersiveScene {
      */
     float[] sharpBand();
 
+    /**
+     * The id name of a view in this scene's own row - the island it opened from, a row in the
+     * stack while the page is up - whose tap is the page's rather than the row's: 高德's turn
+     * arrow switches the map between the route and where you are, as the button beside ColorOS's
+     * card does. Null: the whole row is the row's. See ImmersiveHost.routeTouch.
+     */
+    default String rowTapTarget() {
+        return null;
+    }
+
+    /** {@link #rowTapTarget} was tapped while the page was on the lit lock screen. */
+    default void onRowTap() {
+    }
+
     /** One line for the probe. */
     String describe();
 }
