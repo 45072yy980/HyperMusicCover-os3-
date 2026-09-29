@@ -32,7 +32,10 @@ import org.json.JSONObject
 
 /** HyperChanger's compact card, hosted in SystemUI's shortcut area. */
 internal class MiniPlayerView(context: Context) : FrameLayout(context) {
-    private var materialLayer = ImageView(context)
+    private var materialLayer = MaterialElement(context)
+
+    /** The element the card's material is on, for EdgeProbe. */
+    internal val materialView: View get() = materialLayer
     private val artwork = ImageView(context)
 
     /**
@@ -102,7 +105,7 @@ internal class MiniPlayerView(context: Context) : FrameLayout(context) {
         }
         materialLayer.scaleType = ImageView.ScaleType.FIT_XY
         materialLayer.clipToOutline = true
-        materialLayer.outlineProvider = outlineProvider
+        materialLayer.shape = outlineProvider
         addView(materialLayer, LayoutParams(-1, -1))
         artwork.scaleType = ImageView.ScaleType.CENTER_CROP
         slot.clipToOutline = true
@@ -183,10 +186,10 @@ internal class MiniPlayerView(context: Context) : FrameLayout(context) {
             if (lastMaterial != null && lastMaterial != material) {
                 // A fresh view also drops the previous vendor blur/material state.
                 removeView(materialLayer)
-                materialLayer = ImageView(context).apply {
+                materialLayer = MaterialElement(context).apply {
                     scaleType = ImageView.ScaleType.FIT_XY
                     clipToOutline = true
-                    outlineProvider = this@MiniPlayerView.outlineProvider
+                    shape = this@MiniPlayerView.outlineProvider
                 }
                 addView(materialLayer, 0, LayoutParams(-1, -1))
             }
@@ -198,7 +201,8 @@ internal class MiniPlayerView(context: Context) : FrameLayout(context) {
             }
             applyMaterial(materialLayer)
             // The card's recipe gives the layer its own 24dp outline; the pill's shape - and the
-            // morph's changing corner - is ours.
+            // morph's changing corner - is ours. MaterialElement keeps it so between dressings
+            // too: the AOD's dim sets the card's corner again every frame.
             materialLayer.outlineProvider = outlineProvider
             materialLayer.clipToOutline = true
             updateGeometry(config.getDouble(MiniPlayerConfig.HEIGHT_RADIUS).toFloat())

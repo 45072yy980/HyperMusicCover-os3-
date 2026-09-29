@@ -2728,6 +2728,9 @@ public class Main extends XposedModule {
                         dumpInk();
                     } else if ("mini".equals(op)) {
                         setResultData(MiniPlayerRuntime.describe());
+                    } else if ("edge".equals(op)) {
+                        // The pill's and the discs' clips and outlines: the glass rim (EdgeProbe).
+                        setResultData(MiniPlayerRuntime.edge());
                     } else if ("rowtree".equals(op)) {
                         String key = i.getStringExtra("key");
                         setResultData(MiniPlayerRuntime.rowTree(key == null ? "" : key));

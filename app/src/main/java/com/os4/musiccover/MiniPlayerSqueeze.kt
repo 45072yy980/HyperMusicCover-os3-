@@ -26,7 +26,10 @@ import kotlin.math.sqrt
  * recorded calls. It never takes a touch - the button above it keeps its own.
  */
 internal class ShortcutDisc(context: Context) : FrameLayout(context) {
-    private val element = ImageView(context)
+    private val element = MaterialElement(context)
+
+    /** The element the card's material is on, for EdgeProbe. */
+    internal val materialView: View get() = element
     private var dressWith: ((ImageView) -> Unit)? = null
     private var dressedAs = -1
     private var shapeW = 0
@@ -58,6 +61,8 @@ internal class ShortcutDisc(context: Context) : FrameLayout(context) {
         outlineAmbientShadowColor = Color.TRANSPARENT
         outlineSpotShadowColor = Color.TRANSPARENT
         element.scaleType = ImageView.ScaleType.FIT_XY
+        // Its own circle, whoever sets another (MaterialElement): the AOD's dim sets the card's.
+        element.shape = elementShape
         addView(element, LayoutParams(0, 0))
         isClickable = false
         isFocusable = false

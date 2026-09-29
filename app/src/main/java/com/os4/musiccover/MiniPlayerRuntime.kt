@@ -1280,6 +1280,10 @@ object MiniPlayerRuntime {
         return sb.toString()
     }
 
+    /** `op edge`: the pill's and the discs' clip chains and outlines (EdgeProbe). */
+    @JvmStatic fun edge(): String =
+        "material=$cardEffect\n" + live().joinToString("\n") { it.describeEdge() }
+
     @JvmStatic fun nativeHeaderHidden(): Boolean = synchronized(controllers) {
         controllers.values.any { it.controller.nativeHeaderHidden() }
     }
@@ -1553,6 +1557,21 @@ private class MiniPlayerController(
         traceScene()
         true
     } finally { android.os.Trace.endSection() } }
+
+    /** For `op edge`: the pill's and the torch disc's clip chains, and their elements' Mi state. */
+    fun describeEdge(): String {
+        val sb = StringBuilder()
+        player?.let {
+            sb.append(EdgeProbe.describe("pill", it, host, true)).append('\n')
+            sb.append(EdgeProbe.describe("pillElement", it.materialView, it, true)).append('\n')
+        }
+        discs.forEachIndexed { i, d ->
+            d ?: return@forEachIndexed
+            sb.append(EdgeProbe.describe("disc$i", d, host, i == 0)).append('\n')
+            sb.append(EdgeProbe.describe("disc${i}Element", d.materialView, d, i == 0)).append('\n')
+        }
+        return sb.toString()
+    }
 
     // ---- a scene entry, every view of the row frame by frame, for `op mini`
 
