@@ -130,10 +130,13 @@ final class CoverPush {
             Bitmap src = null;
             String shared = null;
             try {
+                android.os.Trace.beginSection("MC push.source");
                 src = CoverCompose.prepareSource(art, w);
                 shared = writeSharedSource(src, w, h, Main.sBias);
             } catch (Throwable t) {
                 Xp.log(Main.TAG + "source hand-over failed, sending the composed JPEG instead: " + t);
+            } finally {
+                android.os.Trace.endSection();
             }
             if (shared != null) {
                 out.putExtra("src", shared);
@@ -143,21 +146,43 @@ final class CoverPush {
                 // Still composed here, but now after the send: the clock's tint and the shade
                 // both need the picture, and neither of them is what the user is waiting on.
                 // Same source, size and bias as the wallpaper process got, so the same pixels.
-                Bitmap full;
-                try {
-                    full = composeWallpaper(src, w, h, Main.sBias);
-                } catch (Throwable t) {
-                    Xp.log(Main.TAG + "composeWallpaper failed after the hand-over: " + t);
-                    return;
+                //
+                // The tint is all this copy is for, and it only depends on what is in the key:
+                // a run of taps in and out of cover mode on one song composed the same full-screen
+                // picture every time (trace 2026-09-30), so the same key takes the last answer.
+                String tintKey = artPrint(src) + ":" + src.getWidth() + "x" + src.getHeight()
+                        + ":" + w + "x" + h + ":" + Main.sBias + ":" + Main.bandKey() + ":"
+                        + Main.sCoverCardStyle.mode;
+                boolean reused = tintKey.equals(sTintKey);
+                if (reused) {
+                    Main.sCoverTint = sTintValue;
+                } else {
+                    Bitmap full;
+                    android.os.Trace.beginSection("MC push.compose");
+                    try {
+                        full = composeWallpaper(src, w, h, Main.sBias);
+                    } catch (Throwable t) {
+                        Xp.log(Main.TAG + "composeWallpaper failed after the hand-over: " + t);
+                        return;
+                    } finally {
+                        android.os.Trace.endSection();
+                    }
+                    Main.measureCover(full);
+                    full.recycle();
+                    sTintKey = tintKey;
+                    sTintValue = Main.sCoverTint;
                 }
-                Main.measureCover(full);
                 if (Main.sCoverMode) Main.recolorClock();
-                full.recycle();
                 // The shade builds its background from the square source and keeps nothing.
-                ShadeLayer.setArt(src);
+                android.os.Trace.beginSection("MC push.shade");
+                try {
+                    ShadeLayer.setArt(src);
+                } finally {
+                    android.os.Trace.endSection();
+                }
                 Xp.log(Main.TAG + "pushart " + w + "x" + h + " bias=" + Main.sBias + " as a "
                         + src.getWidth() + "x" + src.getHeight() + " source, sent in "
-                        + (sent - t0) + "ms, own copy composed in "
+                        + (sent - t0) + "ms, own copy " + (reused ? "reused" : "composed") + " in "
                         + (android.os.SystemClock.uptimeMillis() - sent) + "ms");
                 return;
             }
@@ -1177,6 +1202,9 @@ final class CoverPush {
 
     /** What the wallpaper currently shows, coarsely, so a stale source can be recognised. */
     private static volatile int sArtPrint;
+    /** The last composed cover's inputs and the clock tint measured off it. Worker thread only. */
+    private static String sTintKey = "";
+    private static int sTintValue;
     /**
      * The size of that push, and the track it belonged to, so a WORSE source for the same track
      * can be refused.
@@ -1279,7 +1307,12 @@ final class CoverPush {
                 // Timed because it is the first thing on this worker and the artwork read is
                 // queued behind it: whatever it costs, the track change pays before it starts.
                 long t = android.os.SystemClock.uptimeMillis();
-                ensureLockWallpaper(ctx);
+                android.os.Trace.beginSection("MC push.ensureLock");
+                try {
+                    ensureLockWallpaper(ctx);
+                } finally {
+                    android.os.Trace.endSection();
+                }
                 Main.sCtCheckMs = android.os.SystemClock.uptimeMillis() - t;
             }
         });
@@ -1311,8 +1344,15 @@ final class CoverPush {
                 }
                 boolean last = attempt >= ART_TRIES - 1;
                 int[] sessionBits = new int[1];
-                Bitmap art = Main.albumArt(ctx, last || allowCard, sessionBits);
-                int print = art == null ? 0 : artPrint(art);
+                android.os.Trace.beginSection("MC push.read");
+                Bitmap art;
+                int print;
+                try {
+                    art = Main.albumArt(ctx, last || allowCard, sessionBits);
+                    print = art == null ? 0 : artPrint(art);
+                } finally {
+                    android.os.Trace.endSection();
+                }
                 boolean stale = fresh && art != null && sArtPrint != 0 && print == sArtPrint;
                 // The same track, and the copy being offered is smaller than the one already on
                 // the wallpaper. Only on a fresh push: a non-fresh one is an explicit "hand it

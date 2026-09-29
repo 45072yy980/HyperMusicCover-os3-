@@ -10361,6 +10361,11 @@ public class Main extends XposedModule {
      * that blur is light. Costs 24 rows of getPixels on the worker that is already encoding the
      * same bitmap.
      */
+    /** What measureCover() reads besides the picture, for a caller that caches its answer. */
+    static String bandKey() {
+        return sBandTopPx + ":" + sBandBotPx;
+    }
+
     static void measureCover(Bitmap full) {
         try {
             float d = sAppCtx.getResources().getDisplayMetrics().density;
