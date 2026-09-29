@@ -207,6 +207,12 @@ public class Main extends XposedModule {
      */
     private static volatile float sAodGrey = Float.NaN;
     /**
+     * The glass clock's dark/light switch (`TimeView.setBrightness`) as the OEM last decided it
+     * from the palette of the cover, and as it last set it outside cover mode. See the
+     * setBrightness hook: null until the OEM has said.
+     */
+    private static volatile Boolean sBrightCover, sBrightOutside;
+    /**
      * The strip of the cover that gets sampled for that reading, in dp from the top of the
      * screen. Generous on purpose: the date rests near the top and the collapsed clock
      * hangs under it, and how tall that whole block is depends on the clock style - 56dp clears
@@ -1190,6 +1196,7 @@ public class Main extends XposedModule {
                         sScreenOn = true;
                         CoverCardLayer.refresh();
                         sAodGrey = Float.NaN;
+                        applyGlassBrightness();
                         ClockCollapse.enter(true, true, "doAnim");
                         recolorClock();
                     }
@@ -1717,6 +1724,38 @@ public class Main extends XposedModule {
                 args[0] = legible(self, (Integer) args[0]);
                 return chain.proceed(args);
             });
+            // The glass's dark/light switch (glassData[6]), which two OEM routes decide from two
+            // different pictures - issue #23. The palette pass (setClockPalette -> AllInOneBase.
+            // updateClockGlassBrightness) is computed from what the lock screen shows, the cover
+            // included. The colour-extraction animation (AllInOneBaseAnimation.
+            // doColorExtractionAnimation, glass effect 5) calls the same thing on its own, and
+            // reads the ORIGINAL wallpaper, which in cover mode is not on screen: on a light
+            // wallpaper it says "dark" and the clock over the cover turns near black. It fires on
+            // a wake, and sometimes just after an entry. So in cover mode the switch follows the
+            // palette the OEM computed for the cover; out of it, whatever the OEM says.
+            Xp.hookAll(timeView, "setBrightness", chain -> {
+                Object[] args = chain.getArgs().toArray();
+                if (!sCoverMode) {
+                    if (sScreenOn && args[0] instanceof Boolean) sBrightOutside = (Boolean) args[0];
+                } else if (sScreenOn && sBrightCover != null && glassStyleFor((View) chain.getThisObject())) {
+                    args[0] = sBrightCover;
+                }
+                return chain.proceed(args);
+            });
+            try {
+                Xp.hookAll(Xp.findClass("com.miui.clock.MiuiGalleryBaseClock",
+                        timeView.getClassLoader()), "setClockPalette", chain -> {
+                    java.util.List<Object> a = chain.getArgs();
+                    // Only a palette that came with its colours: the ones the OEM computes from a
+                    // picture. The map-less calls re-send a textDark without looking at anything.
+                    if (sCoverMode && a.size() > 2 && a.get(1) instanceof Boolean && a.get(2) != null) {
+                        sBrightCover = (Boolean) a.get(1);
+                    }
+                    return chain.proceed();
+                });
+            } catch (Throwable t) {
+                Xp.log(TAG + "setClockPalette hook failed: " + t);
+            }
         } catch (Throwable t) {
             Xp.log(TAG + "TimeView hook failed: " + t);
         }
@@ -2845,6 +2884,7 @@ public class Main extends XposedModule {
                 if (Intent.ACTION_SCREEN_ON.equals(a)) {
                     sScreenOn = true;
                     sAodGrey = Float.NaN;
+                    applyGlassBrightness();
                 } else if (Intent.ACTION_SCREEN_OFF.equals(a)) {
                     sScreenOn = false;
                     sAodGrey = Float.NaN;
@@ -6344,6 +6384,7 @@ public class Main extends XposedModule {
     private static void exitCoverMode(boolean animate) {
         CoverCardLayer.leaving();
         sCoverMode = false;
+        applyGlassBrightness();
         LockIslands.INSTANCE.setCoverMode(false);
         CoverCardLayer.refresh();
         // The cover is on its way out, so the reading that coloured the clock describes the
@@ -6539,6 +6580,7 @@ public class Main extends XposedModule {
         if (sScreenOn) return;
         sScreenOn = true;
         sAodGrey = Float.NaN;
+        applyGlassBrightness();
         forgetSysReads();
         recolorClock();
     }
@@ -9931,6 +9973,32 @@ public class Main extends XposedModule {
                 }
             }
         }
+    }
+
+    /**
+     * Puts the glass clock's dark/light switch where it belongs now: the cover's in cover mode,
+     * the OEM's own reading of the wallpaper out of it. Needed at the two moments nothing of the
+     * OEM's re-sends it - a wake in cover mode whose extraction ran while still dozing, and the
+     * exit, which otherwise leaves the cover's answer on the wallpaper until the next doze.
+     */
+    static void applyGlassBrightness() {
+        final Boolean want = sCoverMode ? sBrightCover : sBrightOutside;
+        final View v = sContainer;
+        if (want == null || v == null) return;
+        v.post(() -> {
+            for (View root : clockRoots()) {
+                for (String id : new String[]{"hour_view", "minute_view", "colon_view"}) {
+                    try {
+                        int rid = root.getContext().getResources()
+                                .getIdentifier(id, "id", "com.android.systemui");
+                        View t = rid == 0 ? null : root.findViewById(rid);
+                        if (t == null || !glassStyleFor(t)) continue;
+                        Xp.callMethod(t, "setBrightness", want);
+                    } catch (Throwable ignored) {
+                    }
+                }
+            }
+        });
     }
 
     /**
