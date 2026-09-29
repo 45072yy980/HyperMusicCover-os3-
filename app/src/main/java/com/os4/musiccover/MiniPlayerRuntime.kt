@@ -1606,9 +1606,14 @@ private class MiniPlayerController(
         }
         override fun onSessionDestroyed() {
             liveFor = null
+            usableSeenAt = 0L
             scheduleRefresh()
         }
     }
+
+    /** When the row's session last read as usable (uptime); 0 since it was chosen or destroyed. */
+    private var usableSeenAt = 0L
+    private val usableGapEnd = Runnable { refresh() }
 
     /**
      * The registered session's state and metadata, as its callbacks last handed them over.
@@ -1629,6 +1634,8 @@ private class MiniPlayerController(
     /** The callbacks are [c]'s from here: what it has now, and what they bring after. */
     private fun followLive(c: MediaController?) {
         liveFor = null
+        usableSeenAt = 0L
+        handler.removeCallbacks(usableGapEnd)
         liveState = c?.playbackState
         liveMetadata = c?.metadata
         liveFor = c?.sessionToken
@@ -8883,7 +8890,28 @@ private class MiniPlayerController(
         return active.firstOrNull(::isUsable)
     }
 
-    private fun isUsable(value: MediaController): Boolean = when (stateOf(value)?.state) {
+    /**
+     * A player between two tracks can say STOPPED or NONE for a moment. Read as the music ending,
+     * the music island left the row, the card's suppression let go, and the whole media card
+     * came up where the pill was and went again (#26). The session the row is showing stays
+     * usable for USABLE_GAP_MS after it last was; a session destroyed gets no such grace.
+     */
+    private fun isUsable(value: MediaController): Boolean {
+        if (playbackUsable(stateOf(value)?.state)) {
+            if (value.sessionToken == controller?.sessionToken) usableSeenAt = android.os.SystemClock.uptimeMillis()
+            return true
+        }
+        if (usableSeenAt == 0L || value.sessionToken != controller?.sessionToken ||
+            value.sessionToken != liveFor) return false
+        val left = usableSeenAt + USABLE_GAP_MS - android.os.SystemClock.uptimeMillis()
+        if (left <= 0L) return false
+        // Settled either way when the gap runs out: the state back, or the music gone for good.
+        handler.removeCallbacks(usableGapEnd)
+        handler.postDelayed(usableGapEnd, left + 1L)
+        return true
+    }
+
+    private fun playbackUsable(state: Int?): Boolean = when (state) {
         PlaybackState.STATE_PLAYING, PlaybackState.STATE_PAUSED, PlaybackState.STATE_BUFFERING,
         PlaybackState.STATE_FAST_FORWARDING, PlaybackState.STATE_REWINDING,
         PlaybackState.STATE_CONNECTING, PlaybackState.STATE_SKIPPING_TO_PREVIOUS,
@@ -9478,6 +9506,9 @@ private const val RETURN_WAIT_MS = 1500L
 
 /** A row hidden on its way out of the stack shows again if it is still there after this. */
 private const val ROW_GONE_MS = 1200L
+
+/** How long the row's session may read as stopped between two tracks and still be the music. */
+private const val USABLE_GAP_MS = 1000L
 /** A row given back early is drawn on for its morph at most this long, whatever happens to it. */
 private const val KEPT_MAX_MS = 3000L
 /** A row let out again that the stack has not taken back as a row by now is let go. */
