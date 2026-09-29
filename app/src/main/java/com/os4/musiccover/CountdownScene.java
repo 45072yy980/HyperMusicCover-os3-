@@ -103,6 +103,15 @@ final class CountdownScene implements ImmersiveScene {
         mMain.post(() -> read(k, t));
     }
 
+    /** A notification left SystemUI, any thread: the countdown's closes its page. */
+    void onRemoved(String key) {
+        mMain.post(() -> {
+            if (mKey == null || !mKey.equals(key)) return;
+            Xp.log(TAG + "notification removed");
+            read(null, null);
+        });
+    }
+
     private void read(String key, LockIslands.Timer timer) {
         boolean was = mKey != null;
         mKey = key;

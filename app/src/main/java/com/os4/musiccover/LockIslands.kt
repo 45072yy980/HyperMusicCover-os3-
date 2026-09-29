@@ -282,6 +282,21 @@ internal object LockIslands {
                 result
             }
         }.onFailure { Xp.log("MCIsland: run end unavailable: $it") }
+        // The countdown reads its timer from locked runs only, and a countdown stopped with the
+        // phone unlocked is gone before the next one: locked straight into the doze, every row
+        // is hidden and nothing reads it, and the page stayed up with the stopped timer on it
+        // (2026-09-30). The collection's own removal says so wherever the phone is.
+        runCatching {
+            val collection = Xp.findClass("com.android.systemui.statusbar.notification.collection." +
+                "NotifCollection", classLoader)
+            Xp.hookAll(collection, "onNotificationRemoved") { chain ->
+                val result = chain.proceed()
+                (chain.args.firstOrNull() as? StatusBarNotification)?.key?.let { key ->
+                    runCatching { CountdownScene.INSTANCE.onRemoved(key) }
+                }
+                result
+            }
+        }.onFailure { Xp.log("MCIsland: removals unavailable: $it") }
     }
 
     /** For `op mini`: what the filter has, and whether the stack is leaving it out. */
