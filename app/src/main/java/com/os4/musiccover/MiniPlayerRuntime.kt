@@ -8186,14 +8186,54 @@ private class MiniPlayerController(
     private val liveArts = java.util.WeakHashMap<Any, Pair<String, View>>()
     private val liveFailed = HashSet<String>()
 
+    /**
+     * Live pictures no place shows any more, by id, for the next place that asks for the same.
+     * Each one made is the plugin's own view, and the torch's inflates three bitmaps on the main
+     * thread: made afresh for every place that took the torch - a switch's stand-ins, a flight,
+     * a pill that had been the music in between - it was 7-18ms of the first frame of every
+     * switch and every pull (perfetto 2026-09-29, `decodeBitmap` under FlashLightView inflate).
+     */
+    private val liveSpares = HashMap<String, ArrayDeque<View>>()
+
+    private fun spareLive(held: Pair<String, View>) {
+        // Not a clip: it is set playing once, when it is made, and put back up after its surface
+        // went it is not known to play again.
+        if (held.first.startsWith(LockIslands.Live.VIDEO + "#")) return
+        val spares = liveSpares.getOrPut(held.first) { ArrayDeque() }
+        if (spares.none { it === held.second } && spares.size < LIVE_SPARES) spares.addLast(held.second)
+    }
+
+    /** A spare of [id] that has left its last place: one still in it would be taken from under it. */
+    private fun takeSpareLive(id: String): View? {
+        val spares = liveSpares[id] ?: return null
+        val it = spares.iterator()
+        while (it.hasNext()) {
+            val v = it.next()
+            if (v.parent == null) {
+                it.remove()
+                return v
+            }
+        }
+        return null
+    }
+
     /** [owner]'s view of [live], made on first asking; null for none, or one that would not make. */
     private fun liveArt(owner: Any, live: LockIslands.Live?): View? {
+        val held = liveArts[owner]
         if (live == null) {
-            liveArts.remove(owner)
+            liveArts.remove(owner)?.let(::spareLive)
             return null
         }
-        liveArts[owner]?.let { if (it.first == live.id) return it.second }
+        if (held != null) {
+            if (held.first == live.id) return held.second
+            liveArts.remove(owner)
+            spareLive(held)
+        }
         if (live.id in liveFailed) return null
+        takeSpareLive(live.id)?.let { spare ->
+            liveArts[owner] = live.id to spare
+            return spare
+        }
         val view = runCatching { makeLiveArt(live) }.onFailure {
             // Thrown: this build has no way to it, not worth trying on every refresh.
             liveFailed += live.id
@@ -8256,13 +8296,16 @@ private class MiniPlayerController(
      */
     private fun focusLottie(owner: Any, anim: LockIslands.Anim?): android.graphics.drawable.Drawable? {
         if (anim == null) {
-            focusLotties.remove(owner)?.let { (_, lottie) -> runCatching { Xp.callMethod(lottie, "pauseAnimation") } }
+            focusLotties.remove(owner)?.let(::spareLottie)
             return null
         }
         val id = "${anim.src}#${anim.number}"
         var held = focusLotties[owner]
         if (held?.first != id) {
-            val lottie = loadFocusLottie(anim) ?: return focusLottie(owner, null)
+            held?.let { focusLotties.remove(owner); spareLottie(it) }
+            // Another place's, let go: as liveArt's spares, not a player made for every place.
+            val lottie = lottieSpares[id]?.removeFirstOrNull() ?: loadFocusLottie(anim)
+                ?: return focusLottie(owner, null)
             held = id to lottie
             focusLotties[owner] = held
         }
@@ -8278,6 +8321,15 @@ private class MiniPlayerController(
             } else Xp.callMethod(lottie, "pauseAnimation")
         }
         return lottie.drawable?.let { d -> lottieWatches.getOrPut(d) { LottieWatch(d, lottie) } }
+    }
+
+    /** Players no place shows any more, by picture, for the next place that plays the same. */
+    private val lottieSpares = HashMap<String, ArrayDeque<android.widget.ImageView>>()
+
+    private fun spareLottie(held: Pair<String, android.widget.ImageView>) {
+        runCatching { Xp.callMethod(held.second, "pauseAnimation") }
+        val spares = lottieSpares.getOrPut(held.first) { ArrayDeque() }
+        if (spares.none { it === held.second } && spares.size < LIVE_SPARES) spares.addLast(held.second)
     }
 
     /**
@@ -9326,6 +9378,8 @@ private const val PILE_DAMPING = 0.74f
 /** How much of the lead's way each row starts behind the one before it, and at most. */
 private const val PILE_STAGGER = 0.12f
 private const val PILE_STAGGER_MAX = 0.48f
+/** Live pictures kept per id for the next place to show (liveArt): the pill, the small island, a flight. */
+private const val LIVE_SPARES = 3
 /** How long a pill whose island went while it was not on screen waits to be seen going back. */
 private const val BACK_WAIT_MS = 2500L
 /** The rows settle in well under a second; past this the stack is not drawing them (pileSettle). */
