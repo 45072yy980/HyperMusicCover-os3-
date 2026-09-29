@@ -144,6 +144,11 @@ class LiveAlertScene implements ImmersiveScene {
         mShown = false;
         mCardKey = mCardId + "||0|" + System.currentTimeMillis();
         SurfaceView sv = new SurfaceView(slot.getContext());
+        // onShown hides the page with INVISIBLE, which by default destroys the surface and makes
+        // a new one on the next show: a run of taps on the islands made ~90 surfaces in 75s and
+        // doubled SurfaceFlinger's load (trace 2026-09-30). Kept for as long as the view is
+        // attached, INVISIBLE only hides it.
+        sv.setSurfaceLifecycle(SurfaceView.SURFACE_LIFECYCLE_FOLLOWS_ATTACHMENT);
         sv.setVisibility(View.INVISIBLE);
         sv.getHolder().setFormat(PixelFormat.TRANSLUCENT);
         sv.getHolder().addCallback(new SurfaceHolder.Callback() {
@@ -275,10 +280,32 @@ class LiveAlertScene implements ImmersiveScene {
         try {
             mScaleTx.setScale(sc, s, s);
             mScaleTx.setPosition(sc, cx * (1f - s), cy * (1f - s));
-            mScaleTx.apply();
+            commit(sv, mScaleTx);
         } catch (Throwable t) {
             Xp.log(mTag + "scale not applied: " + t);
         }
+    }
+
+    /**
+     * With the frame the window draws next, not on its own: ColorOS's host hands every one of
+     * these to ViewRootImpl.applyTransactionOnDraw (SystemUIPlugin a6.l.s), so a fade step goes
+     * to SurfaceFlinger in the window's own transaction rather than as one more beside it, every
+     * frame of the fade, and lands on the frame it was worked out for. The screen off - the
+     * AOD's once-a-second frames, or none - it goes at once: waiting on a frame there could hold
+     * a fade for a second.
+     */
+    private static void commit(SurfaceView sv, SurfaceControl.Transaction t) {
+        android.view.AttachedSurfaceControl root = sv.getRootSurfaceControl();
+        if (root != null && Main.screenOnCached()) {
+            try {
+                if (root.applyTransactionOnDraw(t)) {
+                    sv.invalidate();
+                    return;
+                }
+            } catch (Throwable ignored) {
+            }
+        }
+        t.apply();
     }
 
     private SurfaceControl packageControl() {
@@ -302,7 +329,7 @@ class LiveAlertScene implements ImmersiveScene {
         sv.setAlpha(mFade);
         try {
             SurfaceControl sc = sv.getSurfaceControl();
-            if (sc != null && sc.isValid()) mTx.setAlpha(sc, mFade).apply();
+            if (sc != null && sc.isValid()) commit(sv, mTx.setAlpha(sc, mFade));
         } catch (Throwable t) {
             Xp.log(mTag + "fade not applied: " + t);
         }
