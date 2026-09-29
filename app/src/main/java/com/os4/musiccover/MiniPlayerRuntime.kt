@@ -8564,14 +8564,18 @@ private class MiniPlayerController(
         val plugin = pluginOf(b.row.get())
         if (name != null && plugin != null) {
             val maps = buttonMaps(plugin.second)
-            (maps?.first?.get(name) as? Int)?.takeIf { it != 0 }?.let { res ->
-                runCatching { plugin.first.getDrawable(res) }.getOrNull()?.let { return it }
-            }
+            // The Lottie first, as the plugin does (shouldAnimLottie, in setActionNormalData and
+            // setActionProgressData alike): a name in both maps is drawn as its Lottie's first
+            // frame. The still first drew the countdown's action_restart_timer as
+            // restart_timer_v3 where the row has pause_island_blue (2026-09-30).
             (maps?.second?.get(name) as? Int)?.takeIf { it > 0 }?.let { res ->
                 runCatching { lottieView(res, plugin.first) }.getOrNull()?.let { lottie ->
                     runCatching { Xp.callMethod(lottie, "setProgress", 0f) }
                     lottie.drawable?.let { return it }
                 }
+            }
+            (maps?.first?.get(name) as? Int)?.takeIf { it != 0 }?.let { res ->
+                runCatching { plugin.first.getDrawable(res) }.getOrNull()?.let { return it }
             }
         }
         return runCatching { (b.picture ?: b.action?.getIcon())?.loadDrawable(context) }.getOrNull()
