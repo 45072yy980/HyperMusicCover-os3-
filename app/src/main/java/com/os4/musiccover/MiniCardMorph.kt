@@ -99,6 +99,8 @@ internal class MiniCardMorph(
         val ownColor = (view as? TextView)?.currentTextColor ?: 0
         val ownText: CharSequence? = (view as? TextView)?.text
         var tookText = false
+        /** The card's words would not go on this line; not asked again every frame. */
+        var textRefused = false
     }
 
     private val motion = CoverMorphMotion()
@@ -475,9 +477,22 @@ internal class MiniCardMorph(
                     val nt = n as TextView
                     val colour = androidx.core.graphics.ColorUtils.blendARGB(piece.ownColor, nt.currentTextColor, mix)
                     if (tv.currentTextColor != colour) tv.setTextColor(colour)
-                    if (mix >= 0.5f && !android.text.TextUtils.equals(tv.text, nt.text)) {
-                        tv.text = nt.text
-                        piece.tookText = true
+                    if (mix >= 0.5f && !piece.textRefused &&
+                        !android.text.TextUtils.equals(tv.text, nt.text)) {
+                        // The words, not the card's text object: that is a PrecomputedText laid
+                        // out for the card's size, typeface and hyphenation, and setText throws on
+                        // a TextView whose own differ - from a frame callback, so the whole of
+                        // SystemUI went down with it (issue #11, 2026-09-26).
+                        val words = nt.text
+                        val copy = if (words is android.text.Spanned) android.text.SpannedString(words)
+                            else words.toString()
+                        try {
+                            tv.text = copy
+                            piece.tookText = true
+                        } catch (t: IllegalArgumentException) {
+                            piece.textRefused = true
+                            Xp.log("MCMini: morph kept its own words: $t")
+                        }
                     }
                 }
             }
