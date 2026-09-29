@@ -12,7 +12,7 @@ import java.util.concurrent.atomic.AtomicInteger
 /**
  * 高德's half of the lock screen map: whether its navigation page is ready to draw one.
  *
- * NavImmerse, in SystemUI, binds 高德's AMapImmerseNaviService and asks for the map. The service
+ * AmapNavScene, in SystemUI, binds 高德's AMapImmerseNaviService and asks for the map. The service
  * can only answer once 高德's own AJX navigation page has called `NativesModuleImmerseNavi.init`
  * with its page config - the service builds its map view out of that config and that page's
  * AJX context, and with neither it logs "initMapView: empty initConfig" and draws nothing. On
@@ -21,22 +21,28 @@ import java.util.concurrent.atomic.AtomicInteger
  * script is identical on both phones; what can differ is what the script is told about the phone
  * (高德 carries isOppo / isOppoDevice / ro.build.version.opporom checks).
  *
- * So this only watches, and says what it saw through its own probe:
+ * On this phone the page does call it (2026-09-29, walking navigation), so the script needs no
+ * help. This watches, tells SystemUI, and says what it saw through its own probe:
  *   module  - how many NativesModuleImmerseNavi instances the pages built (the module being
  *             created at all means a page asked for it)
- *   init    - how many times a page called init(), and the config it passed
- *   destroy - the page letting go
+ *   init    - how many times a page called init(), and the config it passed; each one tells
+ *             SystemUI the map can be drawn (`op immersive --es id amap-nav --es do arm`)
+ *   destroy - the page letting go; SystemUI takes the map down
  *
  * `adb shell am broadcast -a com.os4.musiccover.AMAPPROBE` answers in the main process only.
+ * With `--ez ask true` - what a freshly started SystemUI sends - it re-sends the start instead,
+ * if a page is up.
  * The class names here are 高德's own and unobfuscated: the AJX bridge finds modules by name, so
  * they cannot be minified away.
  */
 internal object AmapImmerse {
 
-    @JvmField val PKG = NavImmerse.PKG
+    @JvmField val PKG = AmapNavScene.PKG
 
     private const val TAG = "MCAmap: "
-    private const val ACTION = "com.os4.musiccover.AMAPPROBE"
+    private const val ACTION = AmapNavScene.AMAP_PROBE
+    private const val SYSUI = "com.android.systemui"
+    private const val SYSUI_PROBE = "com.os4.musiccover.PROBE"
     private const val MODULE = "com.autonavi.minimap.immersenavi.module.NativesModuleImmerseNavi"
 
     private val registered = AtomicBoolean(false)
@@ -44,6 +50,9 @@ internal object AmapImmerse {
     private val inits = AtomicInteger()
     @Volatile private var lastConfig: String? = null
     @Volatile private var lastInitAt = 0L
+    /** A page has called init and not destroy: the map can be drawn. */
+    @Volatile private var armed = false
+    @Volatile private var appCtx: Context? = null
 
     @JvmStatic
     fun handle(cl: ClassLoader) {
@@ -73,10 +82,15 @@ internal object AmapImmerse {
                 lastConfig = chain.args.getOrNull(0) as String?
                 lastInitAt = SystemClock.uptimeMillis()
                 Xp.log(TAG + "init #" + inits.incrementAndGet() + " config=" + lastConfig)
-                chain.proceed()
+                val out = chain.proceed()
+                armed = true
+                tell(true)
+                out
             }
             Xp.hookAll(module, "destroy") { chain ->
                 Xp.log(TAG + "destroy")
+                armed = false
+                tell(false)
                 chain.proceed()
             }
         } catch (t: Throwable) {
@@ -84,13 +98,41 @@ internal object AmapImmerse {
         }
     }
 
+    /**
+     * Tells SystemUI to put the map up or take it down. SystemUI does the binding itself; this
+     * is only the moment. An explicit package, so nothing else hears where 高德 is navigating.
+     */
+    private fun tell(on: Boolean) {
+        val ctx = appCtx ?: run {
+            Xp.log(TAG + "no context to tell SystemUI " + (if (on) "arm" else "disarm"))
+            return
+        }
+        try {
+            ctx.sendBroadcast(Intent(SYSUI_PROBE).setPackage(SYSUI)
+                .putExtra("op", "immersive")
+                .putExtra("id", AmapNavScene.ID)
+                .putExtra("do", if (on) "arm" else "disarm")
+                .putExtra("src", "amap"))
+            Xp.log(TAG + "told SystemUI " + (if (on) "arm" else "disarm"))
+        } catch (t: Throwable) {
+            Xp.log(TAG + "tell failed: " + t)
+        }
+    }
+
     private fun register(ctx: Context) {
         if (!registered.compareAndSet(false, true)) return
+        appCtx = ctx
         val r = object : BroadcastReceiver() {
             override fun onReceive(c: Context, i: Intent) {
+                if (i.getBooleanExtra("ask", false)) {
+                    Xp.log(TAG + "SystemUI asked, armed=" + armed)
+                    if (armed) tell(true)
+                    return
+                }
                 val sb = StringBuilder()
                 sb.append("modules=").append(modules.get())
                     .append(" inits=").append(inits.get())
+                    .append(" armed=").append(armed)
                 if (lastInitAt != 0L) {
                     sb.append(" lastInit=").append(SystemClock.uptimeMillis() - lastInitAt)
                         .append("ms ago")

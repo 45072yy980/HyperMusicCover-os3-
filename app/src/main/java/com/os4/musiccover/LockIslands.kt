@@ -168,6 +168,74 @@ internal object LockIslands {
     private val released = HashSet<String>()
 
     /**
+     * The island tapped open that has an immersive page behind it (ImmersiveHost.sceneFor) - 高德's
+     * navigation, say - and that page's scene: the one released key that outlives the lock screen.
+     *
+     * Opening it puts the page up behind the lock screen, the way tapping the music's island puts
+     * the cover up, and like the cover it stays up across an unlock until it is pulled back into
+     * the island or the scene stops being ready. So it is kept when the rest of [released] is
+     * cleared, and dropped only by [recapture] or [forgetScene]. Kept by key rather than looked
+     * up: the notification can be gone from the reads by the time it is dropped. One at a time:
+     * another page's island opened takes over, and the first one's row stays a plain row until
+     * the lock screen goes, as any other opened island does.
+     */
+    private var sceneKey: String? = null
+    private var scene: ImmersiveScene? = null
+
+    private fun sceneOf(key: String): ImmersiveScene? =
+        noteFor(key)?.let { runCatching { ImmersiveHost.sceneFor(it.pkg, it.focus) }.getOrNull() }
+
+    /** What a clear of [released] leaves: the open page's island, if there is one. */
+    private fun clearReleased() {
+        val keep = sceneKey
+        released.clear()
+        if (keep != null) released.add(keep)
+    }
+
+    /**
+     * The open page's notification has left the lock screen - dismissed, or the app stopped
+     * posting it while its page is still up. With no row there is nothing to pull back into an
+     * island, so the page would stay up for good: it is closed. Only after it has been missing
+     * for SCENE_GONE_MS of locked runs, because a run can miss a row that is there (高德 re-posts
+     * its island every second, and a row being re-inflated is left out of that run).
+     */
+    private var sceneMissingSince = 0L
+
+    private fun checkSceneNote(all: List<Note>) {
+        val key = sceneKey ?: return
+        if (all.any { it.key == key }) {
+            sceneMissingSince = 0L
+            return
+        }
+        val now = android.os.SystemClock.uptimeMillis()
+        if (sceneMissingSince == 0L) {
+            sceneMissingSince = now
+            // Nothing is sure to run the pipeline again once the notification is gone.
+            main.postDelayed({ invalidate("scene note check") }, SCENE_GONE_MS + 100L)
+            return
+        }
+        if (now - sceneMissingSince < SCENE_GONE_MS) return
+        sceneMissingSince = 0L
+        val closed = scene ?: return
+        Xp.log("MCIsland: ${closed.id()}'s notification is gone; closing its page")
+        sceneKey = null
+        scene = null
+        released.remove(key)
+        runCatching { ImmersiveHost.close(closed) }
+    }
+
+    private const val SCENE_GONE_MS = 2000L
+
+    /** The page's scene is no longer ready: its island is an island again. */
+    fun forgetScene(which: ImmersiveScene) {
+        if (scene !== which) return
+        val key = sceneKey
+        sceneKey = null
+        scene = null
+        if (key != null && released.remove(key)) invalidate("${which.id()} over")
+    }
+
+    /**
      * Every notification that is not a focus one is one island, [STACK_KEY] (2026-09-25, the
      * user's rule: QQ and WeChat made an island of every message). These are its notifications,
      * the newest - the one it shows - first, whether it is in the row or out in the stack.
@@ -296,6 +364,15 @@ internal object LockIslands {
             return
         }
         if (released.add(key)) invalidate("island $key released")
+        val opened = sceneOf(key)
+        if (opened != null && key != sceneKey) {
+            scene?.let { runCatching { ImmersiveHost.close(it) } }
+            sceneKey = key
+            scene = opened
+            sceneMissingSince = 0L
+            runCatching { ImmersiveHost.open(opened) }
+                .onFailure { Xp.log("MCIsland: ${opened.id()} not opened: $it") }
+        }
     } finally { android.os.Trace.endSection() } }
 
     /** A notification put back in the stack comes back into the row: collapsed into it. */
@@ -308,6 +385,12 @@ internal object LockIslands {
             return
         }
         if (released.remove(key)) invalidate("island $key recaptured")
+        if (key == sceneKey) {
+            val closed = scene
+            sceneKey = null
+            scene = null
+            closed?.let { runCatching { ImmersiveHost.close(it) } }
+        }
     } finally { android.os.Trace.endSection() } }
 
     fun isReleased(key: String): Boolean = if (key == STACK_KEY) stackOut else key in released
@@ -322,8 +405,8 @@ internal object LockIslands {
 
     /** The lock screen went away: every notification is an island again next time. */
     fun resetReleased() {
-        if (released.isEmpty() && !stackOut) return
-        released.clear()
+        if (released.all { it == sceneKey } && !stackOut) return
+        clearReleased()
         stackOut = false
         invalidate("released cleared")
     }
@@ -368,8 +451,9 @@ internal object LockIslands {
         if (hidden) return true
         val entry = args.firstOrNull() ?: return false
         if (!lockedOrLocking(filterObject)) {
-            // Unlocked: what a tap put back is an island again on the next lock screen.
-            released.clear()
+            // Unlocked: what a tap put back is an island again on the next lock screen - all but
+            // 高德's, which stays open with its map as the cover stays up.
+            clearReleased()
             stackOut = false
             // Unlocking, the keyguard is "not locked" from the first frame of its fade-out,
             // while the row is still drawn on it: letting the islands go then put every one
@@ -524,6 +608,7 @@ internal object LockIslands {
         val all = pending.values.toList()
         pending.clear()
         stamp(all, lockedRun)
+        if (lockedRun) checkSceneNote(all)
         lockedRun = false
         // A group shows as its children; its summary only when it has none here.
         val grouped = all.filter { !it.summary && it.group != null }.mapNotNull { it.group }.toSet()

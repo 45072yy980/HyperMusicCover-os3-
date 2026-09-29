@@ -98,6 +98,9 @@ final class ClockCollapse {
 
     /** Whether the doze about to start should keep our clock. Read once, at the start of sleep. */
     private static boolean keepInAod() {
+        // An immersive page as well as the cover: the full-screen doze keeps the page under the
+        // clock (ImmersiveHost), and only that doze - the plain one is the OEM's, page and clock
+        // alike.
         return Main.sAodSmall && Main.fullAodOn();
     }
 
@@ -515,7 +518,7 @@ final class ClockCollapse {
                 sYFrom = sYTo = Float.NaN;
                 return;
             case OFF:
-                if (!Main.coverModeOn()) return;
+                if (!Main.clockHeld()) return;
                 // Cover mode without our clock - unlocked, say. Nothing to walk back; watch the
                 // AOD so the wake has a start.
                 sAodHeld = false;
@@ -1764,7 +1767,7 @@ final class ClockCollapse {
         if (!measured) return;
 
         if (phase == Phase.AOD) {
-            if (sWaking && Main.coverModeOn()) {
+            if (sWaking && Main.clockHeld()) {
                 // The first lock screen frame of the wake, before it is drawn. Enter now, from the
                 // clock the AOD was showing, and place this very frame.
                 enter(true, true, "predraw");

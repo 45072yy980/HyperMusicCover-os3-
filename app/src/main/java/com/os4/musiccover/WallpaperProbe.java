@@ -1885,7 +1885,13 @@ public class WallpaperProbe {
                                 startFade(from, to, new Runnable() {
                                     @Override
                                     public void run() {
-                                        sLeaveAt = 0L;
+                                        // Kept when a cover is already on its way: it arrives
+                                        // to find the plain wallpaper on screen, and applyArt
+                                        // reads this to start it from there. Cleared here, the
+                                        // cover that landed 18ms after this fade was taken for
+                                        // a track change - a 180ms fade from the old cover,
+                                        // which is a cut from the wallpaper (2026-09-29).
+                                        if (artSeq == sArtSeq) sLeaveAt = 0L;
                                         if (blurStillMine && msgSeq == sMsgSeq) {
                                             sLyricBlur = false;
                                             sLyricBlurWant = false;

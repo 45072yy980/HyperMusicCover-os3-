@@ -936,7 +936,7 @@ public class Main extends XposedModule {
             return;
         }
         // 高德, for the navigation map on the lock screen: only watching whether its page is ready
-        // to draw one. See AmapImmerse and NavImmerse.
+        // to draw one. See AmapImmerse and AmapNavScene.
         if (AmapImmerse.PKG.equals(pkg)) {
             AmapImmerse.handle(param.getDefaultClassLoader());
             return;
@@ -987,6 +987,12 @@ public class Main extends XposedModule {
                     registerReceiver(sContainer.getContext().getApplicationContext());
                 } catch (Throwable t) {
                     Xp.log(TAG + "registerReceiver failed: " + t);
+                }
+                // An immersive page's slot, if a rebuilt keyguard came with a new window.
+                try {
+                    ImmersiveHost.onContainerAttached();
+                } catch (Throwable t) {
+                    Xp.log(TAG + "immersive slot not restored: " + t);
                 }
                 // The lyric bridge, from the same place and for the same reason: this is where
                 // the process first has a Context. It does nothing at all when no bridge is
@@ -1095,7 +1101,7 @@ public class Main extends XposedModule {
                     @Override
                     public void run() {
                         CoverMorphLayer.cancel();
-                        if (sCoverMode) ClockCollapse.toAod();
+                        if (clockHeld()) ClockCollapse.toAod();
                     }
                 });
                 return result;
@@ -1131,7 +1137,7 @@ public class Main extends XposedModule {
                 main().post(new Runnable() {
                     @Override
                     public void run() {
-                        if (sCoverMode && ClockCollapse.phase() == ClockCollapse.Phase.AOD
+                        if (clockHeld() && ClockCollapse.phase() == ClockCollapse.Phase.AOD
                                 && keyguardShowing()) {
                             ClockCollapse.enter(true, true, "kg-post");
                         }
@@ -1191,7 +1197,7 @@ public class Main extends XposedModule {
             Xp.hookAll(sContainerCls, "doAnimationToAod", chain -> {
                 Object[] args = chain.getArgs().toArray();
                 boolean toAod = args.length > 0 && Boolean.TRUE.equals(args[0]);
-                if (sCoverMode && toAod) {
+                if (clockHeld() && toAod) {
                     // Ahead of the broadcast, which is ~110ms behind: the display is no longer
                     // interactive, and any colour set in between must not get the cover's tint.
                     sScreenOn = false;
@@ -1201,7 +1207,7 @@ public class Main extends XposedModule {
                     recolorClock();
                 }
                 Object result = chain.proceed();
-                if (sCoverMode && !toAod && ClockCollapse.leavingOrOff()) {
+                if (clockHeld() && !toAod && ClockCollapse.leavingOrOff()) {
                     forgetSysReads();
                     // Only a wake onto the lock screen. The same call can come with the phone
                     // unlocked, and the clock there is the shade's.
@@ -2130,17 +2136,18 @@ public class Main extends XposedModule {
                         recolorClock();
                     } else if ("gdata".equals(op)) {
                         pokeGlassData(i.getIntExtra("idx", -1), i.getFloatExtra("v", 0f));
-                    } else if ("navmap".equals(op)) {
-                        // 高德's map under the lock screen, driven by hand: start / stop / state.
+                    } else if ("immersive".equals(op) || "navmap".equals(op)) {
+                        // The immersive pages: --es id <scene> --es do state|open|close|arm|disarm.
+                        // navmap is 高德's old spelling (start / stop), kept for a 高德 process
+                        // still running the build that sent it.
                         String what = i.getStringExtra("do");
-                        final View cv = sContainer;
-                        if ("start".equals(what) && cv != null) {
-                            NavImmerse.post(() -> NavImmerse.start(cv));
-                        } else if ("stop".equals(what)) {
-                            NavImmerse.post(NavImmerse::stop);
+                        String id = i.getStringExtra("id");
+                        if ("navmap".equals(op)) {
+                            id = AmapNavScene.ID;
+                            if ("start".equals(what)) what = "arm";
+                            else if ("stop".equals(what)) what = "disarm";
                         }
-                        setResultData((cv == null ? "no clock container yet\n" : "")
-                                + NavImmerse.state());
+                        setResultData(LockHold.describe() + "\n" + ImmersiveHost.command(id, what));
                     } else if ("aodprobe".equals(op)) {
                         setResultData(aodProbe());
                     } else if ("entries".equals(op)) {
@@ -2360,8 +2367,10 @@ public class Main extends XposedModule {
                                 + " lyrics=" + LockLyrics.sEnabled
                                 + " tap=" + (LockLyrics.sTapHidden ? "hidden" : "shown"));
                     } else if ("wpart".equals(op)) {
-                        // The wallpaper has begun showing the new cover; see CoverCardLayer.
+                        // The wallpaper has begun showing the new cover; see CoverCardLayer, and
+                        // ImmersiveHost, whose page closing onto the cover waits for this.
                         CoverCardLayer.releaseHeld();
+                        ImmersiveHost.coverShown();
                     } else if ("bouncer".equals(op)) {
                         setResultData(sBouncerTrace.toString());
                     } else if ("cardstate".equals(op)) {
@@ -2854,6 +2863,8 @@ public class Main extends XposedModule {
         ctx.registerReceiver(r, new IntentFilter(ACTION), Context.RECEIVER_EXPORTED);
         registerSecretCode(ctx);
         Xp.log(TAG + "receiver registered for " + ACTION);
+        // A SystemUI that starts mid-navigation missed 高德's init; there is a receiver now.
+        ImmersiveHost.onStart(ctx);
         // (registerSecretCode is defined below; see the comment there for why the dialled code
         // is answered from in here rather than by the app's own manifest receiver.)
         // Asks the wallpaper process what it can take, now that there is a receiver for the
@@ -2927,7 +2938,7 @@ public class Main extends XposedModule {
                 if (Intent.ACTION_SCREEN_ON.equals(a)) {
                     // The wake normally entered already, from the doAnimationToAod hook, before
                     // the first lit frame. This is the fallback for a build without that method.
-                    if (sCoverMode && ClockCollapse.leavingOrOff() && keyguardShowing()) {
+                    if (clockHeld() && ClockCollapse.leavingOrOff() && keyguardShowing()) {
                         ClockCollapse.enter(true, true, "screenOn");
                     }
                     // Waking re-runs the OEM's depth pipeline, and if the keyguard was rebuilt
@@ -2943,7 +2954,7 @@ public class Main extends XposedModule {
                 // this same clock, SystemUI's keyguard in doze - and so does an unlocked phone.
                 // Going off, the sleep hooks have normally started the walk into the AOD already
                 // and this does nothing; it is the fallback for a build without them.
-                if (Intent.ACTION_SCREEN_OFF.equals(a) && sCoverMode) ClockCollapse.toAod();
+                if (Intent.ACTION_SCREEN_OFF.equals(a) && clockHeld()) ClockCollapse.toAod();
                 else ClockCollapse.release(a);
             }
         };
@@ -6363,7 +6374,6 @@ public class Main extends XposedModule {
         sTapSuppressed = false;
         // The two-finger tap's page is NOT reset here: it stands until the next two-finger tap,
         // across songs, lock screens and a card that comes and goes. See LockLyrics.sTapHidden.
-        setDepthHidden(true);
         // Start the card where the OEM has it when animating, so the thumbnail fades out across
         // the clock's own frames instead of blinking away before the clock has begun to move.
         // Without an animation there is nothing to fade, and the settled look goes on directly.
@@ -6385,8 +6395,11 @@ public class Main extends XposedModule {
         sLyricArtAt = 0L;
         applyMediaCard();
         // The response is the slider's, read when the transition starts and nowhere else, which
-        // is what makes a change land on the next transition and never mid-flight.
-        ClockCollapse.enter(animate, false, "cover");
+        // is what makes a change land on the next transition and never mid-flight. The cut-out
+        // goes with it; both are LockHold's, shared with the immersive pages.
+        LockHold.take(LockHold.Owner.COVER, animate, "cover");
+        // An immersive page closing in the same tap fades out onto this cover, not ahead of it.
+        ImmersiveHost.coverEntering();
         // The reading may predate this cover - the card can come up on art that was pushed
         // before the user ever locked the phone - and the OEM will not re-colour on its own.
         recolorClock();
@@ -6420,12 +6433,18 @@ public class Main extends XposedModule {
             recolorClock();
         }
         armTransitionTrace("leaving cover mode");
-        // The cut-out belongs to the wallpaper, and the wallpaper is already on its way back -
-        // except on a video wallpaper with the cover view still up: that view is held over the
-        // window until the window has the video again, and the cut-out comes back with it going
-        // (CoverPush.dropVideoCover), not in front of it now.
-        if (!(sVideoWallpaper && sCover != null)) setDepthHidden(false);
-        ClockCollapse.exit(animate);
+        // The clock and the cut-out go back unless an immersive page still has the lock screen
+        // (LockHold); with one, only the card is the cover's to hand back, and it goes now -
+        // there is no exit for its thumbnail to ride.
+        // A page that yielded to the cover, still open, comes back - first, so it takes the lock
+        // screen while the cover still has it, and the clock and the cut-out never see a moment
+        // with no owner.
+        ImmersiveHost.coverLeft();
+        LockHold.give(LockHold.Owner.COVER, animate);
+        if (LockHold.clockHeld()) {
+            sCardP = 0f;
+            applyMediaCard();
+        }
         MiniPlayerRuntime.refresh();
         // No applyMediaCard() while the exit is flying: it would drop the card's guard, and the
         // guard is what draws every frame of the thumbnail coming back. onClockReleased() hands
@@ -6438,15 +6457,22 @@ public class Main extends XposedModule {
 
     /** ClockCollapse let go of the clock. Outside cover mode, the card goes back with it. */
     static void onClockReleased() {
+        LockHold.clockReleased();
         if (sCoverMode) return;
         sCardP = 0f;
         applyMediaCard();
         MiniPlayerRuntime.refresh();
     }
 
-    /** The mini player stays off screen until the cover exit has settled. */
+    /**
+     * The mini player stays off screen until the cover exit has settled.
+     *
+     * The cover's exit, not the clock's: an immersive page holds the same clock, and reading its
+     * clock as a cover scene took the music out of its island and put its media card up over
+     * the focus row the page was opened from (reported 2026-09-29).
+     */
     static boolean coverSceneActive() {
-        return sCoverMode || ClockCollapse.phase() != ClockCollapse.Phase.OFF;
+        return sCoverMode || LockHold.exitingFor(LockHold.Owner.COVER);
     }
 
     static MediaController miniPlayerSession() {
@@ -6626,7 +6652,8 @@ public class Main extends XposedModule {
         // The PIN pad is not a reason to hide it: taken away there, the square cut out as the pad
         // came up and popped back as it went. It stays and blurs under the pad instead, the way
         // the lyrics do - see CoverCardLayer.followBouncer.
-        return (sCoverMode || ClockCollapse.phase() == ClockCollapse.Phase.EXIT)
+        return (sCoverMode || LockHold.exitingFor(LockHold.Owner.COVER)
+                        && ClockCollapse.phase() == ClockCollapse.Phase.EXIT)
                 && keyguardShowing() && c != null && c.isShown()
                 && (sScreenOn || coverCardInAod() || coverCardFallingAsleep());
     }
@@ -6692,6 +6719,9 @@ public class Main extends XposedModule {
 
     /** One frame of the card fade, from ClockCollapse's progress. */
     static void setCardProgressFrom(float p) {
+        // The clock can be held for an immersive page alone, and the card is not part of that
+        // look. The cover's exit is let through: that is its card fading back.
+        if (!sCoverMode && !LockHold.exitingFor(LockHold.Owner.COVER)) p = 0f;
         setCardProgress(p);
     }
 
@@ -7090,6 +7120,12 @@ public class Main extends XposedModule {
      * else happened to call it again.
      */
     static void setDepthHidden(final boolean hide, final int attempt) {
+        // Whoever asks, the cut-out stays hidden while something has the lock screen: the video
+        // cover's late hand-back (CoverPush.dropVideoCover) cannot know an immersive page is up.
+        if (!hide && !LockHold.depthFree()) {
+            if (attempt == 0) Xp.log(TAG + "deducted_image_view kept hidden: " + LockHold.describe());
+            return;
+        }
         sDepthHidden = hide;
         final View v = sContainer;
         if (v == null) {
@@ -9430,6 +9466,43 @@ public class Main extends XposedModule {
     }
 
     /**
+     * Whether the clock is ours to keep small. Everything that decides "is the clock held" across
+     * a sleep and a wake asks this; who holds it is LockHold's.
+     */
+    static boolean clockHeld() {
+        return LockHold.clockHeld();
+    }
+
+    /**
+     * An immersive page went up behind the lock screen, or came down (ImmersiveHost). It takes
+     * the lock screen the way the cover does. Animated only where it can be seen; elsewhere the
+     * next wake brings the clock in, as it does for the cover.
+     */
+    static void onImmersive(boolean on) {
+        boolean visible = screenOn() && onKeyguardNow();
+        if (on) LockHold.take(LockHold.Owner.IMMERSIVE, visible, "immersive");
+        else LockHold.give(LockHold.Owner.IMMERSIVE, visible);
+    }
+
+    /**
+     * The last owner gave the lock screen back: the cut-out may return. Except on a video
+     * wallpaper with the cover view still up - that view is held over the window until the
+     * window has the video again, and the cut-out comes back with it going
+     * (CoverPush.dropVideoCover), not in front of it now.
+     */
+    static void handBackDepth() {
+        if (!(sVideoWallpaper && sCover != null)) setDepthHidden(false);
+    }
+
+    /**
+     * Whether the shade window is showing the lock screen - lit or dozing - rather than the shade
+     * over an unlocked phone. Which doze may show a page is ImmersiveHost's to decide.
+     */
+    static boolean immersiveOnLockScreen() {
+        return keyguardShowing() && onKeyguardNow();
+    }
+
+    /**
      * Tells the wallpaper process to put the cover on the DESKTOP wallpaper, or take it off.
      *
      * The notification shade's glass samples what is behind its window, and the cover the shade
@@ -9831,6 +9904,10 @@ public class Main extends XposedModule {
         // Nothing to toggle without music: the card is the switch, and this only chooses
         // whether the cover follows it.
         if (!sCardKnown || !sCardShowing) return;
+        // An immersive page is the picture here, not the cover: a tap on it is a tap on the
+        // page, and it put the cover and its card up over the map (user, 2026-09-29). The page
+        // is left by its island, as it was opened.
+        if (ImmersiveHost.holdsClock()) return;
         float top = sScreenH * 0.08f;
         // Measured live where possible. The sampled rectangle is a settled reading taken for
         // the app's preview and it lags: seen at 1360 while the card was actually at 1700,

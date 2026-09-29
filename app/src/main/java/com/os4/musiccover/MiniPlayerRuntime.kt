@@ -3079,7 +3079,8 @@ private class MiniPlayerController(
     private var growHeldSince = 0L
 
     /** The clock going into the cover or out of it: the row is put away or brought back by that, not by its islands. */
-    private fun coverMoving(): Boolean = ClockCollapse.phase().let {
+    private fun coverMoving(): Boolean = Main.coverSceneActive() && ClockCollapse.phase().let {
+        // The cover's clock only: 高德's map moves the same clock and puts nothing away.
         it == ClockCollapse.Phase.ENTER || it == ClockCollapse.Phase.EXIT
     }
 

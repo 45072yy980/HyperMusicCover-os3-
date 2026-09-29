@@ -314,6 +314,8 @@ final class CoverPush {
                         // over there will say it is up: this line is.
                         CoverCardLayer.releaseHeld();
                     }
+                    // So is an immersive page waiting on the cover to fade out over it.
+                    ImmersiveHost.coverShown();
                     final Bitmap oldSharp = Main.sCoverBitmap;
                     final Bitmap oldBlur = Main.sCoverBlurBitmap;
                     final Bitmap oldShown = Main.sVideoCoverBlurred && oldBlur != null ? oldBlur : oldSharp;
@@ -1241,10 +1243,29 @@ final class CoverPush {
             sArtH = 0;
             sArtLong = 0;
             sArtKey = "";
-            Main.worker().post(new Runnable() {
+            // An immersive page fading in over the cover: the cover stays until the page covers
+            // it, or the wallpaper shows through between the two. A push that comes in the
+            // meantime - a tap back into cover mode - supersedes this one, and the cover never
+            // leaves at all.
+            long hold = 0L;
+            if (android.os.Looper.myLooper() == android.os.Looper.getMainLooper()) {
+                hold = ImmersiveHost.coverOffHoldMs();
+            }
+            if (hold > 0L) Xp.log(Main.TAG + "pushart off held " + hold + "ms for the page over it");
+            final boolean held = hold > 0L;
+            Main.worker().postDelayed(new Runnable() {
                 @Override
-                public void run() { pushArtToWallpaper(ctx, false, null); }
-            });
+                public void run() {
+                    // Only a held leave is dropped: an unheld one goes as it always did, and the
+                    // quick toggles without a page keep the path they were tuned on.
+                    if (held && gen != Main.sPushGen) {
+                        Xp.log(Main.TAG + "pushart off superseded, the cover stays");
+                        return;
+                    }
+                    ImmersiveHost.coverOffSent();
+                    pushArtToWallpaper(ctx, false, null);
+                }
+            }, hold);
             return;
         }
         // Checked before every push rather than once per process. The user can send the
