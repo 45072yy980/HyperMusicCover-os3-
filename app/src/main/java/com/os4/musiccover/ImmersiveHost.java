@@ -27,7 +27,11 @@ import java.util.Set;
  *
  *   ready    a scene says it has a page (高德 navigating). The host puts its slot into the lock
  *            screen window and, on the first lock screen shown, has the scene prepare its page
- *            there, hidden - so the tap that opens it finds it already drawn.
+ *            there, hidden - so the tap that opens it finds it already drawn. The page is let go
+ *            UNLOCKED_RELEASE_MS after an unlock and prepared again on the next lock screen: an
+ *            app drawing its page in a SurfaceControlViewHost goes on drawing it for as long as
+ *            it is held, and unlocked nobody sees it. The next lock screen starts with the
+ *            screen going off, so it is prepared in the doze, well before the wake.
  *   open     the scene's focus island is tapped open (LockIslands.release): the island turns
  *            into its notification row, the page goes up behind the lock screen, the clock goes
  *            small and the wallpaper's cut-out goes (Main.onImmersive). Pulled back into its
@@ -258,8 +262,57 @@ final class ImmersiveHost {
     /** From a scene: its page arrived, or went. */
     static void contentChanged(ImmersiveScene scene) {
         Xp.log(TAG + scene.id() + (scene.hasContent() ? " has a page" : " lost its page"));
+        // An open page arriving on a lit lock screen - prepared again after an unlock, and woken
+        // to before it was ready - comes in on a fade rather than appearing in one frame.
+        if (scene == sOpen && !sYield && scene.hasContent() && !sShown && litNow()) {
+            sFadeInNext = true;
+        }
         apply();
     }
+
+    /** How long after an unlock the pages are let go. See the class comment. */
+    private static final long UNLOCKED_RELEASE_MS = 3000L;
+
+    /** The phone was unlocked (ACTION_USER_PRESENT). Main thread. */
+    static void onUnlocked() {
+        sMain.removeCallbacks(RELEASE_UNLOCKED);
+        if (!sPrepared.isEmpty()) sMain.postDelayed(RELEASE_UNLOCKED, UNLOCKED_RELEASE_MS);
+    }
+
+    /**
+     * The screen went off, which locks it: a let-go pending is off, and a slot waiting to prepare
+     * is asked to draw, so the doze's first frame prepares it.
+     */
+    static void onScreenOff() {
+        sMain.removeCallbacks(RELEASE_UNLOCKED);
+        if (sSlot != null) sSlot.invalidate();
+    }
+
+    /** Still unlocked after the grace: the pages go, their scenes stay ready. */
+    private static final Runnable RELEASE_UNLOCKED = new Runnable() {
+        @Override
+        public void run() {
+            boolean locked;
+            try {
+                locked = Main.keyguardLocked();
+            } catch (Throwable t) {
+                locked = true;
+            }
+            if (locked || sPrepared.isEmpty()) return;
+            List<ImmersiveScene> prepared = new ArrayList<>(sPrepared);
+            sPrepared.clear();
+            for (ImmersiveScene s : prepared) {
+                try {
+                    s.release();
+                } catch (Throwable t) {
+                    Xp.log(TAG + s.id() + " release failed: " + t);
+                }
+            }
+            Xp.log(TAG + "unlocked: " + prepared.size()
+                    + " page(s) let go, prepared again on the next lock screen");
+            apply();
+        }
+    };
 
     /**
      * The keyguard's clock container attached: a rebuilt keyguard, or the first one. A slot that

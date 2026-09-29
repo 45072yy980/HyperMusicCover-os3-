@@ -2934,6 +2934,14 @@ public class Main extends XposedModule {
                     CoverCardLayer.hideNow();
                 }
                 else CoverCardLayer.refresh();
+                // An immersive page's app stops drawing it while the phone is unlocked, and is
+                // asked again from the doze. Its own try: a failure there must not cost the rest.
+                try {
+                    if (Intent.ACTION_USER_PRESENT.equals(a)) ImmersiveHost.onUnlocked();
+                    else if (Intent.ACTION_SCREEN_OFF.equals(a)) ImmersiveHost.onScreenOff();
+                } catch (Throwable t) {
+                    Xp.log(TAG + "immersive lifecycle failed: " + t);
+                }
                 if (Intent.ACTION_SCREEN_OFF.equals(a)) CoverMorphLayer.cancel();
                 if (Intent.ACTION_SCREEN_ON.equals(a)) {
                     // The wake normally entered already, from the doAnimationToAod hook, before
