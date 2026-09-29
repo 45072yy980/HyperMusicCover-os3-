@@ -935,6 +935,12 @@ public class Main extends XposedModule {
             AppleLyrics.handle(param.getDefaultClassLoader());
             return;
         }
+        // 高德, for the navigation map on the lock screen: only watching whether its page is ready
+        // to draw one. See AmapImmerse and NavImmerse.
+        if (AmapImmerse.PKG.equals(pkg)) {
+            AmapImmerse.handle(param.getDefaultClassLoader());
+            return;
+        }
         if (!"com.android.systemui".equals(pkg)) return;
 
         final ClassLoader cl = param.getDefaultClassLoader();
@@ -2124,6 +2130,17 @@ public class Main extends XposedModule {
                         recolorClock();
                     } else if ("gdata".equals(op)) {
                         pokeGlassData(i.getIntExtra("idx", -1), i.getFloatExtra("v", 0f));
+                    } else if ("navmap".equals(op)) {
+                        // 高德's map under the lock screen, driven by hand: start / stop / state.
+                        String what = i.getStringExtra("do");
+                        final View cv = sContainer;
+                        if ("start".equals(what) && cv != null) {
+                            NavImmerse.post(() -> NavImmerse.start(cv));
+                        } else if ("stop".equals(what)) {
+                            NavImmerse.post(NavImmerse::stop);
+                        }
+                        setResultData((cv == null ? "no clock container yet\n" : "")
+                                + NavImmerse.state());
                     } else if ("aodprobe".equals(op)) {
                         setResultData(aodProbe());
                     } else if ("entries".equals(op)) {
