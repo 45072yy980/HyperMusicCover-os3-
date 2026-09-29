@@ -7561,6 +7561,20 @@ private class MiniPlayerController(
     }
 
     /**
+     * The music on its way up into the cover in a switch, and the cover asked to go: the island
+     * that came down into the pill goes back up as its card and the music comes home. The
+     * caller is taking the cover away itself, so the music's way home is not the cover's to end
+     * again (sendDown turns the scene for a mover whose card is the cover).
+     */
+    private fun turnSwitchOutOfCover(x: Switch, music: Mover): Boolean {
+        val big = x.seats?.big?.takeIf { it != MUSIC_ISLAND } ?: return false
+        music.cover = false
+        requestUp(x, big, fromPill = true, cover = false)
+        MiniPlayerRuntime.noteTouch("cover out turns the switch: ${big.takeLast(6)} up, music home")
+        return true
+    }
+
+    /**
      * Starts, or turns round, the container morph. A dynamic switch goes wherever the selection
      * now points; a scene route needs the mini player to be the selected presentation.
      */
@@ -7574,8 +7588,25 @@ private class MiniPlayerController(
             return true
         }
         // The music exchanged into the cover with the island out, or out of it for an island
-        // opened there: the exchange is the scene's morph.
-        if (scene && exchange?.has(MUSIC_ISLAND) == true) return true
+        // opened there: the exchange is the scene's morph - when it is going the scene's way.
+        if (scene) exchange?.takeIf { it.has(MUSIC_ISLAND) }?.let { x ->
+            val m = x.movers[MUSIC_ISLAND]
+            when {
+                toNative || m != null && m.headedHome -> return true
+                // Pulled down out of the cover while the switch still had the music on its way
+                // up into it: taken as going the scene's way, the switch landed the music as the
+                // cover's card, the cover went, and the music was left out as a card nobody
+                // showed - in neither the pill nor the card (filmed 2026-09-29 20:54, 460ms after
+                // the switch). Turned round now, as a tap on the pill turns a switch.
+                m?.morph != null -> return turnSwitchOutOfCover(x, m)
+                // Already landed as the cover's card, the rest still moving: they land now, and
+                // the music flies home as it does with no switch.
+                else -> {
+                    x.movers.values.toList().forEach { it.morph?.cancel() }
+                    if (exchange != null) return false
+                }
+            }
+        }
         val view = player ?: return false
         val token = controller?.sessionToken ?: return false
         // The card already chosen: nothing to become.
