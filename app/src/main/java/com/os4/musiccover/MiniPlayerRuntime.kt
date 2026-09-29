@@ -5113,8 +5113,16 @@ private class MiniPlayerController(
     }
 
     private fun tellTurn(key: String, out: Boolean) {
-        // Back the way it was before the turns: nothing to tell.
-        if (key != MUSIC_ISLAND && out == LockIslands.isReleased(key)) return
+        // Back the way it was before the turns: nothing to tell the stack. But a page behind it
+        // may have been taken over meanwhile - the map's island going home, the countdown's out,
+        // the map's turned out again before its home was told: its row never went back, and the
+        // countdown's home, told later, closed the only page open, down to the plain wallpaper
+        // (2026-09-30). Released again, it takes its page back; nothing else happens to a key
+        // that is released already.
+        if (key != MUSIC_ISLAND && out == LockIslands.isReleased(key)) {
+            if (out) LockIslands.release(key)
+            return
+        }
         if (out) {
             letOutAgain(key)
             if (key != MUSIC_ISLAND && !LockIslands.isReleased(key)) letOut(key)

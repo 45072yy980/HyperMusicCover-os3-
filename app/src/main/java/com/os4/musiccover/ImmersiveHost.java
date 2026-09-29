@@ -138,6 +138,17 @@ final class ImmersiveHost {
 
     /** Closed on the lit lock screen, and fading out: still shown until the fade is over. */
     private static ImmersiveScene sLeaving;
+    /**
+     * The page that was on screen when another was opened, fading out while the new one fades in
+     * over it - one island tapped after another's. Without it the first page was cut the moment
+     * the second held the lock screen, and the second faded in over the bare wallpaper (filmed
+     * 2026-09-30 against ColorOS, which crossfades the map and the countdown).
+     */
+    private static ImmersiveScene sSwapOut;
+    private static float sSwapFade;
+    private static ValueAnimator sSwapAnim;
+    /** The edge blur belongs to the page fading out, not the one coming in, which has none. */
+    private static boolean sEdgeFromSwap;
     /** The fade-out has not started: waiting to see whether a cover is coming, then for it. */
     private static boolean sLeaveHeld;
     /** The fade-out follows a cover fading in underneath: the later curve. */
@@ -166,6 +177,8 @@ final class ImmersiveHost {
     private static final long COVER_DECIDE_MS = 32L;
     /** The next time a page appears it fades in: it was opened, not woken to. */
     private static boolean sFadeInNext;
+    /** Where that fade in starts, when not from nothing - see open. NaN: from nothing. */
+    private static float sAppearFrom = Float.NaN;
     /** The shown page's opacity, and where it is going. */
     private static float sFade = 1f;
     private static float sFadeTo = 1f;
@@ -372,6 +385,20 @@ final class ImmersiveHost {
     /** From LockIslands: the scene's island was tapped open. */
     static void open(ImmersiveScene scene) {
         if (sOpen == scene && !sYield) return;
+        // Another page on the lit lock screen - just closed for this one, or still open: the two
+        // crossfade. The new one then appears as opened pages do, from nothing - or, when it is
+        // the one still fading out of the last crossfade, from where it has got to: a run of
+        // taps between two islands turns the two fades round rather than restarting them.
+        float backFrom = scene == sSwapOut ? sSwapFade : Float.NaN;
+        ImmersiveScene out = sLeaving != null ? sLeaving : (sYield ? null : sOpen);
+        if (out != null && out != scene && sShown && litNow()) {
+            sLeaving = null;
+            sLeaveHeld = false;
+            sMain.removeCallbacks(LEAVE_CHECK);
+            startSwapOut(out);
+            sShown = false;
+            sAppearFrom = backFrom;
+        }
         sOpen = scene;
         // Opened after the cover: the page is the later one now.
         sYield = false;
@@ -793,6 +820,12 @@ final class ImmersiveHost {
         ImmersiveScene page = holding ? open : sLeaving;
         // Held for a page on its way back is not a page to show.
         boolean shown = page != null && page.hasContent() && mayShow();
+        // A crossfade is a lit lock screen's: anything else ends it where it is.
+        ImmersiveScene swap = sSwapOut;
+        if (swap != null && (swap == page || !swap.hasContent() || !litNow())) {
+            endSwap();
+            swap = null;
+        }
         // The lit screen off the lock screen is the unlock, seen from here; back on it, the count
         // stops. See armRelease.
         if (!sPrepared.isEmpty()) {
@@ -816,7 +849,7 @@ final class ImmersiveHost {
         // Only that page: a prepared page that is not the one on screen stays hidden.
         for (ImmersiveScene s : sPrepared) {
             try {
-                s.onShown(shown && s == page, dozing);
+                s.onShown(shown && s == page || s == swap, dozing && s != swap);
             } catch (Throwable t) {
                 Xp.log(TAG + s.id() + " show failed: " + t);
             }
@@ -849,7 +882,9 @@ final class ImmersiveHost {
         if (!sShown) {
             // Appearing.
             stopFade();
-            sFade = sFadeInNext && !leaving ? 0f : 1f;
+            float from = Float.isNaN(sAppearFrom) ? 0f : sAppearFrom;
+            sAppearFrom = Float.NaN;
+            sFade = sFadeInNext && !leaving ? from : 1f;
             sFadeTo = sFade;
             sFadeInNext = false;
             setPageFade(page, sFade);
@@ -920,7 +955,59 @@ final class ImmersiveHost {
         } catch (Throwable t) {
             Xp.log(TAG + page.id() + " fade failed: " + t);
         }
-        if (sEdge != null) sEdge.setFade(alpha);
+        if (sEdge != null && !sEdgeFromSwap) sEdge.setFade(alpha);
+    }
+
+    /** The page going out of a crossfade, from where it is, on the same curve as the new one in. */
+    private static void startSwapOut(final ImmersiveScene out) {
+        endSwap();
+        stopFade();
+        sSwapOut = out;
+        final float from = sFade;
+        sSwapFade = from;
+        long ms = Math.max(1L, Math.round(Main.fadeMsFor(Main.sClockResponse) * from));
+        ValueAnimator a = ValueAnimator.ofFloat(0f, 1f);
+        a.setDuration(ms);
+        a.setInterpolator(t -> 1f - (1f - t) * (1f - t) * (1f - t));
+        a.addUpdateListener(an -> {
+            if (sSwapAnim != an) return;
+            sSwapFade = from * (1f - (float) an.getAnimatedValue());
+            swapFade(out, sSwapFade);
+        });
+        a.addListener(new android.animation.AnimatorListenerAdapter() {
+            @Override
+            public void onAnimationEnd(android.animation.Animator an) {
+                if (sSwapAnim != an) return;
+                sSwapAnim = null;
+                sSwapOut = null;
+                apply();
+            }
+        });
+        sSwapAnim = a;
+        a.start();
+        Xp.log(TAG + "crossfade: " + out.id() + " out over " + ms + "ms");
+    }
+
+    private static void swapFade(ImmersiveScene out, float alpha) {
+        try {
+            out.setFade(alpha);
+        } catch (Throwable t) {
+            Xp.log(TAG + out.id() + " fade failed: " + t);
+        }
+        if (sEdge != null && sEdgeFromSwap) sEdge.setFade(alpha);
+    }
+
+    /**
+     * The crossfade is over or cut: the page going out goes as it is. Not put back to full
+     * opacity here - a SurfaceControl's alpha lands at once and its hiding a frame later, which
+     * would flash it; its next appearance sets its opacity anyway (fade).
+     */
+    private static void endSwap() {
+        ValueAnimator a = sSwapAnim;
+        sSwapAnim = null;
+        if (a != null) a.cancel();
+        sSwapOut = null;
+        sEdgeFromSwap = false;
     }
 
     private static boolean onLockScreen() {
