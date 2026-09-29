@@ -31,7 +31,8 @@ import java.util.Set;
  *            UNLOCKED_RELEASE_MS after an unlock and prepared again on the next lock screen: an
  *            app drawing its page in a SurfaceControlViewHost goes on drawing it for as long as
  *            it is held, and unlocked nobody sees it. The next lock screen starts with the
- *            screen going off, so it is prepared in the doze, well before the wake.
+ *            screen going off, so it is prepared in the doze, well before the wake. The lock
+ *            screen stays held for an open page meanwhile (sLetGo), so the clock sleeps small.
  *   open     the scene's focus island is tapped open (LockIslands.release): the island turns
  *            into its notification row, the page goes up behind the lock screen, the clock goes
  *            small and the wallpaper's cut-out goes (Main.onImmersive). Pulled back into its
@@ -79,7 +80,7 @@ import java.util.Set;
  * held (see LockLyrics.drawStill, which does this per lyric line). A page drawn in another process
  * never says when it changes, so for a scene that asks, the display is let up on a beat.
  *
- * Probe: {@code op immersive [--es id <scene>] [--es do state|open|close|arm|disarm]}.
+ * Probe: {@code op immersive [--es id <scene>] [--es do state|open|close|arm|disarm|rowtap]}.
  */
 final class ImmersiveHost {
 
@@ -353,6 +354,7 @@ final class ImmersiveHost {
     /** From LockIslands: the scene's island was pulled back in. */
     static void close(ImmersiveScene scene) {
         if (sOpen != scene) return;
+        sLetGo.remove(scene);
         boolean wasYielding = sYield;
         sOpen = null;
         sYield = false;
@@ -386,6 +388,7 @@ final class ImmersiveHost {
             // prepared.
             if (sSlot != null) sSlot.invalidate();
         } else {
+            sLetGo.remove(scene);
             if (sPrepared.remove(scene)) scene.release();
             if (sOpen == scene) {
                 sOpen = null;
@@ -403,6 +406,7 @@ final class ImmersiveHost {
     /** From a scene: its page arrived, or went. */
     static void contentChanged(ImmersiveScene scene) {
         Xp.log(TAG + scene.id() + (scene.hasContent() ? " has a page" : " lost its page"));
+        if (scene.hasContent()) sLetGo.remove(scene);
         // An open page arriving on a lit lock screen - prepared again after an unlock, and woken
         // to before it was ready - comes in on a fade rather than appearing in one frame.
         if (scene == sOpen && !sYield && scene.hasContent() && !sShown && litNow()) {
@@ -465,6 +469,8 @@ final class ImmersiveHost {
             }
             List<ImmersiveScene> prepared = new ArrayList<>(sPrepared);
             sPrepared.clear();
+            // Marked before the release, which reports the page gone and has the host re-apply.
+            sLetGo.addAll(prepared);
             for (ImmersiveScene s : prepared) {
                 try {
                     s.release();
@@ -475,6 +481,40 @@ final class ImmersiveHost {
             Xp.log(TAG + "unlocked: " + prepared.size()
                     + " page(s) let go, prepared again on the next lock screen");
             apply();
+        }
+    };
+
+    /**
+     * Pages let go at an unlock and not back yet: the lock screen stays held for the open one as
+     * if its page were there, the way cover mode holds it across an unlock.
+     *
+     * Given back and taken again, the clock broke: the page comes back ~200ms into the doze, and
+     * a hold taken in a doze has no lock screen pose to keep, so the full-screen AOD showed the
+     * OEM's big clock over the map until the next wake (2026-09-30). Held throughout, the sleep
+     * takes the clock into the AOD in the cover pose as it does with the page up, and the page
+     * lands under it.
+     */
+    private static final Set<ImmersiveScene> sLetGo = new HashSet<>();
+
+    /**
+     * How long a let-go page has, from being asked for again, to come back before the lock screen
+     * is given back after all - a small clock over no page is the one thing worse than the bug.
+     */
+    private static final long PAGE_BACK_MS = 4000L;
+
+    private static final Runnable LET_GO_EXPIRED = new Runnable() {
+        @Override
+        public void run() {
+            boolean changed = false;
+            for (java.util.Iterator<ImmersiveScene> it = sLetGo.iterator(); it.hasNext(); ) {
+                ImmersiveScene s = it.next();
+                if (s.hasContent()) continue;
+                it.remove();
+                changed = true;
+                Xp.log(TAG + s.id() + ": page not back in " + PAGE_BACK_MS
+                        + "ms, lock screen given back");
+            }
+            if (changed) apply();
         }
     };
 
@@ -636,6 +676,7 @@ final class ImmersiveHost {
         // A copy: release() tells the host its page went, and the host looks at this set.
         List<ImmersiveScene> prepared = new ArrayList<>(sPrepared);
         sPrepared.clear();
+        sLetGo.clear();
         for (ImmersiveScene s : prepared) s.release();
         if (sVto != null && sVto.isAlive()) sVto.removeOnPreDrawListener(PRE_DRAW);
         sVto = null;
@@ -672,6 +713,10 @@ final class ImmersiveHost {
                         } catch (Throwable t) {
                             Xp.log(TAG + s.id() + " prepare failed: " + t);
                         }
+                        if (sLetGo.contains(s)) {
+                            sMain.removeCallbacks(LET_GO_EXPIRED);
+                            sMain.postDelayed(LET_GO_EXPIRED, PAGE_BACK_MS);
+                        }
                     }
                 }
             }
@@ -687,7 +732,9 @@ final class ImmersiveHost {
      */
     private static boolean apply() {
         ImmersiveScene open = sOpen;
-        boolean holding = open != null && !sYield && open.ready() && open.hasContent();
+        // A page let go at an unlock holds the lock screen until it is back - see sLetGo.
+        boolean holding = open != null && !sYield && open.ready()
+                && (open.hasContent() || sLetGo.contains(open));
         // A page fading out stays until its fade is over - as long as it still has a page and the
         // lock screen is still lit; an unlock or a doze in the middle of it is a cut.
         if (sLeaving != null && (holding || !sLeaving.ready() || !sLeaving.hasContent()
@@ -712,7 +759,8 @@ final class ImmersiveHost {
         }
         if (sSlot == null) return false;
         ImmersiveScene page = holding ? open : sLeaving;
-        boolean shown = page != null && mayShow();
+        // Held for a page on its way back is not a page to show.
+        boolean shown = page != null && page.hasContent() && mayShow();
         // The lit screen off the lock screen is the unlock, seen from here; back on it, the count
         // stops. See armRelease.
         if (!sPrepared.isEmpty()) {
@@ -980,6 +1028,7 @@ final class ImmersiveHost {
                 .append(" yield=").append(sYield)
                 .append(" coverOnWall=").append(sCoverOnWall)
                 .append(" holding=").append(sHolding)
+                .append(" letGo=").append(sLetGo.size())
                 .append(" shown=").append(sShown)
                 .append(" leaving=").append(sLeaving == null ? "-" : sLeaving.id())
                 .append(" fade=").append(sFade).append("->").append(sFadeTo)
