@@ -920,6 +920,8 @@ final class LockLyrics {
             sHolding = false;
             v.setKeepScreenOn(false);
         }
+        // With no view the tick stops and would never let the sensor go.
+        watchProximity(false);
         if (LyricWindow.owns(v)) {
             // The window's view is the window's: a new one comes with the next window.
             LyricWindow.remove();
@@ -1210,7 +1212,10 @@ final class LockLyrics {
         public void run() {
             LyricView v = sView;
             sTicking = v != null && v.isAttachedToWindow();
-            if (!sTicking) return;
+            if (!sTicking) {
+                watchProximity(false);
+                return;
+            }
             long delay = 1000L;
             holdScreen(v);
             updateHdr();
@@ -1569,12 +1574,57 @@ final class LockLyrics {
         // it while the display is dozing takes a screen wake lock and pulls the phone out of the
         // AOD at full brightness. Called from the tick, which never stops, so this would have
         // fired within a second of the screen going off.
-        boolean want = sKeepOn && wantsShown() && !inHeldAod()
+        boolean asked = sKeepOn && wantsShown() && !inHeldAod()
                 && !sLines.isEmpty() && playing();
+        // Not in a pocket or face down: with nothing to stop it, a song playing kept the screen
+        // lit and the lyrics drawing at 60Hz wherever the phone was put, for as long as it
+        // played. Covered, the lock screen's own 10s timeout takes it again.
+        watchProximity(asked);
+        boolean want = asked && !sCovered;
         if (want == sHolding) return;
         sHolding = want;
         v.setKeepScreenOn(want);
         Xp.log(TAG + (want ? "holding the screen on" : "screen may sleep again"));
+    }
+
+    private static android.hardware.SensorEventListener sProximity;
+    /** The proximity sensor reads near: the phone is in a pocket or face down. */
+    private static boolean sCovered;
+
+    /** Listens only while the screen is being held, so a sleeping phone keeps no sensor on. */
+    private static void watchProximity(boolean on) {
+        if (on == (sProximity != null)) return;
+        android.hardware.SensorManager sm = Main.sAppCtx == null ? null
+                : Main.sAppCtx.getSystemService(android.hardware.SensorManager.class);
+        if (sm == null) return;
+        if (!on) {
+            sm.unregisterListener(sProximity);
+            sProximity = null;
+            sCovered = false;
+            return;
+        }
+        final android.hardware.Sensor sensor =
+                sm.getDefaultSensor(android.hardware.Sensor.TYPE_PROXIMITY);
+        if (sensor == null) return;
+        sProximity = new android.hardware.SensorEventListener() {
+            @Override
+            public void onSensorChanged(android.hardware.SensorEvent e) {
+                // As the power manager reads it: near is anything short of the range, up to 5cm.
+                float d = e.values[0];
+                boolean near = d >= 0f && d < Math.min(sensor.getMaximumRange(), 5f);
+                if (near == sCovered) return;
+                sCovered = near;
+                Xp.log(TAG + "proximity " + (near ? "covered" : "clear"));
+                LyricView v = sView;
+                if (v != null) holdScreen(v);
+            }
+
+            @Override
+            public void onAccuracyChanged(android.hardware.Sensor s, int accuracy) {
+            }
+        };
+        sm.registerListener(sProximity, sensor,
+                android.hardware.SensorManager.SENSOR_DELAY_NORMAL, Main.main());
     }
 
     /** Whether the singing words should be drawn in HDR right now. */
