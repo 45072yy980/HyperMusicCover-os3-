@@ -709,7 +709,7 @@ final class ImmersiveHost {
         slot.setId(View.generateViewId());
         EdgeBlurView edge = new EdgeBlurView(root.getContext());
         edge.setId(View.generateViewId());
-        edge.setVisibility(View.INVISIBLE);
+        // Always shown: it clears itself with an empty band (EdgeBlurView.setBand).
         slot.addView(edge, new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
         View veil = new View(root.getContext());
@@ -841,9 +841,14 @@ final class ImmersiveHost {
         fade(page, shown);
         EdgeBlurView edge = sEdge;
         if (edge != null) {
-            if (shown) edge.setBand(page.sharpBand());
-            int ev = shown ? View.VISIBLE : View.INVISIBLE;
-            if (edge.getVisibility() != ev) edge.setVisibility(ev);
+            float[] band = shown ? page.sharpBand() : null;
+            // The page coming in has none: the one going out keeps its own until it has gone.
+            sEdgeFromSwap = band == null && swap != null && swap.sharpBand() != null;
+            if (sEdgeFromSwap) {
+                band = swap.sharpBand();
+                edge.setFade(sSwapFade);
+            }
+            edge.setBand(band);
         }
         boolean changed = false;
         // Only that page: a prepared page that is not the one on screen stays hidden.
@@ -1155,7 +1160,7 @@ final class ImmersiveHost {
                 .append(" fullDoze=").append(sFullDoze)
                 .append(" veil=").append(sVeil == null ? "-" : String.valueOf(sVeil.getAlpha()))
                 .append(" edge=").append(sEdge == null ? "-"
-                        : sEdge.unavailable() ? "unavailable" : sEdge.getVisibility() == View.VISIBLE ? "on" : "off")
+                        : sEdge.unavailable() ? "unavailable" : sEdge.hasBand() ? "on" : "off")
                 .append(" beat=").append(sTicking)
                 .append(" lifts=").append(sDozeLifts)
                 .append(" skips=").append(sDozeSkips);

@@ -63,9 +63,28 @@ final class EdgeBlurView extends View {
         if (same(top, mTop) && same(bottom, mBottom)) return;
         mTop = top;
         mBottom = bottom;
-        layoutStrips();
+        if (band == null) {
+            // Emptied and drawn once more, rather than hidden: hidden, the strips' regions stayed
+            // registered with SurfaceFlinger - 28 of them, radius up to 96px at full alpha across
+            // the top and bottom, still there with the countdown's page up (2026-09-30).
+            for (Drawable d : mStrips) {
+                d.setBounds(0, 0, 0, 0);
+                d.setAlpha(0);
+            }
+            mCleared = false;
+        } else {
+            layoutStrips();
+        }
         invalidate();
     }
+
+    /** Whether it is blurring anything: a page's band is set. */
+    boolean hasBand() {
+        return !Float.isNaN(mTop);
+    }
+
+    /** The emptied strips have been drawn once, which is what tells SurfaceFlinger. */
+    private boolean mCleared = true;
 
     /** The page's own opacity: the blur fades with it, or the wallpaper's edges would blur first. */
     void setFade(float fade) {
@@ -100,7 +119,14 @@ final class EdgeBlurView extends View {
 
     @Override
     protected void onDraw(Canvas canvas) {
-        if (Float.isNaN(mTop) || mFade <= 0f) return;
+        if (Float.isNaN(mTop)) {
+            if (!mCleared) {
+                for (Drawable d : mStrips) d.draw(canvas);
+                mCleared = true;
+            }
+            return;
+        }
+        if (mFade <= 0f) return;
         for (Drawable d : mStrips) d.draw(canvas);
     }
 
