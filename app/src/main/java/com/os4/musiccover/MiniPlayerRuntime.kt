@@ -2296,9 +2296,10 @@ private class MiniPlayerController(
             return
         }
         // The camera pushing on the row takes the small island back first: it is the row's end.
+        // A push on it moves it aside.
         val d = discDiameter().toFloat()
         val tx = smallRest[0] - fw / 2f - v.left - squeeze.rowGivePx(1) + smallDx + smallNudgeX() +
-            squeeze.smallShift() * d
+            squeeze.smallShift() * d + squeeze.smallPushPx()
         val ty = smallRest[1] - fh / 2f - v.top + smallNudgeY()
         // Flattened by the pill, by its shape - a scale would draw its edge jagged - when nothing
         // else is shaping it this frame.
@@ -7246,12 +7247,32 @@ private class MiniPlayerController(
         // pill's give snapped to its 6% cap in a single frame every time a pull reached the row's
         // end (measured 2026-09-29, `op mini` islandDrag: sq 0.999 -> 0.934 in 6ms, five pulls
         // running). The list's own idiom for a small island really there (showing).
-        val small = smallIsland?.takeIf { running == null && it.visibility == View.VISIBLE && swap == null &&
+        // The pill only meets it while it gives (setScene); a morph in the pill's place does not.
+        val small = smallIsland?.takeIf { it.visibility == View.VISIBLE && swap == null &&
             landingBox == null && (!smallGrowing || smallGrow.atRest()) }
             ?.let { CoverMorphMotion.Box(smallRest[0] - d / 2f + smallNudgeX(),
                 smallRest[1] - d / 2f + smallNudgeY(), d, d) }
-        squeeze.setScene(pill, running == null, disc(0), disc(1), small)
+        // Not the pill's, but no less in the way: a notification's island on its way up out of
+        // the row or down into it - a flight, the other half of a group, an exchange's movers -
+        // swept through the discs, the pill and the small island without touching them (reported
+        // 2026-09-30). It pushes each away from the place it leaves or comes home to, and not
+        // the one whose place that is: that one is its own.
+        squeezePushers.clear()
+        fun mover(m: MiniCardMorph?) {
+            if (m == null || m === running) return
+            val it = m.containerBox() ?: return
+            val box = CoverMorphMotion.Box(it.x - hostXY[0], it.y - hostXY[1], it.w, it.h)
+            val endX = m.miniEndBox()?.cx()?.minus(hostXY[0]) ?: box.cx()
+            fun away(b: CoverMorphMotion.Box?) = b != null && (endX < b.x || endX > b.x + b.w)
+            squeezePushers += MiniSqueeze.Pusher(box, endX, away(pill), away(small))
+        }
+        mover(morph)
+        mover(group?.follower)
+        exchange?.movers?.values?.forEach { if (it.morph !== morph) mover(it.morph) }
+        squeeze.setScene(pill, running == null, disc(0), disc(1), small, squeezePushers)
     }
+
+    private val squeezePushers = ArrayList<MiniSqueeze.Pusher>(4)
 
     /**
      * The button rides on its disc in its own slot: moved with it, and swollen or shrunk about
