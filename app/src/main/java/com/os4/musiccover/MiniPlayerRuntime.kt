@@ -6155,14 +6155,16 @@ private class MiniPlayerController(
         if (view.layoutParams.width != w || view.layoutParams.height != h) {
             view.layoutParams = view.layoutParams.apply { width = w; height = h }
         }
-        if (music != null) bindMusic(view, music, config) else bindNote(view, note!!, config)
+        traced("MC pf.bind") { if (music != null) bindMusic(view, music, config) else bindNote(view, note!!, config) }
         // Laid out here and now, not on the next pass: a flight is a new view each time, and
         // its morph waited for that pass - the row stood still under a finger already pulling
         // it down, and the flight then jumped to where the finger had got to (filmed 2026-09-25).
         if (!view.isLaidOut || view.isLayoutRequested || view.width != w || view.height != h) {
-            view.measure(View.MeasureSpec.makeMeasureSpec(w, View.MeasureSpec.EXACTLY),
-                View.MeasureSpec.makeMeasureSpec(h, View.MeasureSpec.EXACTLY))
-            view.layout(0, 0, w, h)
+            traced("MC pf.layout") {
+                view.measure(View.MeasureSpec.makeMeasureSpec(w, View.MeasureSpec.EXACTLY),
+                    View.MeasureSpec.makeMeasureSpec(h, View.MeasureSpec.EXACTLY))
+                view.layout(0, 0, w, h)
+            }
         }
         // Out of sight until its morph puts it where it starts.
         view.visibility = View.VISIBLE
@@ -7951,7 +7953,7 @@ private class MiniPlayerController(
         }
         // Active-session lists can be momentarily empty while a player advances its queue. Keep a
         // still-usable controller instead of flashing the vendor card during that bookkeeping gap.
-        val chosen = chooseController() ?: controller?.takeIf(::isUsable)
+        val chosen = traced("MC r.choose") { chooseController() ?: controller?.takeIf(::isUsable) }
         if (chosen?.sessionToken != controller?.sessionToken) {
             val previous = controller
             if (chosen == null && previous != null && !isUsable(previous)) {
@@ -7970,8 +7972,10 @@ private class MiniPlayerController(
             noteMorphKey == MUSIC_ISLAND || exchange?.has(MUSIC_ISLAND) == true
         // No music island without its card: a session outlives a dismissed card, and the row
         // kept an island for it that no card would ever be there to back.
-        val music = controller?.takeIf(::isUsable)?.takeIf { Main.miniPlayerMediaCardPresent() || musicMoving }
-        val notes = LockIslands.notes
+        val music = traced("MC r.music") {
+            controller?.takeIf(::isUsable)?.takeIf { Main.miniPlayerMediaCardPresent() || musicMoving }
+        }
+        val notes = traced("MC r.notes") { LockIslands.notes }
         // One island out as its card, the rest in the row (the super island's expanded state):
         // the music out as the media card leaves the row to the notifications. Alone, it keeps
         // the row as it always has - the card or the pill, one or the other. Moving between
@@ -8047,12 +8051,14 @@ private class MiniPlayerController(
         // after the notification had landed there (2026-09-25).
         val note = notes.firstOrNull { it.key == selected }
             ?: selected.takeIf { it != MUSIC_ISLAND }?.let(LockIslands::noteFor)
-        if (note == null && music != null) bindMusic(view, music, config)
-        else if (note != null) bindNote(view, note, config)
+        traced("MC r.bind") {
+            if (note == null && music != null) bindMusic(view, music, config)
+            else if (note != null) bindNote(view, note, config)
+        }
         pillShowsMusic = note == null && music != null
         // After the small island is chosen: whether the music is it decides its picture's bridge.
         updateSmallIsland(music, notes)
-        applyArtBridge()
+        traced("MC r.artBridge") { applyArtBridge() }
         updateVisibility()
         schedulePosition()
         prewarmSpares()
@@ -8098,7 +8104,7 @@ private class MiniPlayerController(
         showTimer(view, null)
         showFocusAnim(view, null, null)
         val metadata = metadataOf(current)
-        val shown = thumbnailFor(musicCover(metadata), view)
+        val shown = traced("MC b.thumb") { thumbnailFor(musicCover(metadata), view) }
         view.setToggleShown(true)
         view.bind(
             metadata?.getString(MediaMetadata.METADATA_KEY_TITLE).orEmpty().ifBlank { "正在播放" },

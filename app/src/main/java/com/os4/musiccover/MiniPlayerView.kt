@@ -179,7 +179,7 @@ internal class MiniPlayerView(context: Context) : FrameLayout(context) {
         skipNext: () -> Unit,
         showNative: () -> Unit,
         openCover: () -> Unit,
-    ) {
+    ) { android.os.Trace.beginSection("MC v.bind"); try {
         val appearance = "$config|$material"
         if (lastAppearance != appearance) {
             lastAppearance = appearance
@@ -230,7 +230,7 @@ internal class MiniPlayerView(context: Context) : FrameLayout(context) {
         onNext = skipNext
         onShowNative = showNative
         onOpenCover = openCover
-    }
+    } finally { android.os.Trace.endSection() } }
 
     /**
      * Only taps reach the pill itself. Every drag - any direction - belongs to
