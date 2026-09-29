@@ -1790,6 +1790,8 @@ private class MiniPlayerController(
     private var followPillFade = 1f
 
     private val hostInverse = Matrix()
+    private val discToScreen = Matrix()
+    private val discInverse = Matrix()
     private val scratch = Matrix()
     private val pillSqueeze = Matrix()
     private val drawnL = FloatArray(2)
@@ -1800,11 +1802,11 @@ private class MiniPlayerController(
     private val lastFollow = FloatArray(9)
 
     /** A view's centre as drawn, every ancestor's transform included, in host pixels. */
-    private fun drawnCentre(v: View, out: FloatArray): Boolean {
+    private fun drawnCentre(v: View, out: FloatArray, inverse: Matrix = hostInverse): Boolean {
         if (!v.isAttachedToWindow || v.width <= 0) return false
         scratch.reset()
         v.transformMatrixToGlobal(scratch)
-        scratch.postConcat(hostInverse)
+        scratch.postConcat(inverse)
         out[0] = v.width / 2f
         out[1] = v.height / 2f
         scratch.mapPoints(out)
@@ -6592,7 +6594,10 @@ private class MiniPlayerController(
         val frame = discFrame(d)
         followHost.reset()
         host.transformMatrixToGlobal(followHost)
-        val placed = followHost.invert(hostInverse)
+        val parent = discParent()
+        discToScreen.reset()
+        parent.transformMatrixToGlobal(discToScreen)
+        val placed = followHost.invert(hostInverse) && discToScreen.invert(discInverse)
         for (side in 0..1) {
             val button = button(side)
             val shown = placed && discsWanted && button.isShown && button.width > 0 && button.height > 0
@@ -6605,7 +6610,10 @@ private class MiniPlayerController(
             if (disc == null) {
                 disc = ShortcutDisc(context)
                 discs[side] = disc
-                host.addView(disc, lockScreenLayerSlot(), ViewGroup.LayoutParams(frame, frame))
+            }
+            if (!discInPlace(disc, parent)) {
+                (disc.parent as? ViewGroup)?.removeView(disc)
+                parent.addView(disc, layerSlot(parent), ViewGroup.LayoutParams(frame, frame))
             }
             if (disc.layoutParams.width != frame || disc.layoutParams.height != frame) {
                 disc.layoutParams = disc.layoutParams.apply { width = frame; height = frame }
@@ -6619,13 +6627,19 @@ private class MiniPlayerController(
         for (side in 0..1) {
             val button = button(side)
             val disc = discs[side]?.takeIf { it.visibility == View.VISIBLE } ?: continue
-            if (!drawnCentre(button, discPoint)) continue
-            val zoom = drawnZoom(button)
+            // In the disc's own parent's pixels: whatever that parent is doing - the doze's zoom
+            // on keyguard_root_view - the disc is already drawn with.
+            if (!drawnCentre(button, discPoint, discInverse)) continue
+            val zoom = drawnZoom(button, discInverse)
             val outward = if (side == 0) -1f else 1f
             val cx = discPoint[0] + outward * squeeze.discShift(side) * d * zoom
+            // The doze's "gone" is judged on the fade on screen; what is written is the part
+            // below the parent, which applies the rest itself.
+            val fade = if (unheldInDoze(chainFade(button)) == 0f) 0f
+                else chainFade(button, disc.parent as? View ?: host)
             // Placed and zoomed with the button; its squeeze is its shape, at its own pixels.
             setIfChanged(disc, cx - frame / 2f - disc.left, discPoint[1] - frame / 2f - disc.top,
-                zoom, zoom, unheldInDoze(chainFade(button)))
+                zoom, zoom, fade)
             disc.setShape((d * squeeze.discScaleX(side)).roundToInt().coerceIn(1, frame),
                 (d * squeeze.discScaleY(side)).roundToInt().coerceIn(1, frame))
             squeezeButton(side, button, d)
@@ -6780,10 +6794,10 @@ private class MiniPlayerController(
     }
 
     /** How much a view is scaled on screen, every ancestor's transform included. */
-    private fun drawnZoom(v: View): Float {
+    private fun drawnZoom(v: View, inverse: Matrix = hostInverse): Float {
         scratch.reset()
         v.transformMatrixToGlobal(scratch)
-        scratch.postConcat(hostInverse)
+        scratch.postConcat(inverse)
         discUnit[0] = 0f
         discUnit[1] = 0f
         discUnit[2] = 1f
@@ -6804,10 +6818,10 @@ private class MiniPlayerController(
     private fun unheldInDoze(fade: Float): Float =
         if (MiniPlayerScene.aodActive && !holdButtons && fade < DOZE_GONE) 0f else fade
 
-    private fun chainFade(v: View): Float {
+    private fun chainFade(v: View, upTo: View = host): Float {
         var fade = 1f
         var cur: View? = v
-        while (cur != null && cur !== host) {
+        while (cur != null && cur !== upTo && cur !== host) {
             fade *= cur.alpha * cur.transitionAlpha
             cur = cur.parent as? View
         }
@@ -6827,7 +6841,7 @@ private class MiniPlayerController(
         squeeze.reset()
         for (side in 0..1) {
             clearButtonSqueeze(side)
-            discs[side]?.let { runCatching { host.removeView(it) } }
+            discs[side]?.let { d -> runCatching { (d.parent as? ViewGroup)?.removeView(d) } }
             discs[side] = null
         }
     }
@@ -7325,17 +7339,52 @@ private class MiniPlayerController(
         return if (at >= host.childCount) at else at + 1
     }
 
-    /** The lock screen's own layer in the host; the discs go right before it, under the buttons. */
-    private fun lockScreenLayerSlot(): Int {
+    /** The lock screen's own layer in the host. */
+    private fun lockScreenLayerSlot(): Int = layerSlot(host)
+
+    /** Where in [parent] the child holding the buttons is: the discs go right before it. */
+    private fun layerSlot(parent: ViewGroup): Int {
         var v: View = left
         while (true) {
-            val parent = v.parent as? View ?: return host.childCount
-            if (parent === host) {
-                val at = host.indexOfChild(v)
-                return if (at < 0) host.childCount else at
+            val up = v.parent as? View ?: return parent.childCount
+            if (up === parent) {
+                val at = parent.indexOfChild(v)
+                return if (at < 0) parent.childCount else at
             }
-            v = parent
+            v = up
         }
+    }
+
+    /**
+     * The discs' parent: keyguard_root_view, not the window root, when the buttons are in it.
+     *
+     * Under the buttons is not enough - the lock screen's depth cut-out (the wallpaper's subject,
+     * deducted_image_view in keyguard_panel_view) is drawn in keyguard_root_view too, after
+     * everything before that view in the root and before the buttons' keyguard_bottom_area. A disc
+     * in the root, right before keyguard_root_view, was drawn under the subject: wherever the
+     * subject reached the torch or the camera, that part of the disc was gone and the icon sat on
+     * the picture (#18, measured: the disc's pixels over the subject equal the subject's). Right
+     * before the buttons' own branch in keyguard_root_view it is over the subject and under the
+     * icon, and otherwise stacked exactly as the buttons are, the shade's blur included.
+     */
+    private fun discParent(): ViewGroup {
+        val root = followRoot?.get() as? ViewGroup ?: return host
+        var v: View? = left
+        while (v != null && v !== host) {
+            if (v === root) return root
+            v = v.parent as? View
+        }
+        return host
+    }
+
+    /** Right before the buttons' branch in [parent], with nothing but the other disc between. */
+    private fun discInPlace(disc: View, parent: ViewGroup): Boolean {
+        if (disc.parent !== parent) return false
+        val slot = layerSlot(parent)
+        val at = parent.indexOfChild(disc)
+        if (at < 0 || at >= slot) return false
+        for (i in at + 1 until slot) if (parent.getChildAt(i) !is ShortcutDisc) return false
+        return true
     }
 
     /** The torch's right edge or the camera's left edge, where the pill's touch area stops. */
