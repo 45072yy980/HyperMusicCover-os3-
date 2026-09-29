@@ -111,6 +111,9 @@ final class ImmersiveHost {
     /** PowerManager.DRAW_WAKE_LOCK, which the SDK hides. SystemUI holds DEVICE_POWER. */
     private static final int DRAW_WAKE_LOCK = 0x80;
 
+    /** The slot's Z in the window root: under anything the row lowers (MiniPlayerRuntime's -1). */
+    private static final float SLOT_Z = -10f;
+
     private static final Handler sMain = new Handler(Looper.getMainLooper());
 
     /**
@@ -721,6 +724,12 @@ final class ImmersiveHost {
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
         ((ViewGroup) root).addView(slot, 0, new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+        // First to draw by Z too, not only by index: the row puts an island headed for the small
+        // island's place at Z -1 to pass under the pill, which drew it before this slot - and the
+        // page's SurfaceView, punching its hole through the window here, erased it. The small
+        // island stood empty for the last ~0.3s of every switch with the map up (filmed and
+        // traced 2026-09-30: the mover home at p=0.01, alpha 1, and nothing on screen).
+        slot.setTranslationZ(SLOT_Z);
         sSlot = slot;
         sEdge = edge;
         sVeil = veil;
