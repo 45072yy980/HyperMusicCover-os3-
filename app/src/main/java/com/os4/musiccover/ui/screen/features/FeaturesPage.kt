@@ -502,6 +502,7 @@ private fun LyricsGroup(
         )
         SwitchPreference(
             title = stringResource(R.string.lyrics_hdr),
+            summary = stringResource(R.string.lyrics_hdr_summary),
             checked = module.lyricsHdr,
             enabled = enabled,
             onCheckedChange = {
