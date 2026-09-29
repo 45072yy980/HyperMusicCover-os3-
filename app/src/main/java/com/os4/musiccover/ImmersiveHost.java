@@ -3,6 +3,7 @@ package com.os4.musiccover;
 import android.animation.ValueAnimator;
 import android.content.Context;
 import android.graphics.Color;
+import android.hardware.display.DisplayManager;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.PowerManager;
@@ -77,7 +78,10 @@ import java.util.Set;
  *
  * The doze: some ten seconds in, the AOD puts the display in DOZE_SUSPEND, where the panel repeats
  * its last frame and new ones never reach it. A DRAW_WAKE_LOCK lifts it back to DOZE while it is
- * held (see LockLyrics.drawStill, which does this per lyric line). A page drawn in another process
+ * held (see LockLyrics.drawStill, which does this per lyric line). Each lift is that recipe, not a
+ * fixed hold: take the lock, wait for DOZE, draw one frame, let go when it is committed (lift). A
+ * page drawn here lifts when it redraws, which is when its picture changes - ColorOS's AOD does
+ * the same, per view invalidation (AODDisplayUtil.AODViewClient). A page drawn in another process
  * never says when it changes, so for a scene that asks, the display is let up on a beat.
  *
  * Probe: {@code op immersive [--es id <scene>] [--es do state|open|close|arm|disarm|rowtap]}.
@@ -105,9 +109,23 @@ final class ImmersiveHost {
     private static final float DOZE_VEIL = 0.6f;
     private static final long VEIL_MS = 300L;
 
-    /** The doze's beat: how often the display is let up for the page, and for how long. */
+    /** The doze's beat, for a page drawn in another process: how often the display is let up. */
     private static final long DOZE_TICK_MS = 1000L;
-    private static final long DOZE_LOCK_MS = 300L;
+
+    /**
+     * One lift, as LockLyrics measured it (2026-09-24): DOZE arrives 10-54ms after the lock, a
+     * frame is on the panel 10-20ms after it is ready, and holding a fixed 300ms instead cost about
+     * 60mA. The lock's own timeout is for whatever step fails to happen; the fallback draws if
+     * DOZE has not been seen by then, and that frame does not end the lift early.
+     */
+    private static final long LIFT_MAX_MS = 400L;
+    private static final long LIFT_FALLBACK_MS = 100L;
+    private static final long LIFT_PANEL_MS = 40L;
+    /**
+     * After our frame, for a page another process draws: our frame makes the composition that
+     * shows its last buffer, and a map that is still moving gets about two more in at 60Hz.
+     */
+    private static final long LIFT_REMOTE_MS = 80L;
     /** PowerManager.DRAW_WAKE_LOCK, which the SDK hides. SystemUI holds DEVICE_POWER. */
     private static final int DRAW_WAKE_LOCK = 0x80;
 
@@ -193,6 +211,15 @@ final class ImmersiveHost {
 
     private static PowerManager.WakeLock sDrawLock;
     private static boolean sTicking;
+    private static boolean sDisplayWatched;
+    /** The lift in progress: the view that draws its frame, and how far it has got. */
+    private static View sLiftView;
+    private static boolean sLiftUp;
+    private static boolean sLiftDrawnUp;
+    private static long sLiftAt;
+    private static long sLiftUpMs;
+    /** For the probe: the last lift, "up@ms rel@ms" after the lock. */
+    private static String sLastLift = "-";
     /** For the probe: beats that let the display up, and ones that found it off. */
     private static int sDozeLifts, sDozeSkips;
 
@@ -1088,39 +1115,153 @@ final class ImmersiveHost {
     }
 
     /**
-     * One beat of the doze. Only a display that is dozing is let up: one the proximity sensor has
-     * turned OFF would be turned back on by the lock, which is the pocket the AOD went dark for.
-     * The frames stop the beat when they see the screen lit; this checks too, because in
-     * DOZE_SUSPEND there are no frames.
+     * One beat of the doze, for a page drawn in another process. Our own frame is what it lifts
+     * with - the veil, invalidated - since a composition is what puts the other process's buffer
+     * on the panel. The frames stop the beat when they see the screen lit; this checks too,
+     * because in DOZE_SUSPEND there are no frames.
      */
     private static final Runnable DOZE_TICK = new Runnable() {
         @Override
         public void run() {
-            FrameLayout slot = sSlot;
-            if (slot == null || !sShown || screenOn()) {
+            if (sSlot == null || !sShown || screenOn()) {
                 sTicking = false;
                 return;
             }
-            Display d = slot.getDisplay();
-            int st = d == null ? -1 : d.getState();
-            if (st == Display.STATE_DOZE || st == Display.STATE_DOZE_SUSPEND) {
-                try {
-                    if (sDrawLock == null) {
-                        PowerManager pm = slot.getContext().getSystemService(PowerManager.class);
-                        sDrawLock = pm.newWakeLock(DRAW_WAKE_LOCK, "MusicCover:immersiveDraw");
-                        sDrawLock.setReferenceCounted(false);
-                    }
-                    sDrawLock.acquire(DOZE_LOCK_MS);
-                    sDozeLifts++;
-                } catch (Throwable t) {
-                    Xp.log(TAG + "draw wake lock failed: " + t);
-                }
-            } else {
-                sDozeSkips++;
-            }
+            lift(sVeil);
             sMain.postDelayed(this, DOZE_TICK_MS);
         }
     };
+
+    /**
+     * Lets one frame of the page through the doze, drawn by {@code drawer}: the lock, then the
+     * drawer's invalidate once the display is in DOZE, then the lock let go once that frame is
+     * committed and the panel has had it. Only a display that is dozing is let up: one the
+     * proximity sensor has turned OFF would be turned back on by the lock, which is the pocket the
+     * AOD went dark for.
+     *
+     * Returns whether a frame is coming. False: the page is not up in a doze, and whoever asked
+     * asks again later rather than waiting on a draw that will not happen.
+     */
+    static boolean lift(View drawer) {
+        FrameLayout slot = sSlot;
+        if (slot == null || drawer == null || !drawer.isAttachedToWindow() || !sShown
+                || screenOn()) {
+            return false;
+        }
+        Display d = slot.getDisplay();
+        int st = d == null ? -1 : d.getState();
+        // The doze's first seconds keep the display ON: every frame reaches it, no lock needed.
+        if (st == Display.STATE_ON) {
+            drawer.invalidate();
+            return true;
+        }
+        if (st != Display.STATE_DOZE && st != Display.STATE_DOZE_SUSPEND) {
+            sDozeSkips++;
+            return false;
+        }
+        watchDisplay(slot.getContext());
+        try {
+            if (sDrawLock == null) {
+                PowerManager pm = slot.getContext().getSystemService(PowerManager.class);
+                sDrawLock = pm.newWakeLock(DRAW_WAKE_LOCK, "MusicCover:immersiveDraw");
+                sDrawLock.setReferenceCounted(false);
+            }
+            sDrawLock.acquire(LIFT_MAX_MS);
+            sDozeLifts++;
+        } catch (Throwable t) {
+            // Drawn all the same: whatever lifts the display next shows it.
+            Xp.log(TAG + "draw wake lock failed: " + t);
+        }
+        sLiftView = drawer;
+        sLiftAt = SystemClock.uptimeMillis();
+        sLiftUpMs = -1L;
+        sLiftDrawnUp = false;
+        sMain.removeCallbacks(LIFT_FALLBACK);
+        sMain.removeCallbacks(LIFT_RELEASE);
+        // Already up - the AOD's own lock can be holding it there - or not yet, in which case the
+        // display listener draws the moment it is.
+        sLiftUp = st == Display.STATE_DOZE;
+        if (sLiftUp) {
+            sLiftUpMs = 0L;
+            liftFrame();
+        } else {
+            sMain.postDelayed(LIFT_FALLBACK, LIFT_FALLBACK_MS);
+        }
+        return true;
+    }
+
+    /**
+     * The lift's frame. Only one drawn with the display up lets the lock go early; the fallback's
+     * may never have reached the panel, so after it the lift waits for DOZE and draws again, or
+     * runs out.
+     */
+    private static void liftFrame() {
+        View v = sLiftView;
+        if (v == null || !v.isAttachedToWindow() || sLiftDrawnUp) return;
+        final boolean up = sLiftUp;
+        sLiftDrawnUp = up;
+        sMain.removeCallbacks(LIFT_FALLBACK);
+        final long hold = v == sVeil ? LIFT_REMOTE_MS : LIFT_PANEL_MS;
+        v.getViewTreeObserver().registerFrameCommitCallback(new Runnable() {
+            @Override
+            public void run() {
+                if (!up) return;
+                sMain.removeCallbacks(LIFT_RELEASE);
+                sMain.postDelayed(LIFT_RELEASE, hold);
+            }
+        });
+        v.invalidate();
+    }
+
+    private static final Runnable LIFT_FALLBACK = new Runnable() {
+        @Override
+        public void run() {
+            liftFrame();
+        }
+    };
+
+    private static final Runnable LIFT_RELEASE = new Runnable() {
+        @Override
+        public void run() {
+            PowerManager.WakeLock l = sDrawLock;
+            if (l != null && l.isHeld()) l.release();
+            sLastLift = "up@" + sLiftUpMs + " rel@" + (SystemClock.uptimeMillis() - sLiftAt);
+            sLiftView = null;
+        }
+    };
+
+    /** DOZE arriving under our lock is when the lift draws. */
+    private static void watchDisplay(Context ctx) {
+        if (sDisplayWatched) return;
+        try {
+            DisplayManager dm = ctx.getSystemService(DisplayManager.class);
+            dm.registerDisplayListener(new DisplayManager.DisplayListener() {
+                @Override
+                public void onDisplayAdded(int id) {
+                }
+
+                @Override
+                public void onDisplayRemoved(int id) {
+                }
+
+                @Override
+                public void onDisplayChanged(int id) {
+                    FrameLayout slot = sSlot;
+                    Display d = slot == null ? null : slot.getDisplay();
+                    if (d == null || d.getDisplayId() != id) return;
+                    if (d.getState() == Display.STATE_DOZE && !sLiftUp && sLiftView != null
+                            && sDrawLock != null && sDrawLock.isHeld()) {
+                        sLiftUp = true;
+                        sLiftUpMs = SystemClock.uptimeMillis() - sLiftAt;
+                        liftFrame();
+                    }
+                }
+            }, sMain);
+            sDisplayWatched = true;
+        } catch (Throwable t) {
+            Xp.log(TAG + "display listener failed: " + t);
+        }
+    }
 
     // ---------------------------------------------------------------- probe
 
@@ -1172,7 +1313,8 @@ final class ImmersiveHost {
                         : sEdge.unavailable() ? "unavailable" : sEdge.hasBand() ? "on" : "off")
                 .append(" beat=").append(sTicking)
                 .append(" lifts=").append(sDozeLifts)
-                .append(" skips=").append(sDozeSkips);
+                .append(" skips=").append(sDozeSkips)
+                .append(" lastLift=").append(sLastLift);
         if (sSlot != null && sSlot.getDisplay() != null) {
             sb.append(" display=").append(sSlot.getDisplay().getState());
         }

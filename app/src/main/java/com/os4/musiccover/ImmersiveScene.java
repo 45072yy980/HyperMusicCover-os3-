@@ -65,7 +65,7 @@ interface ImmersiveScene {
     /**
      * Whether the full-screen doze has to let the display up on a beat for this page to move.
      * True for a page drawn in another process, which never says when its picture changes; a
-     * page drawn here redraws itself the way the lyrics do.
+     * page drawn here lets the display up itself when it redraws (ImmersiveHost.lift).
      */
     boolean needsDozeBeat();
 

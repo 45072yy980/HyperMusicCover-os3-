@@ -207,10 +207,13 @@ final class CountdownScene implements ImmersiveScene {
         ImmersiveHost.contentChanged(this);
     }
 
-    /** The seconds move in the doze too, and the doze only shows a frame when let up. */
+    /**
+     * No beat: the seconds move in the doze too, and each redraw lets the display up for itself
+     * (ImmersiveHost.lift), so the lift and the new second are one wake-up, not two out of step.
+     */
     @Override
     public boolean needsDozeBeat() {
-        return true;
+        return false;
     }
 
     /** Nothing blurred: the wallpaper is the page's ground. */
@@ -468,6 +471,8 @@ final class CountdownScene implements ImmersiveScene {
         void setDozing(boolean dozing) {
             if (mDozing == dozing) return;
             mDozing = dozing;
+            removeCallbacks(mRedraw);
+            removeCallbacks(mDozeTick);
             invalidate();
         }
 
@@ -708,14 +713,48 @@ final class CountdownScene implements ImmersiveScene {
          * per pixel of the ring's circumference, at most once a second.
          */
         private void scheduleNext(LockIslands.Timer t, long total, long left, long now) {
+            // One pending at a time, either way: a lift's fallback frame and its real one both
+            // come through here.
+            removeCallbacks(mRedraw);
+            removeCallbacks(mDozeTick);
             if (t == null || !t.getRunning() || left <= 0L || !isShown()) return;
             float circumference = (float) (2 * Math.PI * mR);
             long perPixel = circumference > 0f ? (long) (total / circumference) : 16L;
             long toSecond = left % 1000L;
             if (toSecond == 0L) toSecond = 1000L;
-            long delay = Math.max(16L, Math.min(Math.min(perPixel, 1000L), toSecond + 5L));
-            if (mDozing) delay = toSecond + 5L;
-            postInvalidateDelayed(delay);
+            if (mDozing) {
+                postDelayed(mDozeTick, toSecond + 5L);
+                return;
+            }
+            postDelayed(mRedraw, Math.max(16L, Math.min(Math.min(perPixel, 1000L), toSecond + 5L)));
+        }
+
+        private final Runnable mRedraw = new Runnable() {
+            @Override
+            public void run() {
+                invalidate();
+            }
+        };
+
+        /**
+         * The next second in the doze: the host lets the display up and asks for the frame once
+         * it is. Not up - the AOD gone dark, the page not shown - is looked at again a second on,
+         * since no frame is coming to carry on from.
+         */
+        private final Runnable mDozeTick = new Runnable() {
+            @Override
+            public void run() {
+                // Hidden, or out of the doze: whatever shows it again draws, and that carries on.
+                if (!mDozing || !isShown()) return;
+                if (!ImmersiveHost.lift(CountdownView.this)) postDelayed(this, 1000L);
+            }
+        };
+
+        @Override
+        protected void onDetachedFromWindow() {
+            removeCallbacks(mRedraw);
+            removeCallbacks(mDozeTick);
+            super.onDetachedFromWindow();
         }
 
         /** HH:MM:SS, the seconds rounded up as the app does: 0.4s left reads 00:00:01. */
