@@ -462,6 +462,13 @@ public class Main extends XposedModule {
      * one thing that ends music mode.
      */
     private static volatile boolean sCardShowing;
+    /**
+     * The card is there for the row of islands: up at once, gone only once "gone" has stood for
+     * CARD_GONE_MS, in either mode. sCardShowing follows the OEM straight away without automatic
+     * cover mode, and a track change is a removal and an add - the islands would lose the music
+     * for every skip.
+     */
+    private static volatile boolean sCardPresent;
     /** False until the card hook has fired once, so a restart does not act on an unknown state. */
     private static volatile boolean sCardKnown;
     /** The session the card itself is bound to - exact, where pickController() only guesses. */
@@ -6475,6 +6482,13 @@ public class Main extends XposedModule {
     }
 
     /**
+     * The media card is there to be the music's card (sCardPresent). A session outlives its
+     * card: dismissed, the music still read as usable, the row waited on a card that would
+     * never come and took the notifications' islands down with it.
+     */
+    static boolean miniPlayerMediaCardPresent() { return sCardPresent; }
+
+    /**
      * The same for a row with no music in it, only notifications: there is no media card to be
      * up, only the lock screen, and no cover scene over it.
      */
@@ -7936,7 +7950,11 @@ public class Main extends XposedModule {
      * getLeft()/getTop() sidesteps the artwork's matrix while still picking up every ancestor's.
      */
     private static final int SWIPE_NONE = 0, SWIPE_FIRED = 1, SWIPE_HELD = 2;
-    private static boolean sCardSwipeArmed, sCardSwipeFired;
+    private static boolean sCardSwipeFired;
+    /** The pull down, told apart from a scroll of the lock screen's list (#12). */
+    private static final MiniPlayerCollapseGesture sCardCollapse = new MiniPlayerCollapseGesture();
+    /** Started on the card or a let-out row; the landing pin let go once it scrolls instead. */
+    private static boolean sCardScrollTarget, sCardPinReleased;
     /**
      * The fired swipe is the keyguard's too: it goes on reaching the stack, which folds its
      * notifications away under the same pull, as it did before there was a pill to go back to.
@@ -7957,19 +7975,25 @@ public class Main extends XposedModule {
                 sCardSwipeFired = false;
                 sCardSwipeShared = false;
                 sCardSwipeRow = null;
-                sCardSwipeArmed = MiniPlayerRuntime.wantsNativeCardSwipe()
+                sCardPinReleased = false;
+                boolean onCard = MiniPlayerRuntime.wantsNativeCardSwipe()
                         && !sGestureOnCentre && !sGestureOnCharge
                         && cardRectContains(ev.getRawX(), ev.getRawY());
-                if (!sCardSwipeArmed && !sGestureOnCentre && !sGestureOnCharge) {
+                if (!onCard && !sGestureOnCentre && !sGestureOnCharge) {
                     sCardSwipeRow = MiniPlayerRuntime.releasedRowAt(ev.getRawX(), ev.getRawY());
-                    sCardSwipeArmed = sCardSwipeRow != null;
                 }
+                sCardScrollTarget = onCard || sCardSwipeRow != null;
+                // A list scrolled away from its top is read back up by this gesture, not pulled
+                // home: the rest boundary is read here, once, for the whole of it.
+                boolean atTop = MiniPlayerRuntime.nativeStackAtTop(true);
+                sCardCollapse.start(sCardScrollTarget && atTop);
                 sCardSwipeX = ev.getRawX();
                 sCardSwipeY = ev.getRawY();
                 // For `op mini`: why a pull on the card did or did not take. A pull down in the
                 // cover once did nothing until the player was restarted (2026-09-25), and nothing
                 // said which of these it was.
-                MiniPlayerRuntime.noteTouch("card down armed=" + sCardSwipeArmed
+                MiniPlayerRuntime.noteTouch("card down armed=" + sCardCollapse.getArmed()
+                        + " top=" + atTop + " scroll=" + MiniPlayerRuntime.nativeScrollTrace()
                         + " want=" + MiniPlayerRuntime.wantsNativeCardSwipe()
                         + " centre=" + sGestureOnCentre + " charge=" + sGestureOnCharge
                         + " cover=" + sCoverMode + " card=" + describeCardRect()
@@ -7981,48 +8005,55 @@ public class Main extends XposedModule {
                     MiniPlayerRuntime.dragMove(ev);
                     return sCardSwipeShared ? SWIPE_NONE : SWIPE_HELD;
                 }
-                if (!sCardSwipeArmed) return SWIPE_NONE;
+                if (!sCardScrollTarget) return SWIPE_NONE;
                 float dx = ev.getRawX() - sCardSwipeX, dy = ev.getRawY() - sCardSwipeY;
                 float slop = android.view.ViewConfiguration.get(sAppCtx).getScaledTouchSlop();
-                if (Math.abs(dx) > slop && Math.abs(dx) >= Math.abs(dy)) {
-                    sCardSwipeArmed = false;
+                boolean pull = sCardCollapse.getArmed()
+                        && sCardCollapse.move(dx, dy, slop, MiniPlayerRuntime.nativeStackAtTop(false));
+                if (!pull) {
+                    // Scrolling it: a card held where it landed goes with the list from here,
+                    // or it stays behind while the rows around it move.
+                    if (!sCardPinReleased && Math.abs(dy) > slop && Math.abs(dy) > Math.abs(dx)) {
+                        sCardPinReleased = true;
+                        MiniPlayerRuntime.releaseNativeScrollPin();
+                    }
                     return SWIPE_NONE;
                 }
-                if (dy > slop && dy > Math.abs(dx) * 1.2f) {
-                    sCardSwipeArmed = false;
-                    sCardSwipeFired = true;
-                    sArtSwallow = false;
-                    if (sCardSwipeRow != null) {
-                        // A notification the row of islands let out goes back into it.
-                        String key = sCardSwipeRow;
-                        sCardSwipeRow = null;
-                        MiniPlayerRuntime.collapseRow(key, ev);
-                        return SWIPE_FIRED;
+                sCardSwipeFired = true;
+                sArtSwallow = false;
+                if (sCardSwipeRow != null) {
+                    // A notification the row of islands let out goes back into it. Refused
+                    // (a morph already going), the gesture is the list's.
+                    String key = sCardSwipeRow;
+                    sCardSwipeRow = null;
+                    if (!MiniPlayerRuntime.collapseRow(key, ev)) {
+                        sCardSwipeFired = false;
+                        return SWIPE_NONE;
                     }
-                    // With notifications to fold, the pull is not cancelled out from under the
-                    // stack, in the cover as out of it. Without any, it still is: there the
-                    // stack's own answer to a pull down is to start opening the shade.
-                    // Nor when the row of islands takes them: their rows come down with the card,
-                    // each into its own island, and folded they had nothing to come out of.
-                    sCardSwipeShared = keyguardCanFoldNotifications()
-                            && !MiniPlayerRuntime.islandsTakeRows();
-                    MiniPlayerRuntime.noteTouch("card swipe fired cover=" + sCoverMode
-                            + " shared=" + sCardSwipeShared);
-                    if (sCoverMode) {
-                        // Out of the cover or the lyrics, landing on the pill: the scene exit
-                        // shrinks the card into it.
-                        MiniPlayerRuntime.preferMini();
-                        MiniPlayerRuntime.rememberScene();
-                        exitFromTap("media card swiped down");
-                    } else if (!MiniPlayerRuntime.beginDrag(true, ev)) {
-                        // No geometry to pull: the switch still happens, on its own spring.
-                        MiniPlayerRuntime.onNativeCardSwipeDown();
-                    }
-                    Xp.log(TAG + "media card swiped down"
-                            + (sCardSwipeShared ? ", shared with the notification fold" : ""));
-                    return sCardSwipeShared ? SWIPE_NONE : SWIPE_FIRED;
+                    return SWIPE_FIRED;
                 }
-                return SWIPE_NONE;
+                // With notifications to fold, the pull is not cancelled out from under the
+                // stack, in the cover as out of it. Without any, it still is: there the
+                // stack's own answer to a pull down is to start opening the shade.
+                // Nor when the row of islands takes them: their rows come down with the card,
+                // each into its own island, and folded they had nothing to come out of.
+                sCardSwipeShared = keyguardCanFoldNotifications()
+                        && !MiniPlayerRuntime.islandsTakeRows();
+                MiniPlayerRuntime.noteTouch("card swipe fired cover=" + sCoverMode
+                        + " shared=" + sCardSwipeShared);
+                if (sCoverMode) {
+                    // Out of the cover or the lyrics, landing on the pill: the scene exit
+                    // shrinks the card into it.
+                    MiniPlayerRuntime.preferMini();
+                    MiniPlayerRuntime.rememberScene();
+                    exitFromTap("media card swiped down");
+                } else if (!MiniPlayerRuntime.beginDrag(true, ev)) {
+                    // No geometry to pull: the switch still happens, on its own spring.
+                    MiniPlayerRuntime.onNativeCardSwipeDown();
+                }
+                Xp.log(TAG + "media card swiped down"
+                        + (sCardSwipeShared ? ", shared with the notification fold" : ""));
+                return sCardSwipeShared ? SWIPE_NONE : SWIPE_FIRED;
             }
             case MotionEvent.ACTION_UP:
             case MotionEvent.ACTION_CANCEL: {
@@ -8031,7 +8062,9 @@ public class Main extends XposedModule {
                     MiniPlayerRuntime.dragEnd(ev,
                             ev.getActionMasked() == MotionEvent.ACTION_CANCEL);
                 }
-                sCardSwipeArmed = sCardSwipeFired = sCardSwipeShared = false;
+                sCardCollapse.reset();
+                sCardSwipeFired = sCardSwipeShared = false;
+                sCardScrollTarget = sCardPinReleased = false;
                 return held ? SWIPE_HELD : SWIPE_NONE;
             }
             default:
@@ -8769,6 +8802,9 @@ public class Main extends XposedModule {
         Xp.log(TAG + "media card " + (showing ? "-> " + sCardKey : "gone"));
         noteCard(showing ? "OEM says up" : "OEM says gone (waiting " + CARD_GONE_MS + "ms)");
         main().removeCallbacks(sCardGone);
+        main().removeCallbacks(sCardRemoved);
+        if (showing) sCardPresent = true;
+        else if (sCardPresent) main().postDelayed(sCardRemoved, CARD_GONE_MS);
         if (!sAuto) {
             sCardShowing = showing;
             MiniPlayerRuntime.refresh();
@@ -8790,6 +8826,15 @@ public class Main extends XposedModule {
             noteCard("gone stands, cover mode off");
             MiniPlayerRuntime.refresh();
             applyCardState();
+        }
+    };
+
+    /** The card dismissed with its session still alive: the islands let go of the music. */
+    private static final Runnable sCardRemoved = new Runnable() {
+        @Override
+        public void run() {
+            sCardPresent = false;
+            MiniPlayerRuntime.mediaCardRemoved();
         }
     };
 

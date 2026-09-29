@@ -384,10 +384,23 @@ internal object LockIslands {
         }
         lockedRun = true
         val note = read(entry, redacted(filterObject, entry)) ?: return false
-        pending[note.key] = note
         val out = if (note.focus) note.key in released else stackOut
-        return active && !out || cover && note.focus && !out
+        val kept = active && !out || cover && note.focus && !out
+        // A focus notification whose row is still being inflated has no template yet to say it
+        // shows in full: read now, it came up as the redacted "系统界面组件 / 你有一条新消息"
+        // with the plugin's icon, and turned into "手电筒 使用中" eight frames later (filmed
+        // 2026-09-29). Kept out of the stack but not an island until the inflation's own run.
+        if (note.focus && !rowInflated(entry)) return kept
+        pending[note.key] = note
+        return kept
     }
+
+    /** The entry's row is there with its content laid out. Unreadable counts as there. */
+    private fun rowInflated(entry: Any): Boolean = runCatching {
+        val row = Xp.getObjectField(entry, "row") ?: return false
+        val layout = Xp.callMethod(row, "getPrivateLayout") ?: return true
+        Xp.callMethod(layout, "getContractedChild") != null
+    }.getOrDefault(true)
 
     /**
      * Islands held through an unlock's fade-out go back the moment the lock screen is off the

@@ -6,6 +6,15 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class MiniPlayerPresentationPolicyTest {
+    @Test fun dismissedMediaCannotBlockAWaitingNotificationExchange() {
+        for (native in listOf(false, true)) for (cover in listOf(false, true)) {
+            assertFalse(MiniPlayerPresentationPolicy.mediaExpanded(false, true, false, native, cover))
+        }
+        assertTrue(MiniPlayerPresentationPolicy.mediaExpanded(true, true, false, true, false))
+        assertTrue(MiniPlayerPresentationPolicy.mediaExpanded(true, true, false, false, true))
+        assertFalse(MiniPlayerPresentationPolicy.mediaExpanded(true, true, true, true, true))
+    }
+
     private fun presentation(
         nativeRequested: Boolean = false,
         keyguardOwned: Boolean = true,
