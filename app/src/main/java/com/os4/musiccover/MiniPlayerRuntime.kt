@@ -1299,6 +1299,20 @@ object MiniPlayerRuntime {
     }
 
     /**
+     * Every time the pill went, and whether it went back into its circle or in one frame - with
+     * each thing that decides that - for `op mini`, first in it so a long reply cannot cut it off.
+     * Only one in so many went without its way back (2026-09-29), and not on demand.
+     */
+    private val goneLog = ArrayDeque<String>()
+
+    @JvmStatic fun noteGone(what: String) {
+        synchronized(goneLog) {
+            goneLog.addLast("${android.os.SystemClock.uptimeMillis() % 100000} $what")
+            while (goneLog.size > 12) goneLog.removeFirst()
+        }
+    }
+
+    /**
      * For `op rowtree --es key <part>`: every stack row whose key has [match] in it (all of them
      * for an empty one), laid out as the stack draws it - what a focus notification's row shows on
      * the lock screen, next to what its island does.
@@ -1308,7 +1322,8 @@ object MiniPlayerRuntime {
 
     /** For `op mini`: the pill, the card, and the torch button's chain as they are right now. */
     @JvmStatic fun describe(): String {
-        val sb = StringBuilder("material=$cardEffect gen=$materialGeneration same=$materialRepeats calls=${cardRecipe?.size} empty=$emptyEffect " +
+        val sb = StringBuilder("gone: " + synchronized(goneLog) { goneLog.joinToString(" ; ") } +
+            " || material=$cardEffect gen=$materialGeneration same=$materialRepeats calls=${cardRecipe?.size} empty=$emptyEffect " +
             "aod=${MiniPlayerScene.aodActive} ${describeAodDim()} || ${LockIslands.describe()} || clock: ${Main.roomTrace()} || touches: " +
             synchronized(touchLog) { touchLog.joinToString(" ; ") })
         synchronized(controllers) { controllers.values.toList() }.forEach { held ->
@@ -3051,22 +3066,73 @@ private class MiniPlayerController(
     private var appearing = false
     private var appearLast = 0L
 
+    /** Since when a pill whose island has gone has been waiting to be on screen to go back (updateVisibility). */
+    private var backWaitSince = 0L
+
+    /**
+     * The row the pill last stood for on screen; empty once its last island has gone. A pill
+     * shown again with this empty is a new row, and grows in even when the screen is not yet
+     * back to show it (appearFrame waits); one only hidden a while - the doze, a double press
+     * of the power key, the cover - keeps its row and comes back on the lock screen's own fade.
+     */
+    private var lastShownKeys: List<String> = emptyList()
+    private var growHeldSince = 0L
+
+    /** The clock going into the cover or out of it: the row is put away or brought back by that, not by its islands. */
+    private fun coverMoving(): Boolean = ClockCollapse.phase().let {
+        it == ClockCollapse.Phase.ENTER || it == ClockCollapse.Phase.EXIT
+    }
+
+    /** The pill is on screen enough to be seen changing: lit or held into the AOD, the keyguard staying. */
+    private fun pillSeen(): Boolean = !MiniPlayerScene.keyguardGoingAway && followPillFade > 0.5f &&
+        (Main.screenOnCached() || MiniPlayerScene.aodActive)
+
+    /** The way back as it was drawn, for its gone line: frames, frames the pill was in its morph, narrowest, start. */
+    private var backFrames = 0
+    private var backDrawn = 0
+    private var backMinW = Float.NaN
+    private var backStartedAt = 0L
+
     private val appearFrame = object : Choreographer.FrameCallback {
         override fun doFrame(frameTimeNanos: Long) { android.os.Trace.beginSection("MC appear"); try {
             if (!appearing) return
             val dt = if (appearLast == 0L) 1f / 120f
                 else ((frameTimeNanos - appearLast) / 1e9f).coerceIn(0f, 0.05f)
             appearLast = frameTimeNanos
-            appear.step(dt)
-            if (!applyAppear() || appear.atRest()) endAppear()
+            // A new row come up while the screen is still coming back: its circle fades in with
+            // the lock screen, and it grows once it can be seen doing so.
+            val held = appear.target == 1f && appear.value == 0f && !pillSeen() &&
+                android.os.SystemClock.uptimeMillis() - growHeldSince < BACK_WAIT_MS
+            if (!held) appear.step(dt)
+            val applied = applyAppear()
+            if (!applied && leaving()) MiniPlayerRuntime.noteGone("back cut at ${"%.2f".format(appear.value)}: ${quietWhy()}")
+            if (!applied || appear.atRest()) endAppear()
             else Choreographer.getInstance().postFrameCallback(this)
         } finally { android.os.Trace.endSection() } }
     }
 
     /** Nothing else has the pill's frame or is moving the row: a coming-up of its own is right. */
-    private fun rowQuiet(): Boolean = swap == null && morph == null && group == null && flight == null &&
-        exchange == null && noteMorphKey == null && pillLandingBox == null &&
+    private fun rowQuiet(): Boolean = !frameTaken() &&
         !rowHeldOff && followRowFade >= 0.99f && !MiniPlayerScene.aodActive
+
+    /** What keeps the row from being quiet, for `op mini`'s gone lines; "quiet" when nothing does. */
+    private fun quietWhy(): String = buildList {
+        if (swap != null) add("swap")
+        if (morph != null) add("morph")
+        if (group != null) add("group")
+        if (flight != null) add("flight")
+        if (exchange != null) add("exchange")
+        noteMorphKey?.let { add("noteMorph=${it.takeLast(6)}") }
+        if (pillLandingBox != null) add("landing")
+        if (rowHeldOff) add("heldOff")
+        if (followRowFade < 0.99f) add("fade=${"%.2f".format(followRowFade)}")
+        if (MiniPlayerScene.aodActive) add("aod")
+        if (player?.visibility != View.VISIBLE) add("vis=${player?.visibility}")
+    }.joinToString(",").ifEmpty { "quiet" }
+
+    /** Another motion is drawing the pill's frame, and ends its own morph when it is done. */
+    private fun frameTaken(): Boolean = swap != null || morph != null || group != null || flight != null ||
+        exchange != null || noteMorphKey != null || pillLandingBox != null
 
     /** Going back into nothing: set to GONE once it is there (endAppear). */
     private fun leaving(): Boolean = appearing && appear.target == 0f
@@ -3081,6 +3147,11 @@ private class MiniPlayerController(
         appear.value = 0f
         appear.velocity = 0f
         appear.target = 1f
+        backFrames = 0
+        backDrawn = 0
+        backMinW = Float.NaN
+        backStartedAt = android.os.SystemClock.uptimeMillis()
+        growHeldSince = backStartedAt
         view.beginMorph(layoutOnly = true)
         appearing = true
         appearLast = 0L
@@ -3105,8 +3176,17 @@ private class MiniPlayerController(
         val shown = selectedIsland ?: return false
         if (shown == MUSIC_ISLAND || shown in islandKeys || islandKeys.any { it != MUSIC_ISLAND }) return false
         if (player?.visibility != View.VISIBLE) return false
-        return islandKeys.isEmpty() || music != null && MiniPlayerRuntime.nativeRequested(music.sessionToken)
+        return islandKeys.isEmpty() || musicCarded(music)
     }
+
+    /**
+     * The music is out of the row as its card: the media card, or the cover - refresh's
+     * `carded`. The cover was left out here, so with a song on the cover the torch's island
+     * switched off handed the pill to the music, which the cover hides at once: every one went
+     * in a frame (2026-09-29, `op mini`: CUT sel=music cover=true after each).
+     */
+    private fun musicCarded(music: MediaController?): Boolean =
+        music != null && (MiniPlayerRuntime.nativeRequested(music.sessionToken) || Main.coverModeOn())
 
     private fun startDisappear() {
         val view = player ?: return
@@ -3122,13 +3202,19 @@ private class MiniPlayerController(
             Choreographer.getInstance().postFrameCallback(appearFrame)
         }
         appear.target = 0f
+        backFrames = 0
+        backDrawn = 0
+        backMinW = Float.NaN
+        backStartedAt = android.os.SystemClock.uptimeMillis()
         view.setInteractionsEnabled(false)
     }
 
     /** One frame of it; false when another motion has taken the frame (it is theirs from here). */
     private fun applyAppear(): Boolean {
         val view = player ?: return false
-        if (!rowQuiet() || view.visibility != View.VISIBLE) return false
+        // Cut only by a motion taking the frame. The doze, the wake's fade and the row held into
+        // the AOD only change how much of it is seen; cut by them, the pill went in a frame.
+        if (frameTaken() || view.visibility != View.VISIBLE) return false
         val rest = view.restBoxOnScreen() ?: return true
         val xy = IntArray(2).also(host::getLocationOnScreen)
         // The row as its own spring has it, grown from its left end.
@@ -3142,6 +3228,10 @@ private class MiniPlayerController(
         val h = (rest.h * (1f - squash)).coerceAtLeast(1f)
         val w = lerp(d, fullW, p).coerceAtLeast(h)
         val glass = if (leaving()) MiniCardMorph.smooth(0f, APPEAR_FADE_AT, p) else 1f
+        backFrames++
+        // setMorphFrame does nothing to a pill out of its morph: the way is then not drawn.
+        if (view.inMorph()) backDrawn++
+        if (backMinW.isNaN() || w < backMinW) backMinW = w
         view.setMorphFrame(CoverMorphMotion.Box(left, rest.y + (rest.h - h) / 2f, w, h), h / 2f, glass)
         view.setContentAlpha(MiniCardMorph.smooth(0.35f, 0.9f, p))
         return true
@@ -3150,6 +3240,9 @@ private class MiniPlayerController(
     private fun endAppear() {
         if (!appearing) return
         val left = appear.target == 0f
+        MiniPlayerRuntime.noteGone((if (left) "back" else "up") + " done ${android.os.SystemClock.uptimeMillis() - backStartedAt}ms " +
+            "frames=$backFrames drawn=$backDrawn minW=${if (backMinW.isNaN()) "-" else backMinW.toInt().toString()} " +
+            "at=${"%.2f".format(appear.value)} pill=${player?.let { "${it.visibility}/t${"%.2f".format(it.transitionAlpha)}/a${"%.2f".format(it.alpha)}" }}")
         appearing = false
         Choreographer.getInstance().removeFrameCallback(appearFrame)
         val view = player ?: return
@@ -3157,14 +3250,19 @@ private class MiniPlayerController(
         if (left) {
             // Gone back into nothing (or cut short there): the row is not there any more. The
             // pill still holds the notification it went with; the refresh puts the row as it now is.
+            lastShownKeys = emptyList()
             view.endMorph()
             view.visibility = View.GONE
             scheduleRefresh()
             return
         }
-        // Handed on: the row's spring, still running, draws the frame and ends the morph itself.
-        if (rowQuiet() && !rowAnimating) view.endMorph()
-        else if (rowAnimating && group == null && swap == null) applyRow()
+        // Handed on: the row's spring, still running, draws the frame and ends the morph itself;
+        // so does any other motion that has taken the frame. Cut short by anything else - the
+        // doze, the wake's fade, the row held off - nobody draws it again, and asked whether the
+        // row was quiet the pill was left as that frame had it: a circle's width with the title
+        // laid out past its end (screenshot 2026-09-29 20:20). It goes to its whole width.
+        if (rowAnimating && group == null && swap == null) applyRow()
+        else if (!frameTaken() && !rowAnimating) view.endMorph()
     }
 
     private fun applyRow() {
@@ -3779,6 +3877,9 @@ private class MiniPlayerController(
     /** The lead's progress the rows follow once it has landed, while they settle (pileSettle). */
     private var pileAt = 0f
 
+    /** When the rows were left to settle on their own (pileSettle), which gives up past PILE_SETTLE_MAX_MS. */
+    private var pileSettleSince = 0L
+
     /**
      * The stack island's other rows as its lead goes out to its row or comes home: each springs
      * out from under the island to where the stack draws it, or back, one after another - as
@@ -3937,6 +4038,15 @@ private class MiniPlayerController(
                 finishPile(true)
                 return
             }
+            // The rows are stepped only in the stack's own pre-draw. A stack that no longer
+            // draws - the lock screen gone, rebuilt, this runtime destroyed - never steps them
+            // home, and this asked for a frame every vsync for as long as SystemUI lived.
+            val stack = pileObserved
+            if (destroyed || stack?.isShown != true ||
+                android.os.SystemClock.uptimeMillis() - pileSettleSince > PILE_SETTLE_MAX_MS) {
+                finishPile(true)
+                return
+            }
             // Stepped and placed before the frame is drawn (pilePreDraw): this only asks for the frame.
             observePiles(true)
             pileObserved?.invalidate()
@@ -3968,6 +4078,7 @@ private class MiniPlayerController(
         pileAt = if (toRow) 1f else 0f
         if (toRow && piles.values.any { !it.out.atRest() || it.out.value != 1f }) {
             pileMoving = true
+            pileSettleSince = android.os.SystemClock.uptimeMillis()
             Choreographer.getInstance().removeFrameCallback(pileSettle)
             Choreographer.getInstance().postFrameCallback(pileSettle)
             return
@@ -6899,6 +7010,9 @@ private class MiniPlayerController(
     private val squeeze = MiniSqueeze(dp(MiniPlayerGeometry.DISC_GAP_DP).toFloat()) { onSqueezeFrame() }
     private val buttonSqueeze = arrayOf(Matrix(), Matrix())
     private val buttonSqueezeSet = BooleanArray(2)
+    /** What each button's matrix was last written as: a write invalidates the button, so only a change is written. */
+    private val buttonSqueezeLast = arrayOf(FloatArray(9), FloatArray(9))
+    private val buttonSqueezeValues = FloatArray(9)
     private val discPoint = FloatArray(2)
     private val discUnit = FloatArray(4)
     private val discRest = FloatArray(2)
@@ -7140,6 +7254,11 @@ private class MiniPlayerController(
         m.setScale(k, k, button.translationX + button.width / 2f,
             button.translationY + button.height / 2f)
         m.postTranslate(shift, 0f)
+        // A disc held flattened at rest is the same matrix every frame; written each time, it
+        // redrew the lock screen every vsync with nothing moving.
+        m.getValues(buttonSqueezeValues)
+        if (buttonSqueezeSet[side] && buttonSqueezeValues.contentEquals(buttonSqueezeLast[side])) return
+        System.arraycopy(buttonSqueezeValues, 0, buttonSqueezeLast[side], 0, 9)
         button.setAnimationMatrix(m)
         buttonSqueezeSet[side] = true
     }
@@ -7236,6 +7355,13 @@ private class MiniPlayerController(
         runCatching { controller?.unregisterCallback(mediaListener) }
         followLive(null)
         morph?.cancel()
+        if (piles.isNotEmpty() || pileMoving) finishPile(true)
+        // Each of these ends itself once its own state has, but some wait on a frame of a tree
+        // this runtime no longer watches: gone with it, not left asking for vsyncs.
+        Choreographer.getInstance().let { c ->
+            listOf(pulseFrame, smallNudgeFrame, swapFrame, rowFrame, appearFrame, smallGrowFrame,
+                traceFrame, pileSettle).forEach(c::removeFrameCallback)
+        }
         restoreHeader()
         removeDiscs()
         LockIslands.removeListener(islandListener)
@@ -7872,7 +7998,10 @@ private class MiniPlayerController(
         selectedIsland = selected
         // The notification in the pill went (dismissed, answered elsewhere): the next island
         // grows into the pill from its end, as one coming out of the stack does.
-        if (lost) {
+        // A pill not on screen - the music hidden by its cover, say - has nothing to switch from:
+        // a switch here took the next island's coming-up from its first frame (`op mini`: up done
+        // frames=1), and it grows in as a new row instead.
+        if (lost && player?.visibility == View.VISIBLE) {
             val oldSmall = smallKey
             handler.post { if (swap == null && morph == null) startSwap(null, oldSmall) }
         }
@@ -8723,26 +8852,66 @@ private class MiniPlayerController(
                 // Up out of nothing on a lock screen already there: it grows in. Coming back
                 // under a flight, a card's morph or a switch, or with the row's wake fade, those
                 // bring it; and a row going just goes.
-                val growIn = target == View.VISIBLE && keyguardOwned && rowQuiet() && Main.screenOnCached()
+                val newRow = lastShownKeys.isEmpty()
+                val growIn = target == View.VISIBLE && keyguardOwned && !frameTaken() &&
+                    (rowQuiet() && Main.screenOnCached() || newRow)
                 // The last island gone from a lock screen that stays: it goes back into nothing.
-                // Not for a row put away with the card, the cover, the unlock or the doze.
+                // Not for a row put away with the card, the cover, the unlock or the control centre.
                 // The pill still has a notification in it and nothing is left for the row: no
                 // island, or only the music on its card (rowGoing). Not the pill that was the
                 // music and has just gone up into its card - that has already gone, as its morph.
-                val shrinkOut = target == View.GONE && !pillShowsMusic &&
+                val rowGone = target == View.GONE && !pillShowsMusic &&
                     islandKeys.none { it != MUSIC_ISLAND } &&
-                    (islandKeys.isEmpty() || nativeRequested) && enabled &&
-                    !MiniPlayerScene.keyguardGoingAway && Main.keyguardLocked() && rowQuiet() &&
-                    !Main.coverSceneActive() && !MiniPlayerScene.blocksMiniPlayer && !controlCenterOpen &&
-                    Main.screenOnCached()
+                    (islandKeys.isEmpty() || nativeRequested || Main.coverModeOn()) && enabled &&
+                    Main.keyguardLocked() && !coverMoving() && !MiniPlayerScene.blocksMiniPlayer &&
+                    !controlCenterOpen && !frameTaken()
+                // Only a pill on screen goes back where it can be seen. The power key takes the
+                // torch's island in the same moment it starts the screen off - the row faded to
+                // nothing, the keyguard flagged as going - and a double press brings the screen
+                // back without it: gone there in one frame, it was never seen going (2026-09-29).
+                // Such a pill waits, as it is, until it is on screen again - lit, or held into
+                // the AOD with the row - and goes back then; waited out, it just goes.
+                // Half there is enough: coming back on the wake's fade, it goes back as it fades in.
+                val seen = pillSeen()
+                val shrinkOut = rowGone && seen
+                val now = android.os.SystemClock.uptimeMillis()
+                val waitBack = rowGone && !seen && !leaving() &&
+                    (backWaitSince == 0L || now - backWaitSince < BACK_WAIT_MS)
+                if (waitBack && backWaitSince == 0L) {
+                    backWaitSince = now
+                    MiniPlayerRuntime.noteGone("wait away=${MiniPlayerScene.keyguardGoingAway} " +
+                        "pillFade=${"%.2f".format(followPillFade)} screen=${Main.screenOnCached()} aod=${MiniPlayerScene.aodActive}")
+                }
+                if (!waitBack) backWaitSince = 0L
+                // Also the way back already running and cut here: the else below ends it in a frame.
+                if (target == View.VISIBLE) MiniPlayerRuntime.noteGone(
+                    "UP grow=$growIn new=$newRow seen=${pillSeen()} sel=${selectedIsland?.takeLast(6)} keys=${islandKeys.joinToString(",") { it.takeLast(6) }} " +
+                    "owned=$keyguardOwned screen=${Main.screenOnCached()} aod=${MiniPlayerScene.aodActive} row=${quietWhy()}")
+                if (target == View.GONE && !waitBack && (!leaving() || !shrinkOut)) MiniPlayerRuntime.noteGone(
+                    (if (shrinkOut) "back" else if (leaving()) "CUT mid-way" else "CUT") + " sel=${selectedIsland?.takeLast(6)} " +
+                    "keys=${islandKeys.joinToString(",") { it.takeLast(6) }} pillMusic=$pillShowsMusic " +
+                    "native=$nativeRequested on=$enabled away=${MiniPlayerScene.keyguardGoingAway} " +
+                    "locked=${Main.keyguardLocked()} cover=${Main.coverSceneActive()} " +
+                    "blocks=${MiniPlayerScene.blocksMiniPlayer} cc=$controlCenterOpen " +
+                    "screen=${Main.screenOnCached()} row=${quietWhy()}")
                 if (shrinkOut) startDisappear()
+                else if (waitBack) Unit
+                else if (rowGone && leaving()) Unit // on its way back already, seen or not
                 else {
+                    if (rowGone) lastShownKeys = emptyList()
                     if (target == View.GONE) endAppear()
                     view.visibility = target
                     if (growIn) startAppear()
                 }
-            } else if (target == View.VISIBLE && leaving()) startAppear()
-            view.setInteractionsEnabled(canShow() && !controlCenterOpen && !MiniPlayerScene.aodActive && !leaving())
+            } else {
+                if (target == View.VISIBLE && leaving()) startAppear()
+                backWaitSince = 0L
+            }
+            view.setInteractionsEnabled(canShow() && !controlCenterOpen && !MiniPlayerScene.aodActive && !leaving() &&
+                backWaitSince == 0L)
+            if (view.visibility == View.VISIBLE && !leaving() && backWaitSince == 0L && islandKeys.isNotEmpty()) {
+                lastShownKeys = islandKeys
+            }
         }
         updateNativeSuppression(suppressCard && musicSettled)
         if (morph == null && keyguardOwned &&
@@ -9126,6 +9295,10 @@ private const val PILE_DAMPING = 0.74f
 /** How much of the lead's way each row starts behind the one before it, and at most. */
 private const val PILE_STAGGER = 0.12f
 private const val PILE_STAGGER_MAX = 0.48f
+/** How long a pill whose island went while it was not on screen waits to be seen going back. */
+private const val BACK_WAIT_MS = 2500L
+/** The rows settle in well under a second; past this the stack is not drawing them (pileSettle). */
+private const val PILE_SETTLE_MAX_MS = 2000L
 
 /** A pull under the threshold goes home in this long. */
 private const val SPRING_BACK_MS = 320L
