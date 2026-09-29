@@ -388,6 +388,46 @@ final class LyricSource {
     private static final java.util.regex.Pattern TAGS =
             java.util.regex.Pattern.compile("\\[[^\\]]*\\]|<[^>]*>");
 
+    /**
+     * A catalogue's answer that the song is instrumental, taken for what it means: no lyrics.
+     *
+     * The session, the bridge and the file were already held to placeholder(); the catalogues
+     * were not, and NetEase answers an instrumental with a lyric of one line, "纯音乐，请欣赏"
+     * (#25). Taken as the song's lyric it put the lyric page up over the cover with those words
+     * on it; with no lyrics the lock screen keeps the cover, square or full, which is what a
+     * song with nothing to sing should show. Judged on the parsed lines rather than the raw
+     * text, because a catalogue's credits come first - NetEase writes them as JSON lines, which
+     * only the parser turns into "作词: ..." - and a credit is neither a lyric nor a placeholder.
+     * True when [r] was emptied.
+     */
+    private static boolean dropPlaceholder(Rows r) {
+        if (!placeholderLines(r.lines)) return false;
+        r.why = "instrumental, by its lyric: " + r.why;
+        r.lines = java.util.Collections.emptyList();
+        r.source = SRC_NONE;
+        return true;
+    }
+
+    /** Every line a placeholder or a credit, and at least one a placeholder. */
+    static boolean placeholderLines(List<LyricLine> lines) {
+        boolean any = false;
+        for (LyricLine l : lines) {
+            String s = l.text == null ? "" : l.text.trim();
+            if (s.isEmpty() || CREDIT.matcher(s).find()) {
+                continue;
+            }
+            if (!isPlaceholder(s)) {
+                return false;
+            }
+            any = true;
+        }
+        return any;
+    }
+
+    /** "作词: ...", "Composer：...": a short name for a role, then a colon. */
+    private static final java.util.regex.Pattern CREDIT =
+            java.util.regex.Pattern.compile("^[^:：]{1,16}[:：]");
+
     private static boolean isPlaceholder(String line) {
         String s = line.toLowerCase();
         for (String p : PLACEHOLDERS) {
@@ -756,13 +796,17 @@ final class LyricSource {
                 if (r.lines.isEmpty() && (id != null || q != null)) {
                     race(gen, pkg, ctx, id, dir, q, r);
                 }
+                // A catalogue that places the song and answers that it is instrumental has
+                // answered: the song has no words, and the next catalogue is not asked for some.
+                boolean instrumental = dropPlaceholder(r);
                 // The other two catalogues, in order, and only for a song the first three could
                 // not place. Sequential rather than raced: this is the slow path by definition,
                 // nothing above it is still running by the time it starts, and a song that
                 // already works never reaches it, so what it costs is paid only by songs that
                 // would otherwise show nothing at all.
-                if (r.lines.isEmpty() && q != null) {
+                if (r.lines.isEmpty() && q != null && !instrumental) {
                     web(pkg, q, r);
+                    dropPlaceholder(r);
                 }
                 Xp.log("[MCLyric] " + pkg + " -> " + r.why);
                 onMain(cb, r.lines, r.why, r.source);
