@@ -6616,6 +6616,8 @@ public class Main extends XposedModule {
     /** Enter through the same route as the OEM artwork, with MiniPlayerRuntime owning the bridge. */
     static void miniPlayerEnterCover() {
         if (!miniPlayerCanShow()) return;
+        // Taken before the entry moves anything: the lyrics grow out of the island as it is now.
+        LockLyrics.notePopOrigin(MiniPlayerRuntime.musicIslandCentreOnScreen());
         if (!sAuto) {
             CoverMorphLayer.cancel();
             setCoverEnabled(true, true, false);
@@ -6627,6 +6629,7 @@ public class Main extends XposedModule {
     /** An island opened from the cover: the cover goes, its card coming down into the row. */
     static void miniPlayerLeaveCover() {
         if (!sCoverMode) return;
+        LockLyrics.notePopTarget(MiniPlayerRuntime.musicIslandHomeOnScreen());
         exitFromTap("island opened from the cover");
     }
 
@@ -6639,10 +6642,13 @@ public class Main extends XposedModule {
         if (!keyguardShowing() || bouncerUp()) return;
         if (enter) {
             if (sCoverMode) return;
+            // Back out of the island mid-morph: the lyrics come out of it too, from where it is.
+            LockLyrics.notePopOrigin(MiniPlayerRuntime.musicIslandCentreOnScreen());
             if (!sAuto) setCoverEnabled(true, true, false);
             else enterFromTap("mini player pulled back up");
         } else {
             if (!sCoverMode) return;
+            LockLyrics.notePopTarget(MiniPlayerRuntime.musicIslandHomeOnScreen());
             exitFromTap("mini player pulled back down");
         }
     }
@@ -8114,6 +8120,8 @@ public class Main extends XposedModule {
                     // shrinks the card into it.
                     MiniPlayerRuntime.preferMini();
                     MiniPlayerRuntime.rememberScene();
+                    // The lyrics go the same way, shrinking into the island's place.
+                    LockLyrics.notePopTarget(MiniPlayerRuntime.musicIslandHomeOnScreen());
                     exitFromTap("media card swiped down");
                 } else if (!MiniPlayerRuntime.beginDrag(true, ev)) {
                     // No geometry to pull: the switch still happens, on its own spring.

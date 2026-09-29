@@ -1357,6 +1357,14 @@ object MiniPlayerRuntime {
     private fun live(): List<MiniPlayerController> =
         synchronized(controllers) { controllers.values.map { it.controller } }
 
+    /** Where the music's island is drawn, for the lyrics to grow out of; null when it is not up. */
+    @JvmStatic fun musicIslandCentreOnScreen(): FloatArray? =
+        live().firstNotNullOfOrNull { it.musicIslandCentreOnScreen() }
+
+    /** Where the music's island will rest once back from its card, for the lyrics to go into. */
+    @JvmStatic fun musicIslandHomeOnScreen(): FloatArray? =
+        live().firstNotNullOfOrNull { it.musicIslandHomeOnScreen() }
+
     /** A notification's row in the stack, for ImmersiveHost: the open page's turn arrow is in it. */
     @JvmStatic fun rowOf(key: String): View? = live().firstNotNullOfOrNull { it.rowOf(key) }
 
@@ -7668,6 +7676,36 @@ private class MiniPlayerController(
     }
 
     fun pill(): MiniPlayerView? = player
+
+    /** The music's island - the pill or the small island, whichever holds it - drawn centre. */
+    fun musicIslandCentreOnScreen(): FloatArray? {
+        val v: View = when (MUSIC_ISLAND) {
+            selectedIsland -> player
+            smallKey -> smallIsland
+            else -> null
+        }?.takeIf { it.isShown && it.isAttachedToWindow && it.width > 0 } ?: return null
+        val m = Matrix()
+        v.transformMatrixToGlobal(m)
+        val out = floatArrayOf(v.width / 2f, v.height / 2f)
+        m.mapPoints(out)
+        val onScreen = IntArray(2)
+        val inWindow = IntArray(2)
+        v.getLocationOnScreen(onScreen)
+        v.getLocationInWindow(inWindow)
+        out[0] += (onScreen[0] - inWindow[0]).toFloat()
+        out[1] += (onScreen[1] - inWindow[1]).toFloat()
+        return out
+    }
+
+    /**
+     * The music's island at rest: the small island's circle when the music sits there, else the
+     * pill's rest box - the music is in its card now, so neither is drawn where it will be.
+     */
+    fun musicIslandHomeOnScreen(): FloatArray? {
+        val box = if (smallKey == MUSIC_ISLAND && smallIsland != null) smallBoxOnScreen()
+            else player?.restBoxOnScreen() ?: return null
+        return floatArrayOf(box.cx(), box.cy())
+    }
 
     /** The row can be shown and touched: with music, the media card has to be up; without, not. */
     private fun canShow(): Boolean =

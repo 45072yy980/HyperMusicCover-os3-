@@ -441,6 +441,60 @@ final class LockLyrics {
     private static volatile long sLeavingAt;
     private static volatile String sLeavingBy = "?";
 
+    /**
+     * Where the lyrics grow out of on their next arrival: the music's island, as the entry from
+     * it began - ColorOS's capsule-to-immersive entry (see LyricView.startPop). Screen pixels,
+     * and the uptime it was taken at: an arrival later than POP_ORIGIN_MS is not this entry's.
+     */
+    private static volatile float sPopX = Float.NaN, sPopY = Float.NaN;
+    private static volatile long sPopAt;
+    private static final long POP_ORIGIN_MS = 1500L;
+
+    /** An entry from the mini player: centre is the island's on screen, or null if not up. */
+    static void notePopOrigin(float[] centre) {
+        if (centre == null) {
+            sPopAt = 0L;
+            return;
+        }
+        sPopX = centre[0];
+        sPopY = centre[1];
+        sPopAt = SystemClock.uptimeMillis();
+    }
+
+    /** The origin, once: out[0..1] on screen. False when there is none or it is stale. */
+    static boolean takePopOrigin(float[] out) {
+        long at = sPopAt;
+        sPopAt = 0L;
+        if (at == 0L || SystemClock.uptimeMillis() - at > POP_ORIGIN_MS) return false;
+        out[0] = sPopX;
+        out[1] = sPopY;
+        return true;
+    }
+
+    /** The other way: where the island will be as the cover goes back into it. */
+    private static volatile float sPopToX = Float.NaN, sPopToY = Float.NaN;
+    private static volatile long sPopToAt;
+
+    /** An exit into the mini player: centre is the island's home on screen, or null. */
+    static void notePopTarget(float[] centre) {
+        if (centre == null) {
+            sPopToAt = 0L;
+            return;
+        }
+        sPopToX = centre[0];
+        sPopToY = centre[1];
+        sPopToAt = SystemClock.uptimeMillis();
+    }
+
+    static boolean takePopTarget(float[] out) {
+        long at = sPopToAt;
+        sPopToAt = 0L;
+        if (at == 0L || SystemClock.uptimeMillis() - at > POP_ORIGIN_MS) return false;
+        out[0] = sPopToX;
+        out[1] = sPopToY;
+        return true;
+    }
+
     /** The lyric page a tap into cover mode will land on. */
     static boolean willAttachOnEntry() {
         return hasLyrics() && CoverMorphRoute.lyricsAfterEntry(sEnabled, sTapHidden, sDemo);

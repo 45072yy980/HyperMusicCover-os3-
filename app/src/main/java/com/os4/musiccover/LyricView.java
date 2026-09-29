@@ -195,6 +195,8 @@ final class LyricView extends View {
     /** AMLL's scale spring (stiffness 100, damping 25) settles in about this time constant. */
     private static final float TAU_SCALE = 0.15f;
     private static final float TAU_SHOW = 0.18f;
+    /** Rising while growing out of the island: the pop's own alpha spring does the fading. */
+    private static final float TAU_POP_SHOW = 0.03f;
     /** Out faster than in: the clock starts growing into the lyrics' space at once. */
     private static final float TAU_HIDE = 0.06f;
     /**
@@ -211,6 +213,27 @@ final class LyricView extends View {
      * around from where it is instead of from the far end.
      */
     private static final float FLOAT_DP = 26f;
+
+    /*
+     * The lyrics and the mini player's island, both ways: ColorOS's capsule-to-immersive entry
+     * for its multi-line lyrics and its way back (SystemUIPlugin w6.i). In, the block starts on
+     * the island's centre at 0.6 of its size, transparent and blurred, and springs home (w6.f.k);
+     * out, it shrinks to 0.1 into where the island will be, fading and blurring (w6.f.g). Each
+     * property is its own spring, stepped per frame, so an arrival or a departure turned round
+     * half way goes back from where it is with the speed it has. (response, bounce) as PageSpring.
+     */
+    private static final float POP_SCALE_IN = 0.6f, POP_SCALE_OUT = 0.1f;
+    private static final float[] POP_IN_MOVE = {0.52f, 0.21f}, POP_IN_ALPHA = {0.1f, 0f},
+            POP_IN_SCALE = {0.5f, 0.2f}, POP_IN_BLUR = {0.2f, 0f};
+    private static final float[] POP_OUT_MOVE = {0.35f, 0f}, POP_OUT_ALPHA = {0.25f, 0f},
+            POP_OUT_SCALE = {0.3f, 0f}, POP_OUT_BLUR = {0.3f, 0f};
+    /** ColorOS blurs from and to 200px on its ~3.5 density. */
+    private static final float POP_BLUR_DP = 57f;
+    /** A departure is over once it is this faint, or after this long whatever it looks like. */
+    private static final float POP_OUT_GONE = 0.004f;
+    private static final long POP_OUT_MAX_MS = 1200L;
+    private static final int POP_NONE = 0, POP_IN = 1, POP_OUT = 2, POP_HOLD = 3;
+
     /** A gap between lines at least this long gets the interlude dots. */
     private static final int LULL_MS = 4000;
 
@@ -327,6 +350,20 @@ final class LyricView extends View {
     private int focusKey = Integer.MIN_VALUE;
     private int ms;
     private float show;
+    /**
+     * The island pop (POP_*): which way it is going, when a departure began, and whether this
+     * showing is the pop's - that takes the float out for all of it, arrival to departure, and
+     * lasts until the page has faded to nothing. HOLD is an arrival cut short by anything but
+     * the island: the springs stop where they are and the page fades as any other does.
+     */
+    private int popMode = POP_NONE;
+    private boolean popped;
+    private long popOutAt;
+    private final float[] popPoint = new float[2];
+    /** Offsets from home in this view's pixels, the scale, the alpha and the blur radius. */
+    private final Spring popX = new Spring(), popY = new Spring(), popS = new Spring(1f),
+            popA = new Spring(1f), popB = new Spring();
+    private float popToX, popToY, popBlur;
     private float bandTop, bandBottom;
     private final float[] bandBounds = new float[2];
     private boolean bandOk;
@@ -547,10 +584,21 @@ final class LyricView extends View {
         }
 
         float showTo = showTarget();
-        float s = approach(show, showTo, dtTo, showTo < show ? TAU_HIDE : TAU_SHOW);
-        if (Math.abs(s - showTo) < 0.004f) s = showTo;
-        if (s != show) {
-            show = s;
+        if (turnPop(now, showTo, still || gone)) changed = true;
+        // Going into the island, the page stays up and the pop's alpha is its fade; coming out
+        // of it, `show` only carries the card's progress and the clock's alpha, so it goes
+        // straight there instead of easing.
+        if (popMode != POP_OUT) {
+            float tauShow = showTo < show ? TAU_HIDE : popMode == POP_IN ? TAU_POP_SHOW : TAU_SHOW;
+            float s = approach(show, showTo, dtTo, tauShow);
+            if (Math.abs(s - showTo) < 0.004f) s = showTo;
+            if (s != show) {
+                show = s;
+                changed = true;
+                why |= 4;
+            }
+        }
+        if (stepPop(now, dt, showTo)) {
             changed = true;
             why |= 4;
         }
@@ -1040,15 +1088,209 @@ final class LyricView extends View {
         float k = dt <= 0f ? 0.25f : (float) (1.0 - Math.exp(-dt / BOUNCER_TAU));
         bouncerP += (want - bouncerP) * k;
         if (Math.abs(want - bouncerP) < 0.01f) bouncerP = want;
-        float r = bouncerP * BOUNCER_BLUR_DP * density;
-        setRenderEffect(r < 0.5f ? null : android.graphics.RenderEffect.createBlurEffect(
-                r, r, Shader.TileMode.DECAL));
+        applyBlur();
         return true;
+    }
+
+    private float blurSet = -1f;
+
+    /** The view's one blur, whichever of the PIN pad and the pop asks for more. */
+    private void applyBlur() {
+        float r = Math.max(bouncerP * BOUNCER_BLUR_DP * density, popBlur);
+        if (r < 0.5f) r = 0f;
+        if (r == blurSet) return;
+        blurSet = r;
+        setRenderEffect(r == 0f ? null : android.graphics.RenderEffect.createBlurEffect(
+                r, r, Shader.TileMode.DECAL));
+    }
+
+    /** One damped spring, stepped per frame so a turn keeps its speed. */
+    private static final class Spring {
+        float x, v;
+
+        Spring() {
+        }
+
+        Spring(float at) {
+            x = at;
+        }
+
+        void set(float at) {
+            x = at;
+            v = 0f;
+        }
+
+        /** Semi-implicit Euler in steps of at most 4ms: the stiffest (0.1s) is w*h = 0.25. */
+        void step(float to, float dt, float[] rb) {
+            if (dt <= 0f) return;
+            double w = 2 * Math.PI / rb[0];
+            double k = w * w, c = 2 * Math.max(0.0, 1.0 - rb[1]) * w;
+            int n = Math.max(1, (int) Math.ceil(dt / 0.004f));
+            float h = dt / n;
+            for (int i = 0; i < n; i++) {
+                v += (float) (-k * (x - to) - c * v) * h;
+                x += v * h;
+            }
+        }
+
+        /** Within eps of `to` and moving less than eps a frame: snapped there. */
+        boolean settle(float to, float eps) {
+            if (Math.abs(x - to) >= eps || Math.abs(v) * 0.016f >= eps) return false;
+            set(to);
+            return true;
+        }
+    }
+
+    /**
+     * Where the pop goes next: out of the island on an arrival from it, into it on a departure
+     * towards it, and round again either way. Screen points from LockLyrics, each taken once.
+     *
+     * @return whether anything changed
+     */
+    private boolean turnPop(long now, float showTo, boolean cut) {
+        if (cut) {
+            // Unlocked, or the AOD's still frames: nothing animates there, the page is simply cut.
+            if (popMode == POP_NONE) return false;
+            endPop("cut");
+            return true;
+        }
+        switch (popMode) {
+            case POP_NONE:
+                if (showTo > 0f && show < 0.02f && bandOk && LockLyrics.takePopOrigin(popPoint)) {
+                    popFrom(popPoint);
+                    return true;
+                }
+                if (showTo == 0f && show > 0.02f && bandOk && LockLyrics.takePopTarget(popPoint)) {
+                    popInto(now, popPoint);
+                    return true;
+                }
+                return false;
+            case POP_IN:
+                if (showTo > 0f) return false;
+                if (LockLyrics.takePopTarget(popPoint)) {
+                    popInto(now, popPoint);
+                } else {
+                    popMode = POP_HOLD;
+                    Xp.log(TAG + "island pop held: left another way");
+                }
+                return true;
+            case POP_HOLD:
+                if (showTo > show) {
+                    popMode = POP_IN;
+                    LockLyrics.takePopOrigin(popPoint);
+                    Xp.log(TAG + "island pop resumed");
+                    return true;
+                }
+                if (showTo == 0f && LockLyrics.takePopTarget(popPoint)) {
+                    popInto(now, popPoint);
+                    return true;
+                }
+                return false;
+            case POP_OUT:
+                if (showTo == 0f) return false;
+                // Turned round on its way into the island: home from where it is, as fast as it
+                // is going. The entry's own origin is this one's, already on screen.
+                LockLyrics.takePopOrigin(popPoint);
+                popMode = POP_IN;
+                Xp.log(TAG + "island pop turned back out at s=" + r2(popS.x) + " a=" + r2(popA.x));
+                return true;
+            default:
+                return false;
+        }
+    }
+
+    /** The home the springs are measured from: the band's centre, in this view's pixels. */
+    private float homeY() {
+        return (bandTop + bandBottom) / 2f;
+    }
+
+    /** An arrival from the island: everything put on it, then sprung home. */
+    private void popFrom(float[] onScreen) {
+        getLocationOnScreen(loc);
+        popX.set(onScreen[0] - loc[0] - getWidth() / 2f);
+        popY.set(onScreen[1] - loc[1] - homeY());
+        popS.set(POP_SCALE_IN);
+        popA.set(0f);
+        popB.set(POP_BLUR_DP * density);
+        popMode = POP_IN;
+        popped = true;
+        applyPop();
+        Xp.log(TAG + "island pop out of y=" + Math.round(onScreen[1])
+                + " band " + Math.round(bandTop) + ".." + Math.round(bandBottom));
+    }
+
+    /** A departure into the island, from wherever the block is and at whatever speed. */
+    private void popInto(long now, float[] onScreen) {
+        getLocationOnScreen(loc);
+        popToX = onScreen[0] - loc[0] - getWidth() / 2f;
+        popToY = onScreen[1] - loc[1] - homeY();
+        popOutAt = now;
+        popMode = POP_OUT;
+        popped = true;
+        Xp.log(TAG + "island pop into y=" + Math.round(onScreen[1]) + " from s=" + r2(popS.x)
+                + " a=" + r2(popA.x));
+    }
+
+    private void endPop(String why) {
+        if (popMode == POP_OUT) show = 0f;
+        popMode = POP_NONE;
+        popX.set(0f);
+        popY.set(0f);
+        popS.set(1f);
+        popA.set(1f);
+        popB.set(0f);
+        applyPop();
+        Xp.log(TAG + "island pop done: " + why);
+    }
+
+    /** @return whether the pop moved this frame */
+    private boolean stepPop(long now, float dt, float showTo) {
+        if (popMode == POP_NONE) {
+            // The showing is over: the next is a new one, from the island or not.
+            if (popped && show == 0f) popped = false;
+            return false;
+        }
+        if (popMode == POP_HOLD) {
+            if (show > 0f) return false;
+            endPop("faded");
+            return true;
+        }
+        if (popMode == POP_IN) {
+            popX.step(0f, dt, POP_IN_MOVE);
+            popY.step(0f, dt, POP_IN_MOVE);
+            popS.step(1f, dt, POP_IN_SCALE);
+            popA.step(1f, dt, POP_IN_ALPHA);
+            popB.step(0f, dt, POP_IN_BLUR);
+            float px = 0.5f;
+            boolean home = popX.settle(0f, px) & popY.settle(0f, px) & popS.settle(1f, 0.001f)
+                    & popA.settle(1f, 0.002f) & popB.settle(0f, 0.3f);
+            applyPop();
+            if (home && show >= showTo) {
+                popMode = POP_NONE;
+                Xp.log(TAG + "island pop landed");
+            }
+            return true;
+        }
+        popX.step(popToX, dt, POP_OUT_MOVE);
+        popY.step(popToY, dt, POP_OUT_MOVE);
+        popS.step(POP_SCALE_OUT, dt, POP_OUT_SCALE);
+        popA.step(0f, dt, POP_OUT_ALPHA);
+        popB.step(POP_BLUR_DP * density, dt, POP_OUT_BLUR);
+        applyPop();
+        if (popA.x <= POP_OUT_GONE && popA.v <= 0f) endPop("in the island");
+        else if (now - popOutAt > POP_OUT_MAX_MS) endPop("timed out");
+        return true;
+    }
+
+    private void applyPop() {
+        popBlur = Math.max(0f, popB.x);
+        applyBlur();
     }
 
     private boolean needsFrames() {
         if (!isAttachedToWindow()) return false;
         if (show != showTarget()) return true;
+        if (popMode == POP_IN || popMode == POP_OUT) return true;
         // The keyguard dimming around us is a movement like any other, and so is the keyguard
         // coming back: without this the loop would stop the moment the words settled and leave
         // the lyrics at whatever alpha the AOD had put them at - dimmed on a lit screen, or at
@@ -1541,13 +1783,22 @@ final class LyricView extends View {
         // as one block: a line's alpha is taken from its own position against the band's edges,
         // and offsetting the canvas instead would have left those alphas describing where the
         // line was going to be rather than where it is.
-        float anchor = anchorY() + (1f - show) * FLOAT_DP * density;
+        // Grown out of the island instead: the pop is the arrival's movement, all of it.
+        float anchor = anchorY() + (popped ? 0f : (1f - show) * FLOAT_DP * density);
+        float vis = show * clamp01(popA.x);
         float side = sidePx;
         float fade = Math.min(EDGE_FADE_DP * density, bandH / 3f);
         int n = lines.size();
         updateTint();
 
         int save = canvas.save();
+        if (popped) {
+            // The band as one piece, its clip and edge fades with it, as ColorOS moves the lyric
+            // list's view: between the island's centre and home, about the band's centre.
+            canvas.translate(popX.x, popY.x);
+            float sc = Math.max(0f, popS.x);
+            canvas.scale(sc, sc, getWidth() / 2f, homeY());
+        }
         canvas.clipRect(0f, bandTop, getWidth(), bandBottom);
         for (int i = Math.max(0, focus - 6); i < n; i++) {
             // The interlude slot above this line, if it has one: its dots move with the line, and
@@ -1558,7 +1809,7 @@ final class LyricView extends View {
                 float dh = DOTS_SLOT_EM * textPx;
                 float dEdge = Math.min(clamp01((dy - bandTop) / fade),
                         clamp01((bandBottom - (dy + dh)) / fade));
-                float da = show * dEdge;
+                float da = vis * dEdge;
                 if (dotsFor >= 0 ? i < dotsFor : i <= focus) da *= ABOVE_ALPHA;
                 if (da > 0.003f) drawDots(canvas, i, side, dy, da);
             }
@@ -1569,7 +1820,7 @@ final class LyricView extends View {
             // bottom edge, so a line is already gone by the time it would be cut.
             float edge = Math.min(clamp01((y - bandTop) / fade),
                     clamp01((bandBottom - (y + height[i])) / fade));
-            float a = show * edge;
+            float a = vis * edge;
             // Lines already sung, above the focus, sit further back than the ones to come.
             if (dotsFor >= 0 ? i < dotsFor : i < focus) a *= ABOVE_ALPHA;
             if (a <= 0.003f) continue;
