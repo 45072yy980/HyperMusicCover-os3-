@@ -2088,6 +2088,8 @@ public class Main extends XposedModule {
                 String op = i.getStringExtra("op");
                 if (op == null) op = "info";
                 Xp.log(TAG + "recv op=" + op + " extras=" + i.getExtras());
+                // An op answering later, through goAsync: the receipt is its to send.
+                boolean async = false;
                 try {
                     if ("info".equals(op)) {
                         dumpInfo();
@@ -2814,8 +2816,36 @@ public class Main extends XposedModule {
                     } else if ("mini".equals(op)) {
                         setResultData(MiniPlayerRuntime.describe());
                     } else if ("edge".equals(op)) {
-                        // The pill's and the discs' clips and outlines: the glass rim (EdgeProbe).
-                        setResultData(MiniPlayerRuntime.edge());
+                        // The pill's and the discs' clips, outlines and material, and the rim as
+                        // the window's pixels hold it (EdgeProbe, EdgeWatch). The pixels come a
+                        // frame later, so this one answers from the copy's callback; the app's
+                        // "copy diagnostics" row asks the same.
+                        // It must finish whatever happens: an ordered broadcast left open here
+                        // times out as SystemUI's ANR. So once, on the answer, a throw, or 3s.
+                        final PendingResult pending = goAsync();
+                        async = true;
+                        final java.util.concurrent.atomic.AtomicBoolean answered =
+                                new java.util.concurrent.atomic.AtomicBoolean();
+                        final java.util.function.Consumer<String> answer = report -> {
+                            if (!answered.compareAndSet(false, true)) return;
+                            pending.setResultData(report);
+                            pending.setResultCode(OP_ACK);
+                            pending.finish();
+                        };
+                        new Handler(Looper.getMainLooper()).postDelayed(
+                                () -> answer.accept("edge: no answer in 3s"), 3000);
+                        try {
+                            // --ez png true keeps the crop the rim was read from, for
+                            // checking EdgeProbe's numbers against the pixels themselves.
+                            java.io.File png = i.getBooleanExtra("png", false)
+                                    ? new java.io.File(c.getFilesDir(), "edge.png") : null;
+                            MiniPlayerRuntime.edgeReport(c, png, report -> {
+                                answer.accept(report);
+                                return kotlin.Unit.INSTANCE;
+                            });
+                        } catch (Throwable t) {
+                            answer.accept("edge failed: " + Log.getStackTraceString(t));
+                        }
                     } else if ("rowtree".equals(op)) {
                         String key = i.getStringExtra("key");
                         setResultData(MiniPlayerRuntime.rowTree(key == null ? "" : key));
@@ -2876,7 +2906,7 @@ public class Main extends XposedModule {
                 // was sent with. This is how the app tells the two apart and sends it again once
                 // there is someone here. An op that threw is acknowledged too: it was received,
                 // and sending it again would only throw again.
-                if (isOrderedBroadcast()) setResultCode(OP_ACK);
+                if (!async && isOrderedBroadcast()) setResultCode(OP_ACK);
             }
         };
         ctx.registerReceiver(r, new IntentFilter(ACTION), Context.RECEIVER_EXPORTED);

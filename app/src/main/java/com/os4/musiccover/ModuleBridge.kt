@@ -652,7 +652,14 @@ object ModuleBridge {
         extras: Intent.() -> Unit = {},
     ): Bundle? = broadcast(context.applicationContext, intent(op).apply(extras))?.extras
 
-    private class Reply(val code: Int, val extras: Bundle?)
+    private class Reply(val code: Int, val extras: Bundle?, val data: String? = null)
+
+    /**
+     * The module's `op edge` report as text: the islands' outlines, material and rim pixels,
+     * for a tester to paste into an issue. Null when the module did not answer.
+     */
+    suspend fun edgeReport(context: Context): String? =
+        broadcast(context.applicationContext, intent("edge"), timeoutMs = 5000L)?.data
 
     /**
      * The ordered broadcast under both [ask] and [send]. It comes back even when no receiver is
@@ -673,7 +680,7 @@ object ModuleBridge {
                     if (done) return
                     done = true
                     handler.removeCallbacksAndMessages(null)
-                    cont.resume(Reply(resultCode, getResultExtras(false)))
+                    cont.resume(Reply(resultCode, getResultExtras(false), resultData))
                 }
             }
             // Nothing back within the timeout; do not leave the caller hanging on it.

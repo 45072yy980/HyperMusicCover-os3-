@@ -550,7 +550,7 @@ object MiniPlayerRuntime {
         val depth = runCatching { dimDepth(args) }.getOrNull()
         aodDimDepth = depth ?: -1f
         aodDimLook = depth?.let { d -> runCatching { dimLook(d) }.getOrNull() }
-        for (view in dressedViews.toList()) dimView(view, args)
+        EdgeWatch.ours { for (view in dressedViews.toList()) dimView(view, args) }
         dimNote("frame ${Integer.toHexString(args[4] as Int)} ta=${"%.2f".format(args[13] as Float)} " +
             "d=${depth?.let { "%.2f".format(it) } ?: "?"}${if (aodDimLook == null) " raw" else ""}")
         // The run ends in completeFullAodAnim; should it be cut short, the last frame settles it.
@@ -1350,6 +1350,95 @@ object MiniPlayerRuntime {
     @JvmStatic fun edge(): String =
         "material=$cardEffect\n" + live().joinToString("\n") { it.describeEdge() }
 
+    /**
+     * Everything `op edge` has for a jagged rim on a phone we do not have (EdgeWatch): the
+     * phone and its renderers, the clip chains, the card's recipe as replayed, who else set our
+     * views and whether our calls arrived as sent, then the rim as SystemUI's buffer holds it.
+     * [done] is called on the main thread once the pixels are in.
+     */
+    @JvmStatic fun edgeReport(ctx: Context, save: java.io.File?, done: (String) -> Unit) {
+        val head = EdgeWatch.device(ctx) + "\n" + edge() + "\n" + recipeText() + "\n" + EdgeWatch.describe()
+        EdgeProbe.measure(live().flatMap { it.edgeViews() }, save) { rim ->
+            done(head + "\nnow " + rim + "\n" + earlierRims())
+        }
+    }
+
+    private fun recipeText(): String {
+        val recipe = cardRecipe ?: return "recipe: none"
+        val bg = cardBackground?.newDrawable()
+        val sb = StringBuilder("recipe (${recipe.size} calls, bg=")
+            .append(bg?.javaClass?.simpleName ?: "none")
+        if (bg is GradientDrawable) sb.append(" r=").append(bg.cornerRadius)
+        sb.append("):")
+        for (call in recipe) {
+            sb.append("\n  ").append(call.method.declaringClass.simpleName).append('.').append(call.method.name)
+            sb.append(call.args.mapIndexed { i, a ->
+                when {
+                    i == call.viewAt -> "V"
+                    a is FloatArray -> a.joinToString(",", "[", "]") { "%.2f".format(it) }
+                    a is IntArray -> a.joinToString(",", "[", "]") { Integer.toHexString(it) }
+                    a is Context -> "ctx"
+                    else -> a.toString()
+                }
+            }.joinToString(",", "(", ")"))
+        }
+        return sb.toString()
+    }
+
+    private fun watchEdge(view: View) {
+        val role = when (view.parent) {
+            is MiniPlayerView -> "pill"
+            is ShortcutDisc -> "disc"
+            else -> "other"
+        }
+        EdgeWatch.watch(view, "$role.element")
+        (view.parent as? View)?.let { EdgeWatch.watch(it, "$role.frame") }
+    }
+
+    private val edgeHandler = Handler(Looper.getMainLooper())
+    private val rims = ArrayDeque<String>()
+    private var rimAt = 0L
+    private var rimPosted = false
+    private var edgeSnapshots = 0
+
+    /**
+     * The rim read from the pixels while the lock screen is up, at most every 30s.
+     *
+     * The app's "copy" row is pressed with the lock screen gone and nothing of the islands on
+     * the window, so `op edge` hands back the last few of these, each with the clock time a
+     * tester can match to their screenshot. The first few also go to the log in full, for a
+     * tester's LSPosed log.
+     */
+    internal fun rimSoon(ctx: Context) {
+        val now = android.os.SystemClock.uptimeMillis()
+        if (rimPosted || rimAt != 0L && now - rimAt < 30_000L) return
+        rimPosted = true
+        edgeHandler.postDelayed({
+            rimPosted = false
+            rimAt = android.os.SystemClock.uptimeMillis()
+            val stamp = java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.ROOT).format(java.util.Date())
+            runCatching {
+                EdgeProbe.measure(live().flatMap { it.edgeViews() }) { rim ->
+                    synchronized(rims) {
+                        rims.addLast("$stamp $rim")
+                        while (rims.size > 4) rims.removeFirst()
+                    }
+                    if (edgeSnapshots < 6) {
+                        edgeSnapshots++
+                        val head = EdgeWatch.device(ctx) + "\n" + edge() + "\n" + recipeText() + "\n" +
+                            EdgeWatch.describe()
+                        "$head\n$stamp $rim".lines().forEach { Xp.log("MCEdge: snapshot $it") }
+                    }
+                }
+            }.onFailure { Xp.log("MCEdge: rim failed: $it") }
+        }, 1500L)
+    }
+
+    private fun earlierRims(): String = synchronized(rims) {
+        if (rims.isEmpty()) "earlier on the lock screen: none" else
+            "earlier on the lock screen:" + rims.joinToString("") { "\n" + it }
+    }
+
     @JvmStatic fun nativeHeaderHidden(): Boolean = synchronized(controllers) {
         controllers.values.any { it.controller.nativeHeaderHidden() }
     }
@@ -1519,7 +1608,8 @@ object MiniPlayerRuntime {
                 }
             val util = Class.forName("com.android.systemui.statusbar.notification.utils.NotificationUtil",
                 false, classLoader)
-            (view.parent as? View)?.let { container ->
+            watchEdge(view)
+            (view.parent as? View)?.let { container -> EdgeWatch.ours {
                 // Blur mode 1, the notification container radius, and through the window.
                 util.getMethod("applyContainerViewBlur", Context::class.java, View::class.java,
                     Int::class.javaPrimitiveType, Int::class.javaPrimitiveType,
@@ -1532,19 +1622,22 @@ object MiniPlayerRuntime {
                     Class.forName("miuix.core.util.MiuiBlurUtils", false, classLoader)
                         .getMethod("setMiBlurWinType", View::class.java).invoke(null, container)
                 }
-            }
+            } }
             if (cardRecipe == null) loadRecipe(ctx, classLoader)
             val recipe = cardRecipe ?: error("the card has not been dressed yet")
             view.setImageDrawable(null)
             view.background = cardBackground?.newDrawable(res)?.mutate()
-            recipe.forEach { call ->
-                val args = call.args.copyOf()
-                args[call.viewAt] = view
-                call.method.invoke(null, *args)
+            EdgeWatch.ours {
+                recipe.forEach { call ->
+                    val args = call.args.copyOf()
+                    args[call.viewAt] = view
+                    call.method.invoke(null, *args)
+                }
             }
             dressedViews.add(view)
             // Dressed in the AOD - a small island coming up there: dimmed as the rest are.
-            aodDimArgs?.let { dimView(view, it) }
+            aodDimArgs?.let { EdgeWatch.ours { dimView(view, it) } }
+            rimSoon(view.context)
         }.onFailure { error ->
             val cause = (error as? java.lang.reflect.InvocationTargetException)?.targetException ?: error
             if (!materialFailed) {
@@ -1657,6 +1750,7 @@ private class MiniPlayerController(
         if (player?.visibility == View.VISIBLE) {
             position()
             followShortcuts()
+            MiniPlayerRuntime.rimSoon(context)
         }
         updateDiscs()
         traceScene()
@@ -1675,7 +1769,23 @@ private class MiniPlayerController(
             sb.append(EdgeProbe.describe("disc$i", d, host, i == 0)).append('\n')
             sb.append(EdgeProbe.describe("disc${i}Element", d.materialView, d, i == 0)).append('\n')
         }
+        smallIsland?.let {
+            sb.append(EdgeProbe.describe("small", it, host, false)).append('\n')
+            sb.append(EdgeProbe.describe("smallElement", it.materialView, it, true)).append('\n')
+        }
         return sb.toString()
+    }
+
+    /** The views whose rims EdgeProbe.measure reads from the window's pixels. */
+    fun edgeViews(): List<Pair<String, View>> {
+        val out = ArrayList<Pair<String, View>>()
+        player?.let {
+            out.add("pill" to it)
+            out.add("pill.art" to it.artSlot)
+        }
+        smallIsland?.let { out.add("small" to it) }
+        discs.forEachIndexed { i, d -> d?.let { out.add("disc$i" to it) } }
+        return out
     }
 
     // ---- a scene entry, every view of the row frame by frame, for `op mini`

@@ -44,6 +44,9 @@ internal class MiniPlayerView(context: Context) : FrameLayout(context) {
      */
     private val slot = FrameLayout(context)
 
+    /** The picture's round slot, for EdgeProbe. */
+    internal val artSlot: View get() = slot
+
     /**
      * Everything but the glass - the picture's slot, the lines, the buttons - in one layer: the
      * one view a content blur goes on, as ColorOS blurs a capsule's whole content view
@@ -575,8 +578,8 @@ internal class MiniPlayerView(context: Context) : FrameLayout(context) {
         offsetX = x
         offsetY = y
         if (morphing) return
-        translationX = baseX + offsetX
-        translationY = baseY + offsetY
+        translationX = rest(baseX, offsetX)
+        translationY = rest(baseY, offsetY)
     }
 
     /** Re-applies the material now; for a first show that came before the pill had a size. */
@@ -640,9 +643,22 @@ internal class MiniPlayerView(context: Context) : FrameLayout(context) {
         baseX = x
         baseY = y
         if (morphing) return
-        translationX = x + offsetX
-        translationY = y + offsetY
+        translationX = rest(x, offsetX)
+        translationY = rest(y, offsetY)
     }
+
+    /**
+     * At rest, on a whole pixel. The glass draws its shape on the pixel grid while the frame's
+     * outline clip follows the view wherever it is, so a pill left on a half pixel had the two
+     * half a pixel apart: the rim was cut into steps along one arc - the right one, at
+     * 268.5,2363.5 - and whole along the other. Centred between the buttons, the 477px pill
+     * beside a small island lands on .5 on a 1200px screen and the full one does not, which is
+     * why some phones and some widths showed it and others never did (`op edge` pixels,
+     * 2026-09-30: the arc's wobble 0.3px -> 0.06px, both sides alike, once rounded). A nudge in
+     * flight keeps its fractions, or it would move in whole-pixel steps.
+     */
+    private fun rest(base: Float, offset: Float): Float =
+        if (offset == 0f) kotlin.math.round(base) else base + offset
 
     fun acceptsTouch(): Boolean = interactionsEnabled && (!morphing || layoutOnly)
 
@@ -778,8 +794,8 @@ internal class MiniPlayerView(context: Context) : FrameLayout(context) {
         translationZ = 0f
         toggle.isEnabled = interactionsEnabled
         toggle2.isEnabled = toggle.isEnabled
-        translationX = baseX + offsetX
-        translationY = baseY + offsetY
+        translationX = rest(baseX, offsetX)
+        translationY = rest(baseY, offsetY)
         requestLayout()
         invalidateOutline()
         materialLayer.invalidateOutline()
