@@ -53,7 +53,8 @@ import kotlin.math.sin
  * The lock screen islands, shown rather than described: a phone drawn in outline, and on it
  * what the row of islands really does - switched under a swipe, opened into a card, exchanged
  * with the card and turned round by taps that come faster than anything can land, and pulled
- * back down; and the full-screen pages three of them open, one after another.
+ * back down; the full-screen pages three of them open, one after another; and the stack island
+ * spreading out with the whole row as the list, and folded back.
  *
  * Drawn the way HyperOS draws its 趣味拟物 haptics cards (see SkeuoKit): the phone as a line,
  * the screen as grey wireframe, a blue dot for the finger that presses with a halo and lifts with
@@ -69,6 +70,7 @@ fun IslandDemo(modifier: Modifier = Modifier) {
 private val DEMO_PAGES = listOf(
     DemoText("切换与打断", "左右滑动切换岛；点按岛展开成卡片，和展开的卡片互换位置，动画中途点哪个岛都能随时打断；在卡片上下滑收回岛里。"),
     DemoText("沉浸页面", "点按导航、倒计时或音乐的岛，锁屏换成地图、倒计时或专辑封面；点另一个岛直接切过去。"),
+    DemoText("聚合岛", "普通通知收进一个岛，点按或上滑展开成列表，整排岛一起变成卡片、时钟跟着缩小；在列表上下滑全部收回。"),
 )
 
 @Composable
@@ -80,7 +82,11 @@ private fun DemoPage(page: Int, playing: Boolean, onDone: () -> Unit) {
     LaunchedEffect(playing) {
         scene.reset(page)
         if (!playing) return@LaunchedEffect
-        if (page == 0) scene.playMain() else scene.playImmersive()
+        when (page) {
+            0 -> scene.playMain()
+            1 -> scene.playImmersive()
+            else -> scene.playStack()
+        }
         onDone()
     }
     Canvas(Modifier.fillMaxWidth().height(236.dp).clipToBounds()) {
@@ -135,7 +141,14 @@ private val MAIL_CARD = B(7f, 144f, 86f, 32f)
 private val MAIL_ART = B(MAIL_CARD.x + 3.5f, MAIL_CARD.y + 3.5f, 10f, 10f)
 
 /** Which island: only its mark tells them apart - the one colour on the screen is the finger's. */
-private enum class Kind { MUSIC, TIMER, MESSAGE, NAV, MAIL }
+private enum class Kind { MUSIC, TIMER, MESSAGE, NAV, MAIL, STACK }
+
+/**
+ * The stack island's list, as the lock screen lays it out when the row spreads: the media card at
+ * the top, then the ordinary notifications, each a message's row.
+ */
+private val LIST_MEDIA = B(7f, 44f, 86f, 54f)
+private val LIST_NOTES = List(3) { B(7f, 101f + it * 29f, 86f, 26f) }
 
 /** What is behind the lock screen on the full-screen page: the cover, 高德's map, the countdown's page. */
 private const val BG_COVER = 0
@@ -152,6 +165,8 @@ private val APPEAR = jelly(0.5f, 0.7f)
 private val SHOW = jelly(0.35f, 0.95f)
 private val MORPH = jelly(0.38f, 0.86f)
 private val GESTURE = CubicBezierEasing(0.3f, 0f, 0.2f, 1f)
+/** The super island's pulse curve (sinInOut). */
+private val SIN_IN_OUT = CubicBezierEasing(0.37f, 0f, 0.63f, 1f)
 /** ImmersiveHost's page fade: the cover's crossfade time, ease-out cubic. */
 private val PAGE_FADE = CubicBezierEasing(0.33f, 1f, 0.68f, 1f)
 
@@ -198,12 +213,19 @@ private class Scene {
     val bgMix = Animatable(1f)
     /** The countdown's run through the page, 0..1. */
     val tick = Animatable(0f)
+    /**
+     * The stack island's page: how far the row is spread out as the list (0 the row, 1 the list),
+     * the one progress every island and the clock ride on, as the lock screen's Spread has the
+     * stack's scroll; and the small island's swell for a message come in.
+     */
+    val spread = Animatable(0f)
+    val pulse = Animatable(0f)
 
     suspend fun reset(page: Int) {
         cam.reset()
         finger.reset(); finger2.reset(); drag.snapTo(0f)
         stage = 0
-        for (a in listOf(sw, ghost, emerge, ex, pressPill, pressSmall, tick)) a.snapTo(0f)
+        for (a in listOf(sw, ghost, emerge, ex, pressPill, pressSmall, tick, spread, pulse)) a.snapTo(0f)
         exStage = 0
         bgFrom = BG_COVER; bgTo = BG_COVER
         bgMix.snapTo(1f)
@@ -326,6 +348,39 @@ private class Scene {
         delay(1000)
     }
 
+    /**
+     * The stack island's page: a message comes in and the small island swells for it (the super
+     * island's 1.1 pulse); a tap spreads the whole row out as the list - the music up into the
+     * media card, the stack island into its rows, the nearer first - with the clock going small
+     * as it comes; a pull down on the list folds it all back, the pull followed and the rest on
+     * its own, the further rows home first.
+     */
+    suspend fun playStack() {
+        delay(500)
+        pulse.animateTo(1f, tween(200, easing = SIN_IN_OUT))
+        delay(100)
+        pulse.animateTo(0f, tween(200, easing = SIN_IN_OUT))
+        delay(350)
+        finger.arrive(SMALL.cx, RY, fromDx = 20f, fromDy = -26f)
+        finger.press(110)
+        pressSmall.animateTo(1f, tween(110))
+        coroutineScope {
+            launch { finger.lift() }
+            launch { pressSmall.animateTo(0f, SHOW) }
+            launch { spread.animateTo(1f, MORPH) }
+        }
+        delay(1100)
+        val at = LIST_NOTES[1].cy
+        finger.arrive(50f, at, fromDx = 30f, fromDy = -20f)
+        finger.press()
+        finger.slide(50f, at + 26f, 380) { spread.animateTo(0.62f, tween(380, easing = GESTURE)) }
+        coroutineScope {
+            launch { finger.lift(ripple = false) }
+            launch { spread.animateTo(0f, MORPH) }
+        }
+        delay(900)
+    }
+
     private suspend fun open(n: Int, at: B, pressAt: Animatable<Float, AnimationVector1D>, bg: Int, fromDx: Float, fromDy: Float) {
         finger.arrive(at.cx, RY, fromDx = fromDx, fromDy = fromDy)
         finger.press(110)
@@ -364,13 +419,17 @@ private fun DrawScope.drawScene(sc: Scene, page: Int, pal: SkeuoPalette, measure
                 drawImmersive(sc, pal, measurer, clockSp)
             } else {
                 // The lock screen as wireframe: the clock in the outline's grey, a bar for the date.
+                // On the stack island's page it goes small as the list comes, as the lock screen's does.
+                val k = if (page == 2) lerp(1f, 0.55f, sc.spread.value.coerceIn(0f, 1f)) else 1f
                 val clock = measurer.measure("19:30", TextStyle(color = pal.frame, fontSize = clockSp,
                     fontWeight = FontWeight.Bold))
-                drawText(clock, topLeft = Offset(PW / 2f - clock.size.width / 2f, 18f))
-                drawRoundRect(pal.pill, Offset(PW / 2f - 13f, 18f + clock.size.height + 2f), Size(26f, 2.6f),
-                    CornerRadius(1.3f))
+                withTransform({ scale(k, k, Offset(PW / 2f, 18f)) }) {
+                    drawText(clock, topLeft = Offset(PW / 2f - clock.size.width / 2f, 18f))
+                }
+                drawRoundRect(pal.pill, Offset(PW / 2f - 13f * k, 18f + (clock.size.height + 2f) * k),
+                    Size(26f * k, 2.6f * k), CornerRadius(1.3f * k))
                 drawDiscs(pal)
-                drawMain(sc, pal)
+                if (page == 2) drawStack(sc, pal) else drawMain(sc, pal)
             }
         }
         drawPhoneFrame(pal)
@@ -459,6 +518,15 @@ private fun DrawScope.drawGlyph(pal: SkeuoPalette, kind: Kind, cx: Float, cy: Fl
                 moveTo(cx - 2.8f * u, cy - 1.8f * u); lineTo(cx, cy + 0.4f * u); lineTo(cx + 2.8f * u, cy - 1.8f * u)
             }
             drawPath(flap, c, style = Stroke(0.8f * u, cap = StrokeCap.Round, join = StrokeJoin.Round))
+        }
+        Kind.STACK -> {
+            // The apps' pictures together, four to a folder, as AppsIcon draws them.
+            val q = 2.2f * u
+            for (i in 0 until 4) {
+                val ox = if (i % 2 == 0) -q - 0.3f * u else 0.3f * u
+                val oy = if (i < 2) -q - 0.3f * u else 0.3f * u
+                drawRoundRect(c, Offset(cx + ox, cy + oy), Size(q, q), CornerRadius(0.7f * u))
+            }
         }
         Kind.NAV -> {
             // A right turn ahead, as 高德's focus_large_icon draws its next manoeuvre.
@@ -744,6 +812,38 @@ private fun DrawScope.cardContent(pal: SkeuoPalette, kind: Kind, box: B, a: Floa
                 alpha = 0.6f * a)
         }
     }
+}
+
+// ---- the stack island's page
+
+/**
+ * The row spread `p` of the way out as the list (Scene.playStack): the music between the pill and
+ * the media card, and the stack island between the small island and its rows - the first row the
+ * island itself, the others out of it after it, each on the share of the progress the lock
+ * screen's pile gives it (nearer first out, further first home).
+ */
+private fun DrawScope.drawStack(sc: Scene, pal: SkeuoPalette) {
+    val p = sc.spread.value
+    val swell = 1f + 0.1f * sc.pulse.value
+    val small = pressedBy(SMALL, 0.1f * sc.pressSmall.value)
+    val from = B(small.cx - small.w * swell / 2f, small.cy - small.h * swell / 2f, small.w * swell, small.h * swell)
+    // Further rows first, so the nearer ones are drawn over them on the way.
+    for (i in LIST_NOTES.indices.reversed()) {
+        val lag = i * 0.12f
+        val q = ((p - lag) / (1f - lag)).coerceIn(-0.03f, 1.03f)
+        if (q <= 0f && i > 0) continue
+        val box = lerpB(from, LIST_NOTES[i], q)
+        if (i == 0) {
+            // The island itself: its apps' picture fading as its first row comes in.
+            val stay = 1f - smooth(0.1f, 0.4f, q)
+            if (stay > 0.01f) drawIsland(pal, Kind.STACK, box, glass = 1f, content = stay)
+            val row = smooth(0.1f, 0.4f, q)
+            if (row > 0.01f) drawMorph(pal, Kind.MESSAGE, box, q.coerceIn(0f, 1f), row)
+        } else {
+            drawMorph(pal, Kind.MESSAGE, box, q.coerceIn(0f, 1f), smooth(0f, 0.3f, q))
+        }
+    }
+    drawMorph(pal, Kind.MUSIC, lerpB(PILL_SMALL, LIST_MEDIA, p.coerceIn(-0.03f, 1.03f)), p.coerceIn(0f, 1f), 1f)
 }
 
 // ---- the full-screen page
