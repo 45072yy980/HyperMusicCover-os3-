@@ -1700,6 +1700,13 @@ private class MiniPlayerController(
             scheduleRefresh()
         }
         override fun onPlaybackStateChanged(state: PlaybackState?) {
+            // Usable up to this very change: the gap is counted from here. Counted from the
+            // last refresh that saw it usable, a track played through left that minutes old,
+            // and QQ Music's stop between two tracks ended the music every time (#26, log
+            // 2026-09-30: ended, and the same session back 220ms later).
+            if (playbackUsable(liveState?.state) && !playbackUsable(state?.state)) {
+                usableSeenAt = android.os.SystemClock.uptimeMillis()
+            }
             liveState = state
             scheduleRefresh()
         }
@@ -8181,7 +8188,9 @@ private class MiniPlayerController(
         right.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> schedulePosition() }
         runCatching { sessions?.addOnActiveSessionsChangedListener(sessionListener, null, handler) }
         LockIslands.addListener(islandListener)
-        refresh()
+        // Posted: run here, it came before the properties declared below this block were
+        // made, and failed on the first of them (focusLotties) every time SystemUI started.
+        scheduleRefresh()
     }
 
     fun destroy() {
