@@ -755,25 +755,13 @@ final class LockLyrics {
             // one of those has been recorded as the session's own lyric, a gate that only fires
             // when the source is something else can never replace it. Asking after the payload
             // instead both fires for that and cannot loop, because each payload is tried once.
-            String info = sEnabled && !key.isEmpty() && !sLoading ? LyricSource.infoFor(c) : null;
-            if (info != null && !info.equals(sInfoSeen) && LyricSource.usable(info)
-                    && sInfoTries < MAX_INFO_TRIES) {
-                sInfoSeen = info;
-                sInfoTries++;
-                Xp.log(TAG + "the session is carrying a lyric " + key
-                        + " has not been read against; re-reading (" + sInfoTries + ")");
-                CACHE.remove(key);
-                // The lines already up are NOT cleared. A re-read is looking for something
-                // better than what is on screen, and the first version emptied the view before
-                // it knew whether there was any: a re-read that came back with nothing left the
-                // song with no lyrics at all for the rest of its play. lookup() keeps them.
-                lookup(key, c, true);
-                return;
-            }
+            rereadIfNewPayload(key, c);
             return;
         }
         sKey = key;
         sTrackChangedAt = SystemClock.uptimeMillis();
+        sTrackAt = sTrackChangedAt;
+        unpark();
         sBlurVideoReloaded = false;
         if (sEnabled && !key.isEmpty()) scheduleBlurKick(BLUR_ENTER_DELAY_MS + 16L);
         // A different song: the budget above is per track, and so is the payload it was spent on.
@@ -806,6 +794,41 @@ final class LockLyrics {
         lookup(key, c, false);
     }
 
+    /**
+     * Re-reads `key` when the session carries a payload it has not been read against. See the
+     * same-song half of onTrack().
+     *
+     * Asked from two places: the same-song track update, and the end of every lookup. The second
+     * is for a payload that lands while a lookup is running - which at a track change is the usual
+     * case, not a rare one: our own Apple hook writes the lyric half a second after the track
+     * changes, and the lookup takes one to three. The track update that brings it is turned away
+     * because a lookup is in flight, and nothing else asks again until the card is rebuilt. When
+     * the network had the song that cost only the better copy; when it did not, the song played
+     * with no lyrics until a relock (user, 2026-09-30; log 07:52:01, payload at +0.5s, lookup
+     * done at +2s, read only at the next entry at +5s).
+     */
+    private static void rereadIfNewPayload(String key, MediaController c) {
+        // Parked is loading only in name: nothing is running, it is waiting for exactly this.
+        if (!sEnabled || key.isEmpty() || (sLoading && sParked == null) || sDemo) return;
+        if (sParked != null && sParked.rereading) return;
+        String info = LyricSource.infoFor(c);
+        if (info == null || info.equals(sInfoSeen) || !LyricSource.usable(info)
+                || sInfoTries >= MAX_INFO_TRIES) {
+            return;
+        }
+        sInfoSeen = info;
+        sInfoTries++;
+        Xp.log(TAG + "the session is carrying a lyric " + key
+                + " has not been read against; re-reading (" + sInfoTries + ")");
+        CACHE.remove(key);
+        // The lines already up are NOT cleared. A re-read is looking for something
+        // better than what is on screen, and the first version emptied the view before
+        // it knew whether there was any: a re-read that came back with nothing left the
+        // song with no lyrics at all for the rest of its play. lookup() keeps them.
+        lookup(key, c, true);
+        if (sParked != null) sParked.rereading = true;
+    }
+
     /** How many times one song may be re-read because the session published something new. */
     private static final int MAX_INFO_TRIES = 3;
     /** The payload the lookup for sKey was started against, so the next one can be recognised. */
@@ -832,42 +855,150 @@ final class LockLyrics {
                     Xp.log(TAG + "lyrics for " + want + " arrived after the track changed");
                     return;
                 }
-                sLoading = false;
+                Parked parked = sParked;
+                if (parked != null && parked.rereading) {
+                    // The re-read the parked answer was waiting for. Whatever it found goes up in
+                    // one change; if it found nothing, the parked answer does.
+                    unpark();
+                    if (lines.isEmpty()) {
+                        Xp.log(TAG + "the session's lyric read as nothing (" + why
+                                + "); putting up the parked answer");
+                        settle(want, parked.lines, parked.why, parked.source);
+                        return;
+                    }
+                    settle(want, lines, why, source);
+                    return;
+                }
                 if (lines.isEmpty() && keepCurrent) {
+                    sLoading = false;
                     Xp.log(TAG + "the re-read found nothing (" + why + "); keeping the "
                             + sLines.size() + " lines already up");
                     // Not setLines: the lines have not changed. The blur still has to be told,
                     // because sLoading was what was holding it across the lookup.
                     refresh();
+                    rereadIfNewPayload(want, sController);
                     return;
                 }
-                sSource = source;
-                // What the LAST lookup found, not what any lookup ever found.
-                //
-                // It has to fall as well as rise. Written once and kept, it said "a provider
-                // module is working" for as long as the file lasted - so disabling the module
-                // and restarting left the settings page still convinced, and the advice that
-                // should have appeared never did.
-                //
-                // SRC_NONE is deliberately not an answer either way: finding nothing can mean
-                // the network was down or the song simply has no lyrics anywhere, neither of
-                // which says anything about the provider.
-                //
-                // Nor is SRC_LOCAL, for the opposite reason. The file's own lyric outranks the
-                // session's, so a song that has one never reports what the session was carrying
-                // - the module may have been working perfectly and simply not been needed.
-                // Neither answer is available, so the last real one stands.
-                if (source != LyricSource.SRC_NONE && source != LyricSource.SRC_LOCAL) {
-                    boolean fromSession = source == LyricSource.SRC_LYRIC_INFO;
-                    if (fromSession != sSawSessionLyric) {
-                        sSawSessionLyric = fromSession;
-                        Main.saveState();
+                if (!keepCurrent && source != LyricSource.SRC_LYRIC_INFO
+                        && pkgOf(want).equals(sSessionPkg)) {
+                    long left = sTrackAt + SESSION_WAIT_MS - SystemClock.uptimeMillis();
+                    if (left > 0L) {
+                        park(want, lines, why, source, left);
+                        // It may be on the session already, having landed during the lookup.
+                        rereadIfNewPayload(want, sController);
+                        return;
                     }
                 }
-                if (!lines.isEmpty()) CACHE.put(want, new Cached(lines, source));
-                setLines(lines, why);
+                settle(want, lines, why, source);
             }
         });
+    }
+
+    /** Puts a lookup's answer up: the one place lines found for `want` reach the screen. */
+    private static void settle(String want, List<LyricLine> lines, String why, int source) {
+        sLoading = false;
+        sSource = source;
+        // What the LAST lookup found, not what any lookup ever found.
+        //
+        // It has to fall as well as rise. Written once and kept, it said "a provider
+        // module is working" for as long as the file lasted - so disabling the module
+        // and restarting left the settings page still convinced, and the advice that
+        // should have appeared never did.
+        //
+        // SRC_NONE is deliberately not an answer either way: finding nothing can mean
+        // the network was down or the song simply has no lyrics anywhere, neither of
+        // which says anything about the provider.
+        //
+        // Nor is SRC_LOCAL, for the opposite reason. The file's own lyric outranks the
+        // session's, so a song that has one never reports what the session was carrying
+        // - the module may have been working perfectly and simply not been needed.
+        // Neither answer is available, so the last real one stands.
+        if (source != LyricSource.SRC_NONE && source != LyricSource.SRC_LOCAL) {
+            boolean fromSession = source == LyricSource.SRC_LYRIC_INFO;
+            if (fromSession != sSawSessionLyric) {
+                sSawSessionLyric = fromSession;
+                Main.saveState();
+            }
+        }
+        if (source == LyricSource.SRC_LYRIC_INFO) sSessionPkg = pkgOf(want);
+        if (!lines.isEmpty()) CACHE.put(want, new Cached(lines, source));
+        setLines(lines, why);
+        // A payload that turned up while this was looking. See rereadIfNewPayload().
+        rereadIfNewPayload(want, sController);
+    }
+
+    /*
+     * Waiting for the session's lyric instead of swapping to it.
+     *
+     * A player whose lyric comes through its own session publishes it a little after the track
+     * changes - our Apple hook half a second later (measured 0.5-0.65s, 2026-09-30) - and a .lrc
+     * beside the file answers in 50ms. Put up at once, the .lrc was on screen for half a second
+     * and then replaced by the session's copy: other lines, other breaks, word timings where
+     * there were none, which reads as the lyrics jumping. So when this player's last song came
+     * from its session, an answer from anywhere else is held until the session's arrives, or
+     * until SESSION_WAIT_MS after the track change, whichever is first. The page is held the way
+     * any lookup holds it (sLoading), so there is no cover in between.
+     *
+     * A wait that runs out says the player stopped publishing - a song Apple has no lyric for,
+     * the hook broken by an update - and the next song does not wait, until a session answer is
+     * seen again.
+     */
+
+    /** The player whose last settled answer came from its session: its next one is expected. */
+    private static String sSessionPkg;
+    private static final long SESSION_WAIT_MS = 1200L;
+    /** When sKey became the track; sTrackChangedAt is the blur's and is zeroed with it. */
+    private static long sTrackAt;
+
+    private static final class Parked {
+        final String key;
+        final List<LyricLine> lines;
+        final String why;
+        final int source;
+        /** The session's payload is being read; its answer decides, not the timer. */
+        boolean rereading;
+
+        Parked(String key, List<LyricLine> lines, String why, int source) {
+            this.key = key;
+            this.lines = lines;
+            this.why = why;
+            this.source = source;
+        }
+    }
+
+    private static Parked sParked;
+
+    private static final Runnable RELEASE_PARKED = new Runnable() {
+        @Override
+        public void run() {
+            Parked p = sParked;
+            if (p == null || p.rereading) return;
+            unpark();
+            if (!p.key.equals(sKey) || sDemo) return;
+            Xp.log(TAG + "no session lyric within " + SESSION_WAIT_MS + "ms; putting up "
+                    + p.why + ", and not waiting for " + sSessionPkg + " again");
+            sSessionPkg = null;
+            settle(p.key, p.lines, p.why, p.source);
+        }
+    };
+
+    private static void park(String key, List<LyricLine> lines, String why, int source,
+                             long left) {
+        sParked = new Parked(key, lines, why, source);
+        Main.main().removeCallbacks(RELEASE_PARKED);
+        Main.main().postDelayed(RELEASE_PARKED, left);
+        Xp.log(TAG + "holding " + why + " up to " + left + "ms for the session's lyric");
+    }
+
+    private static void unpark() {
+        sParked = null;
+        Main.main().removeCallbacks(RELEASE_PARKED);
+    }
+
+    /** The player a key names: every key, the card's and lyricKey's alike, starts with it. */
+    private static String pkgOf(String key) {
+        int bar = key.indexOf('|');
+        return bar < 0 ? key : key.substring(0, bar);
     }
 
     /**
@@ -1045,6 +1176,7 @@ final class LockLyrics {
             onTrack(key, c);
         } else if (!sDemo) {
             sGen++;
+            unpark();
             sLoading = false;
             setLines(Collections.<LyricLine>emptyList(), why);
         }
@@ -1057,6 +1189,7 @@ final class LockLyrics {
      */
     static void demo(String id, boolean apple) {
         sDemo = true;
+        unpark();
         final int gen = ++sGen;
         sLoading = true;
         sKey = "demo:" + id;
