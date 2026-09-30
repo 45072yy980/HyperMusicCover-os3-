@@ -6,6 +6,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.os.SystemClock
+import java.lang.reflect.Modifier
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 
@@ -45,7 +46,14 @@ internal object AmapImmerse {
     private const val SYSUI_PROBE = "com.os4.musiccover.PROBE"
     private const val MODULE = "com.autonavi.minimap.immersenavi.module.NativesModuleImmerseNavi"
 
+    private const val SERVICE = "com.autonavi.minimap.immersenavi.AMapImmerseNaviService"
+    private const val PREVIEW_CALLBACK = "setPreviewStateCommandCallback"
+    private val CALLBACKS = arrayOf(PREVIEW_CALLBACK, "setUniversalJSONCommandCallback",
+        "setMapStateCallback", "setDisplayInfoChangeCallback")
+
     private val registered = AtomicBoolean(false)
+    /** The page has given the module a preview callback, the only way an overview switch reaches it. */
+    @Volatile private var previewCallback = false
     private val modules = AtomicInteger()
     private val inits = AtomicInteger()
     @Volatile private var lastConfig: String? = null
@@ -90,11 +98,45 @@ internal object AmapImmerse {
             Xp.hookAll(module, "destroy") { chain ->
                 Xp.log(TAG + "destroy")
                 armed = false
+                previewCallback = false
                 tell(false)
                 chain.proceed()
             }
+            // What the page's script asks to be told. The overview switch (10000003) reaches the
+            // page only through its preview callback; with none registered 高德 drops the switch
+            // without a word ("sendPreviewCommandToAjx: no callbacks registered").
+            for (name in CALLBACKS) {
+                try {
+                    Xp.hookAll(module, name) { chain ->
+                        val cb = chain.args.getOrNull(0)
+                        if (name == PREVIEW_CALLBACK) previewCallback = cb != null
+                        Xp.log(TAG + "page " + name + (if (cb == null) " cleared" else ""))
+                        chain.proceed()
+                    }
+                } catch (t: Throwable) {
+                    Xp.log(TAG + name + " hook failed: " + t)
+                }
+            }
         } catch (t: Throwable) {
             Xp.log(TAG + "immerse module hooks failed: " + t)
+        }
+        try {
+            // The service's sendPreviewCommandToAjx: the one static (boolean) method on it.
+            val svc = Xp.findClass(SERVICE, cl)
+            val preview = svc.declaredMethods.filter {
+                Modifier.isStatic(it.modifiers) && it.parameterTypes.size == 1 &&
+                    it.parameterTypes[0] == java.lang.Boolean.TYPE
+            }
+            for (m in preview) {
+                Xp.hook(m) { chain ->
+                    Xp.log(TAG + "overview to the page: isPreview=" + chain.args[0] +
+                        " previewCallback=" + previewCallback + " config=" + lastConfig)
+                    chain.proceed()
+                }
+            }
+            if (preview.isEmpty()) Xp.log(TAG + "no sendPreviewCommandToAjx on " + SERVICE)
+        } catch (t: Throwable) {
+            Xp.log(TAG + "service hooks failed: " + t)
         }
     }
 
@@ -133,6 +175,7 @@ internal object AmapImmerse {
                 sb.append("modules=").append(modules.get())
                     .append(" inits=").append(inits.get())
                     .append(" armed=").append(armed)
+                    .append(" previewCallback=").append(previewCallback)
                 if (lastInitAt != 0L) {
                     sb.append(" lastInit=").append(SystemClock.uptimeMillis() - lastInitAt)
                         .append("ms ago")
