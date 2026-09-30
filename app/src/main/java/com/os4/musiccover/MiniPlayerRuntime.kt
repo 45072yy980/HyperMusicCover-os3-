@@ -8145,6 +8145,7 @@ private class MiniPlayerController(
     }
 
     private fun refreshUnsafe() { android.os.Trace.beginSection("MC refresh"); try {
+        lottiesFollowDoze()
         if (configStale) {
             configStale = false
             config = JSONObject(MiniPlayerConfig.fromPreferences(prefs))
@@ -8527,10 +8528,11 @@ private class MiniPlayerController(
             focusLotties[owner] = held
         }
         val lottie = held.second
+        lottieAutoplay[lottie] = anim.autoplay
         runCatching {
             Xp.callMethod(lottie, "setRepeatCount", anim.repeat)
             Xp.callMethod(lottie, "setRepeatMode", 1)
-            if (anim.autoplay) {
+            if (anim.autoplay && !MiniPlayerScene.aodActive) {
                 if (Xp.callMethod(lottie, "isAnimating") != true) {
                     lottieNote("asked to resume vis=${lottie.drawable?.isVisible}", lottie)
                     Xp.callMethod(lottie, "resumeAnimation")
@@ -8538,6 +8540,25 @@ private class MiniPlayerController(
             } else Xp.callMethod(lottie, "pauseAnimation")
         }
         return lottie.drawable?.let { d -> lottieWatches.getOrPut(d) { LottieWatch(d, lottie) } }
+    }
+
+    /** Which players their template asks to play, for the wake to play them again. */
+    private val lottieAutoplay = java.util.WeakHashMap<android.widget.ImageView, Boolean>()
+
+    /**
+     * The doze holds every place's Lottie on its frame; the wake plays again those that play.
+     * The window stays visible through the AOD, so nothing pauses them on its own, and one that
+     * loops redraws the whole NotificationShade every frame: the recorder's voiceWave kept the
+     * AOD at ~63fps, RenderThread 57% and main 37% of a core (2026-09-30).
+     */
+    private fun lottiesFollowDoze() {
+        val doze = MiniPlayerScene.aodActive
+        for (held in focusLotties.values) runCatching {
+            val lottie = held.second
+            if (doze) Xp.callMethod(lottie, "pauseAnimation")
+            else if (lottieAutoplay[lottie] == true && Xp.callMethod(lottie, "isAnimating") != true)
+                Xp.callMethod(lottie, "resumeAnimation")
+        }
     }
 
     /** Players no place shows any more, by picture, for the next place that plays the same. */
