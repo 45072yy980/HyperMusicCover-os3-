@@ -2851,6 +2851,8 @@ public class Main extends XposedModule {
                         setResultData(MiniPlayerRuntime.rowTree(key == null ? "" : key));
                     } else if ("fold".equals(op)) {
                         setResultData(describeFold());
+                    } else if ("numstate".equals(op)) {
+                        setResultData(NumStateProbe.run(c, i));
                     } else if ("keepawake".equals(op)) {
                         // --ez on true|false: the lock screen held lit for a test run.
                         setResultData(keepAwake(i.getBooleanExtra("on", true)));

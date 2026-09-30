@@ -251,6 +251,27 @@ internal class MiniCardMorph(
     }
 
     /**
+     * Posed from outside at [progress], nudged nowhere: the whole row spreading out as the stack's
+     * own list and folding back, every island's morph on the stack's scroll (the controller's
+     * Spread). Started as dragged, so its own frame only keeps the far end live when nothing has
+     * posed it this frame.
+     */
+    fun led(progress: Float) {
+        if (!running) return
+        motion.value = progress
+        motion.velocity = 0f
+        nudge.value = 0f
+        nudge.velocity = 0f
+        nudgeX.value = 0f
+        nudgeX.velocity = 0f
+        ledAt = SystemClock.uptimeMillis()
+        apply()
+    }
+
+    /** Still running: not finished, by its own springs, a cancel, or the lock screen's guard. */
+    val active: Boolean get() = running
+
+    /**
      * When a leader last posed it (follow). Held by no finger but started as dragged, a follower
      * was posed twice a frame - by the leader, and again by its own frame keeping the far end
      * live - two full passes where one is drawn: 2.4ms of every switch frame (traced 2026-09-25).

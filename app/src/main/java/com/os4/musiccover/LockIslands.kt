@@ -229,6 +229,24 @@ internal object LockIslands {
 
     private const val SCENE_GONE_MS = 2000L
 
+    /**
+     * The stack island opened over a page (高德's map, a countdown): the page goes and the lock
+     * screen is the plain one with the list on it, the page's notification a card in that list
+     * like any other opened one - still let out ([released]), so it folds home with the rest.
+     * It stayed as the page's before, and was left standing over the folded stack (the user,
+     * 2026-09-30). Its key, or null with no page open.
+     */
+    fun closeSceneForList(): String? {
+        val key = sceneKey ?: return null
+        val closed = scene
+        sceneKey = null
+        scene = null
+        sceneMissingSince = 0L
+        closed?.let { runCatching { ImmersiveHost.close(it) } }
+        NumState.trace("page ${closed?.id()} closed for the list")
+        return key
+    }
+
     /** The page's scene is no longer ready: its island is an island again. */
     fun forgetScene(which: ImmersiveScene) {
         if (scene !== which) return
@@ -252,6 +270,63 @@ internal object LockIslands {
 
     /** The stack island tapped open: all of its notifications back in the stack, new ones too. */
     private var stackOut = false
+
+    /**
+     * For NumStateProbe: ordinary notifications left in the stack instead of the stack island,
+     * so the stack's own "N notifications" state can be looked at with them in it. Not saved.
+     */
+    @Volatile private var probeNormalsInStack = false
+
+    @JvmStatic fun setProbeNormalsInStack(on: Boolean) {
+        probeNormalsInStack = on
+        invalidate("probe: ordinary notifications ${if (on) "in the stack" else "in the island"}")
+    }
+
+    /**
+     * The stack island folds the ordinary notifications ColorOS's way (NumState, 2026-09-30):
+     * their rows stay in the stack, the stack folded to its "N个通知" state hides them, and the
+     * island stands where that line was - shown while the stack is folded, gone while it is open
+     * as its list. Opening it is the stack scrolling to its list; closing it, back. None of the
+     * old way's taking rows out of the pipeline and giving them back (release/recapture), and
+     * none of its flights for these rows.
+     *
+     * Only with NumState's hooks in; without them, the old way.
+     */
+    private val nativeStack get() = NumState.available
+
+    /** For the controller: the stack island opens as the stack's list (openStack), no flight. */
+    fun foldsNatively(): Boolean = nativeStack
+
+    /** Folded, as the stack last said; read from it when it has not said yet. */
+    private fun stackFolded(): Boolean = NumState.inNumber ?: (NumState.state() == "NUMBER")
+
+    /** The stack island stands for the folded stack right now (NumState's hands-up asks). */
+    fun foldsToCount(): Boolean = nativeStack && (active || spreading) && stackMembers.isNotEmpty()
+
+    /**
+     * The whole row is out as the lock screen's own cards while the stack is its list (the
+     * controller's Spread, ColorOS's list state): every focus notification's row in the stack
+     * with the ordinary ones, the islands' views morphing into them and back. The row still
+     * stands for them (active is left alone), so nothing about the islands is rebuilt meanwhile.
+     */
+    @Volatile private var spreading = false
+
+    /** For NumState: the list is the spread's, not a pile to fold. */
+    fun spreadingNow(): Boolean = spreading
+
+    fun setSpread(on: Boolean) {
+        if (spreading == on) return
+        spreading = on
+        NumState.trace("spread=$on")
+        // Over: the island stands as the stack does. A pull let go before the stack ever left its
+        // fold said nothing (no exitNumState), and the island taken out for it stayed out.
+        if (!on && nativeStack) stackOut = !stackFolded()
+        publish()
+        invalidate(if (on) "row spread out as the list" else "row folded back")
+    }
+
+    /** The focus islands of the last run, before the stack island is put with them (publish). */
+    private var focusShown: List<Note> = emptyList()
 
     fun install(classLoader: ClassLoader) {
         focusCheck = runCatching {
@@ -297,6 +372,24 @@ internal object LockIslands {
                 result
             }
         }.onFailure { Xp.log("MCIsland: removals unavailable: $it") }
+        NumState.install(classLoader)
+        NumState.addListener { folded ->
+            if (!nativeStack) return@addListener
+            main.post { followStack("stack ${if (folded) "folded" else "opened"}") }
+        }
+    }
+
+    /**
+     * The stack island follows the stack: in the row while the stack is folded, out while it is
+     * open. The islands put together again without a pipeline run - nothing in the stack changed.
+     */
+    private fun followStack(why: String) {
+        val out = !stackFolded()
+        if (out != stackOut) {
+            stackOut = out
+            NumState.trace("$why: island ${if (out) "out" else "in"}")
+        }
+        publish()
     }
 
     /** For `op mini`: what the filter has, and whether the stack is leaving it out. */
@@ -311,7 +404,8 @@ internal object LockIslands {
                     "anim=${it.anim?.let { a -> "${a.src}/${a.autoplay}/row=${a.row.get() != null}" }} " +
                     (it.live?.let { l -> "live=${l.id} " } ?: "") +
                     "btn=${it.buttons.joinToString("/") { b -> "${b.index}:t${b.type}:${b.iconName}" }}}" else "")
-        } + if (creationUnreadable) " creation=unreadable" else ""
+        } + (if (creationUnreadable) " creation=unreadable" else "") +
+        (if (nativeStack) " || ${NumState.describe()}" else "")
 
     fun addListener(listener: () -> Unit) {
         listeners.addIfAbsent(listener)
@@ -333,7 +427,20 @@ internal object LockIslands {
             main.removeCallbacks(coverOff)
             cover = false
         }
+        if (nativeStack) {
+            // On for good once the islands have shown (off only with the feature: stopFolding).
+            if (value) {
+                NumState.setFolding(true)
+                NumState.foldIfPiled("row showing")
+            }
+            followStack("row ${if (value) "showing" else "gone"}")
+        }
         invalidate("row ${if (value) "showing" else "gone"}")
+    }
+
+    /** The islands are off altogether: the stack folds as the user's own setting says again. */
+    fun stopFolding() {
+        NumState.setFolding(false)
     }
 
     /**
@@ -374,6 +481,10 @@ internal object LockIslands {
 
     /** A tapped island goes back into the stack, for the rest of this lock screen. */
     fun release(key: String) { android.os.Trace.beginSection("MC li.release"); try {
+        if (key == STACK_KEY && nativeStack) {
+            openStack("released")
+            return
+        }
         if (key == STACK_KEY) {
             if (!stackOut) {
                 stackOut = true
@@ -395,6 +506,10 @@ internal object LockIslands {
 
     /** A notification put back in the stack comes back into the row: collapsed into it. */
     fun recapture(key: String) { android.os.Trace.beginSection("MC li.recapture"); try {
+        if (key == STACK_KEY && nativeStack) {
+            NumState.goTo("NUMBER", why = "recaptured")
+            return
+        }
         if (key == STACK_KEY) {
             if (stackOut) {
                 stackOut = false
@@ -411,9 +526,32 @@ internal object LockIslands {
         }
     } finally { android.os.Trace.endSection() } }
 
-    fun isReleased(key: String): Boolean = if (key == STACK_KEY) stackOut else key in released
+    /**
+     * The stack island opened: the stack scrolled out to its list, and the island out of the
+     * row at once rather than when the stack says it has left its fold - a frame or two later,
+     * with the pill showing a notification whose rows are already coming out under it.
+     */
+    fun openStack(why: String, scroll: Boolean = true) {
+        // Not scrolled (no model to ask): the island stays, or nothing would be left to tap.
+        // [scroll] false: a finger scrolls it (the spread pulled open) - only the island goes.
+        if (scroll && !NumState.goTo("LIST", why = why).startsWith("scrollY")) return
+        if (!stackOut) {
+            stackOut = true
+            NumState.trace("$why: island out")
+            publish()
+        }
+    }
 
-    fun releasedKeys(): List<String> = released.toList() + if (stackOut) listOf(STACK_KEY) else emptyList()
+    /**
+     * Folded natively, the stack island's rows are the stack's own, never let out or taken back:
+     * nothing of the old way's (a pull on a released row, the pile, the list's rest scroll)
+     * should take them for released ones.
+     */
+    fun isReleased(key: String): Boolean =
+        if (key == STACK_KEY) stackOut && !nativeStack else key in released
+
+    fun releasedKeys(): List<String> =
+        released.toList() + if (stackOut && !nativeStack) listOf(STACK_KEY) else emptyList()
 
     /** A notification as last read, released or not: what a row collapsing back will show. */
     fun noteFor(key: String): Note? = if (key == STACK_KEY) stackNote else readCache[key]?.second
@@ -423,9 +561,10 @@ internal object LockIslands {
 
     /** The lock screen went away: every notification is an island again next time. */
     fun resetReleased() {
-        if (released.all { it == sceneKey } && !stackOut) return
+        if (released.all { it == sceneKey } && (!stackOut || nativeStack)) return
         clearReleased()
-        stackOut = false
+        // Folded natively, it is the stack's state and not ours to clear.
+        if (!nativeStack) stackOut = false
         invalidate("released cleared")
     }
 
@@ -472,7 +611,7 @@ internal object LockIslands {
             // Unlocked: what a tap put back is an island again on the next lock screen - all but
             // 高德's, which stays open with its map as the cover stays up.
             clearReleased()
-            stackOut = false
+            if (!nativeStack) stackOut = false
             // Unlocking, the keyguard is "not locked" from the first frame of its fade-out,
             // while the row is still drawn on it: letting the islands go then put every one
             // of them in the fading stack at once - a flash of rows on each unlock (filmed
@@ -480,14 +619,29 @@ internal object LockIslands {
             // turning off after that runs the pipeline again (setActive).
             if (!active || !Main.onKeyguardNow()) return false
             val key = (Xp.getObjectField(entry, "mSbn") as? StatusBarNotification)?.key
-            val held = key != null && notes.any { it.key == key || it.key == STACK_KEY && key in stackMembers }
+            // Folded natively, the stack island's rows were never out of the stack to flash in.
+            val held = key != null && notes.any {
+                it.key == key || it.key == STACK_KEY && !nativeStack && key in stackMembers
+            }
             if (held) watchUnlock()
             return held
         }
         lockedRun = true
         val note = read(entry, redacted(filterObject, entry)) ?: return false
+        if (!note.focus && probeNormalsInStack) return false
+        // Folded natively, an ordinary notification is read for the stack island and left in
+        // the stack: the stack's own fold hides it.
+        if (!note.focus && nativeStack) {
+            pending[note.key] = note
+            // Passed here, it can still be left off the lock screen by a filter after this one:
+            // weighed once the run is over (commit), by where the run put it.
+            pendingEntries[note.key] = entry
+            return false
+        }
         val out = if (note.focus) note.key in released else stackOut
-        val kept = active && !out || cover && note.focus && !out
+        // Spread out, every focus row is the list's, the cover's too: tapped open in the cover,
+        // the list came up with the ordinary notifications alone (the user, 2026-09-30).
+        val kept = !spreading && (active && !out || cover && note.focus && !out)
         // A focus notification whose row is still being inflated has no template yet to say it
         // shows in full: read now, it came up as the redacted "系统界面组件 / 你有一条新消息"
         // with the plugin's icon, and turned into "手电筒 使用中" eight frames later (filmed
@@ -621,8 +775,46 @@ internal object LockIslands {
      */
     private val readCache = HashMap<String, Pair<Long, Note>>()
 
+    /**
+     * The ordinary notifications this run left in the stack, by key: their entries, to see at
+     * the run's end whether the lock screen shows them at all (dropUnshown).
+     */
+    private val pendingEntries = HashMap<String, Any>()
+
+    /** For `op mini`: the notifications the lock screen itself left out, and by which filter. */
+    @Volatile private var systemHidden = ""
+
+    /** For `op numstate` too (`op mini` answers nothing when it is long). */
+    fun systemHiddenForProbe(): String = systemHidden
+
+    /**
+     * An ordinary notification this filter let through that the run still left off the lock
+     * screen: HyperOS filters what the lock screen may show after this one - Nagram, whose
+     * notifications never show there, stood in the stack island and in its apps' picture (the
+     * user, 2026-09-30). Read at the run's end, where the run put it: no parent is not in the
+     * list - excluded by a later filter (its attach state names which), or pruned with its group.
+     * Unreadable, it stays: an island too many is better than a notification lost.
+     */
+    private fun dropUnshown() {
+        if (pendingEntries.isEmpty()) return
+        val dropped = StringBuilder()
+        for ((key, entry) in pendingEntries) {
+            val state = runCatching { Xp.getObjectField(entry, "attachState") }.getOrNull() ?: continue
+            val parent = runCatching { Xp.getObjectField(state, "parent") }.getOrElse { continue }
+            if (parent != null) continue
+            pending.remove(key)
+            val by = runCatching { Xp.getObjectField(state, "excludingFilter") }.getOrNull()
+                ?.let { f -> runCatching { Xp.callMethod(f, "getName") as String }.getOrNull() ?: f.javaClass.simpleName }
+                ?: "pruned"
+            dropped.append(key.substringAfter('|').substringBefore('|')).append(':').append(by).append(' ')
+        }
+        pendingEntries.clear()
+        systemHidden = dropped.toString().trim()
+    }
+
     /** The run is over: its candidates are the islands. */
     private fun commit() {
+        dropUnshown()
         val all = pending.values.toList()
         pending.clear()
         stamp(all, lockedRun)
@@ -638,8 +830,23 @@ internal object LockIslands {
         val members = shown.filter { !it.focus }.sortedWith(bigFirst)
         stackMembers = members.map { it.key }
         stackNote = aggregate(members)
-        val next = (shown.filter { it.focus && it.key !in released } +
-            listOfNotNull(stackNote?.takeIf { !stackOut })).sortedWith(bigFirst)
+        focusShown = shown.filter { it.focus && it.key !in released }
+        if (nativeStack) {
+            // The stack said nothing yet this lock screen: read where it is.
+            stackOut = !stackFolded()
+            // Not the spread's own run (its focus rows coming in): the stack is on its way to
+            // the list, and read as a pile on the way it was folded back (2026-09-30).
+            if (active && !spreading && members.isNotEmpty()) NumState.foldIfPiled("notifications changed")
+        }
+        publish()
+    }
+
+    /** The islands put together from the last run: the focus ones and the stack island. */
+    private fun publish() {
+        val stack = stackNote?.takeIf { !stackOut }
+        // Spread out, the count stays hidden too: the row folding back comes into its place.
+        if (nativeStack) NumState.hideCount(spreading || active && stack != null)
+        val next = (focusShown + listOfNotNull(stack)).sortedWith(bigFirst)
         // Unchanged is the same reading (read() hands back the cached note): by key and time, a
         // stopwatch paused or resumed - its `when` the same - never reached the island.
         if (next.size == notes.size && next.indices.all { next[it] === notes[it] }) return
@@ -682,9 +889,14 @@ internal object LockIslands {
         stackFrom = members
         val lead = members.first()
         val n = members.size
+        // From more than one app, the newest one's picture alone read as that app's pile (the
+        // user, 2026-09-30): the apps' pictures together, newest first, as a folder shows them.
+        val apps = members.distinctBy { it.pkg }
+        val icon = if (apps.size > 1) AppsIcon(apps.mapNotNull { it.icon }) else lead.icon
         return Note(STACK_KEY, lead.pkg, lead.title, stackText(lead, n),
-            lead.icon, focus = false, time = lead.time, intent = lead.intent, group = null,
-            summary = false, redacted = lead.redacted, since = members.maxOf { it.since }, iconFrom = lead.iconFrom)
+            icon, focus = false, time = lead.time, intent = lead.intent, group = null,
+            summary = false, redacted = lead.redacted, since = members.maxOf { it.since },
+            iconFrom = if (apps.size > 1) "apps${apps.size}" else lead.iconFrom)
     }
 
     /**
