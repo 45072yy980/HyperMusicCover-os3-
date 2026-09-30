@@ -2,6 +2,10 @@ package com.os4.musiccover;
 
 import android.content.Context;
 import android.graphics.Canvas;
+import android.graphics.Color;
+import android.graphics.LinearGradient;
+import android.graphics.Paint;
+import android.graphics.Shader;
 import android.graphics.drawable.Drawable;
 import android.view.View;
 
@@ -21,14 +25,25 @@ import java.util.List;
  *
  * A blur region has hard edges, so the edge that meets the sharp band is cut into STEPS strips
  * whose alpha steps down to nothing. SurfaceFlinger blurs once per radius and draws each region
- * from that one blurred picture, so the strips cost little more than one region.
+ * from that one blurred picture, so the strips cost little more than one region. They all have
+ * the one radius and the strength goes by alpha alone: three radius tiers put a hard seam where
+ * each tier began, the picture on either side of it being a different blur (screenshot
+ * 2026-09-30: seams at 165px and 2330px of 2608, both tier changes).
+ *
+ * Over the blur, a black scrim above and below the band, as ColorOS lays its top_mask_view and
+ * bottom_mask_view (plugin a6.e, seedling_immersive_overlay: 180dp, #80000000 to clear) over the
+ * map. 高德's map is light by day and the clock's glass shows the map it is over: without the
+ * scrim the clock and the date were the colour of the map around them (2026-09-30).
  *
  * All sizes are fractions of the view's height, or dp: nothing here depends on the display.
  */
 final class EdgeBlurView extends View {
 
-    /** Strips in each soft edge; the edge is the whole band now, so more of them. */
-    private static final int STEPS = 14;
+    /**
+     * Strips in each soft edge; the edge is the whole band now, so more of them. The steepest
+     * step between two strips is 1.5 / STEPS of alpha (the smoothstep's slope).
+     */
+    private static final int STEPS = 24;
     /**
      * How far the soft edge reaches into the blurred side, as a fraction of the height. At least
      * the whole band: the blur is heaviest at the screen's edge and has gone by the sharp band,
@@ -37,11 +52,22 @@ final class EdgeBlurView extends View {
      */
     private static final float EDGE = 1f;
     /**
-     * The blur's radius by how near the strip is to the screen's edge: heavier at the edge, light
-     * by the band (user, 2026-09-29: "靠近屏幕边缘的模糊改重一点"). Three tiers, not one radius per
-     * strip: SurfaceFlinger blurs once per distinct radius, so each tier is one more blur pass.
+     * The blur's radius, the heaviest of the old tiers. It is still heavier at the edge (user,
+     * 2026-09-29: "靠近屏幕边缘的模糊改重一点"): the strips there are at full alpha, the ones by the
+     * band at almost none.
      */
-    private static final float[] RADIUS_DP = {32f, 22f, 14f};
+    private static final float RADIUS_DP = 32f;
+
+    /** The scrim's alpha at the screen's edge: ColorOS's #80. */
+    private static final float SCRIM_EDGE = 0.5f;
+    /**
+     * Stops in each scrim's gradient, sampling scrim(): two stops would be a straight ramp, which
+     * leaves the clock - low in the top band - a third of the edge's darkness.
+     */
+    private static final int SCRIM_STOPS = 9;
+
+    private final Paint mTopScrim = new Paint();
+    private final Paint mBottomScrim = new Paint();
 
     /** Top blurred band: solid, then its soft edge; the bottom band mirrors it. */
     private final List<Drawable> mStrips = new ArrayList<>();
@@ -128,6 +154,10 @@ final class EdgeBlurView extends View {
         }
         if (mFade <= 0f) return;
         for (Drawable d : mStrips) d.draw(canvas);
+        int w = getWidth();
+        int h = getHeight();
+        if (mTopScrim.getShader() != null) canvas.drawRect(0, 0, w, mTop * h, mTopScrim);
+        if (mBottomScrim.getShader() != null) canvas.drawRect(0, mBottom * h, w, h, mBottomScrim);
     }
 
     /** STEPS strips for each edge plus a solid band on each side: 2 * (STEPS + 1). */
@@ -161,48 +191,83 @@ final class EdgeBlurView extends View {
     private void layoutStrips() {
         int w = getWidth();
         int h = getHeight();
-        if (mStrips.isEmpty() || w <= 0 || h <= 0 || Float.isNaN(mTop)) return;
+        if (w <= 0 || h <= 0 || Float.isNaN(mTop)) return;
+        layoutScrims(h);
+        if (mStrips.isEmpty()) {
+            applyAlphas();
+            return;
+        }
         float edge = EDGE * h;
         float top = mTop * h;
         float bottom = mBottom * h;
         float topSolid = Math.max(0f, top - edge);
         float bottomSolid = Math.min(h, bottom + edge);
         int k = 0;
-        k = place(k, 0f, topSolid, 1f, 0, w);
+        k = place(k, 0f, topSolid, 1f, w);
         for (int i = 0; i < STEPS; i++) {
             float a = topSolid + (top - topSolid) * i / STEPS;
             float b = topSolid + (top - topSolid) * (i + 1) / STEPS;
             // i = 0 is the strip at the screen's edge.
-            k = place(k, a, b, 1f - smooth((i + 0.5f) / STEPS), i, w);
+            k = place(k, a, b, 1f - smooth((i + 0.5f) / STEPS), w);
         }
         for (int i = 0; i < STEPS; i++) {
             float a = bottom + (bottomSolid - bottom) * i / STEPS;
             float b = bottom + (bottomSolid - bottom) * (i + 1) / STEPS;
             // Here the strip at the screen's edge is the last one.
-            k = place(k, a, b, smooth((i + 0.5f) / STEPS), STEPS - 1 - i, w);
+            k = place(k, a, b, smooth((i + 0.5f) / STEPS), w);
         }
-        place(k, bottomSolid, h, 1f, 0, w);
+        place(k, bottomSolid, h, 1f, w);
         applyAlphas();
     }
 
-    /** @param fromEdge the strip's place counted from the screen's edge, 0 = at it */
-    private int place(int k, float top, float bottom, float alpha, int fromEdge, int w) {
+    private int place(int k, float top, float bottom, float alpha, int w) {
         Drawable d = mStrips.get(k);
         d.setBounds(0, Math.round(top), w, Math.round(bottom));
         mAlphas.set(k, alpha);
-        int tier = Math.min(RADIUS_DP.length - 1, fromEdge * RADIUS_DP.length / STEPS);
         try {
-            mSetRadius.invoke(d, Math.round(RADIUS_DP[tier] * getResources().getDisplayMetrics().density));
+            mSetRadius.invoke(d, Math.round(RADIUS_DP * getResources().getDisplayMetrics().density));
         } catch (Throwable t) {
             Xp.log("MCImmersive: edge blur radius not set: " + t);
         }
         return k + 1;
     }
 
+    /**
+     * Top: from the screen's edge down to the band; bottom: from the band down to the edge. Each
+     * is dark at the edge and clear at the band.
+     */
+    private void layoutScrims(int h) {
+        int[] colours = new int[SCRIM_STOPS];
+        int[] reversed = new int[SCRIM_STOPS];
+        float[] at = new float[SCRIM_STOPS];
+        for (int i = 0; i < SCRIM_STOPS; i++) {
+            at[i] = (float) i / (SCRIM_STOPS - 1);
+            colours[i] = Color.argb(Math.round(255f * SCRIM_EDGE * scrim(at[i])), 0, 0, 0);
+        }
+        for (int i = 0; i < SCRIM_STOPS; i++) reversed[i] = colours[SCRIM_STOPS - 1 - i];
+        mTopScrim.setShader(new LinearGradient(0, 0, 0, mTop * h, colours, at,
+                Shader.TileMode.CLAMP));
+        mBottomScrim.setShader(new LinearGradient(0, mBottom * h, 0, h, reversed, at,
+                Shader.TileMode.CLAMP));
+    }
+
+    /**
+     * The scrim's strength at t, 0 at the screen's edge and 1 at the band: held most of the way
+     * and let go near the band, so the clock, some two thirds of the way down to the band, keeps
+     * most of it (t = 0.66: 0.71 of the edge's; ColorOS's straight 180dp ramp would leave it
+     * almost none on this layout).
+     */
+    private static float scrim(float t) {
+        return 1f - t * t * t;
+    }
+
     private void applyAlphas() {
         for (int i = 0; i < mStrips.size(); i++) {
             mStrips.get(i).setAlpha(Math.round(255f * mAlphas.get(i) * mFade));
         }
+        int a = Math.round(255f * mFade);
+        mTopScrim.setAlpha(a);
+        mBottomScrim.setAlpha(a);
     }
 
     private static float smooth(float t) {
