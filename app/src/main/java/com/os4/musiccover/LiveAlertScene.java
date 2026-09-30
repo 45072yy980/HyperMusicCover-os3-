@@ -353,9 +353,12 @@ class LiveAlertScene implements ImmersiveScene {
         }
         mConn = null;
         mServer = null;
-        try {
-            sv.clearChildSurfacePackage();
-        } catch (Throwable ignored) {
+        // Android 16's; before it, removing the view below is what lets the package go.
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.BAKLAVA) {
+            try {
+                sv.clearChildSurfacePackage();
+            } catch (Throwable ignored) {
+            }
         }
         ViewGroup parent = (ViewGroup) sv.getParent();
         if (parent != null) parent.removeView(sv);
