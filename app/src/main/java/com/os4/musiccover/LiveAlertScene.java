@@ -4,6 +4,7 @@ import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
 import android.content.ServiceConnection;
+import android.content.res.Configuration;
 import android.graphics.PixelFormat;
 import android.graphics.Rect;
 import android.os.Bundle;
@@ -65,6 +66,10 @@ class LiveAlertScene implements ImmersiveScene {
     private static final float INFO_SIDE = 0.052f;
     private static final float INFO_TOP = 0.231f;
     private static final float INFO_BOTTOM = 0.703f;
+    /** criticalBounds: the plugin centres it at 0.6 of the screen's height... */
+    private static final float CRITICAL_Y = 0.6f;
+    /** ...50px either way on its 1080px-wide screen. */
+    private static final float CRITICAL_HALF = 50f / 1080f;
 
     private final String mId;
     private final String mTag;
@@ -143,7 +148,13 @@ class LiveAlertScene implements ImmersiveScene {
         mContent = false;
         mShown = false;
         mCardKey = mCardId + "||0|" + System.currentTimeMillis();
-        SurfaceView sv = new SurfaceView(slot.getContext());
+        SurfaceView sv = new SurfaceView(slot.getContext()) {
+            @Override
+            protected void onConfigurationChanged(Configuration config) {
+                super.onConfigurationChanged(config);
+                forwardConfiguration(config);
+            }
+        };
         // onShown hides the page with INVISIBLE, which by default destroys the surface and makes
         // a new one on the next show: a run of taps on the islands made ~90 surfaces in 75s and
         // doubled SurfaceFlinger's load (trace 2026-09-30). Kept for as long as the view is
@@ -467,6 +478,34 @@ class LiveAlertScene implements ImmersiveScene {
         return data;
     }
 
+    /**
+     * The lock screen's configuration changed - night mode, font scale, the display: passed on to
+     * the page, as the plugin does (a6.l.i / a6.a.i). The page is drawn in the app's process from
+     * a SurfaceControlViewHost, which does not see the host's configuration by itself, and 高德's
+     * page follows the theme (horusConfig.followThemeMode), so without this it may stay a day map
+     * after dark mode comes on (not seen yet; added 2026-09-30 matching the plugin). The package's notifyConfigurationChanged is Android 16's; the
+     * state 0 message beside it carries the configuration for an app that listens for it there.
+     */
+    private void forwardConfiguration(Configuration config) {
+        SurfaceControlViewHost.SurfacePackage p = mPackage;
+        if (p != null && android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.BAKLAVA) {
+            try {
+                p.notifyConfigurationChanged(config);
+            } catch (Throwable t) {
+                Xp.log(mTag + "configuration not passed on: " + t);
+            }
+        }
+        if (!mBindSent) return;
+        Bundle extra = new Bundle();
+        extra.putParcelable("config", config);
+        Bundle data = new Bundle();
+        data.putInt("state", 0);
+        data.putBundle("extra", extra);
+        send(MSG_STATE, data);
+        Xp.log(mTag + "configuration passed on, night="
+                + ((config.uiMode & Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES));
+    }
+
     private Bundle stateData(int state) {
         Bundle data = new Bundle();
         data.putInt("state", state);
@@ -494,8 +533,11 @@ class LiveAlertScene implements ImmersiveScene {
     }
 
     /**
-     * What the plugin's getDisplayBundle builds: the size, the orientation, and infoBounds - the
-     * band the app keeps its information inside (INFO_*).
+     * What the plugin's getDisplayBundle builds (a6.a.e): the size, the orientation, infoBounds -
+     * the band the app keeps its information inside (INFO_*) - and criticalBounds, where the app
+     * keeps the thing that must not be lost: 高德's cycling page puts you there. Without it that
+     * page put you below the screen's bottom while its walking page, which does not read it,
+     * kept you in view (2026-09-30, the same navigation side by side with the OPPO).
      */
     private Bundle displayExtra() {
         int w = width();
@@ -505,8 +547,17 @@ class LiveAlertScene implements ImmersiveScene {
         display.putInt("height", h);
         display.putInt("orientation", mSurface.getResources().getConfiguration().orientation);
         int side = Math.round(w * INFO_SIDE);
+        int infoBottom = Math.round(h * INFO_BOTTOM);
         display.putParcelable("infoBounds",
-                new Rect(side, Math.round(h * INFO_TOP), w - side, Math.round(h * INFO_BOTTOM)));
+                new Rect(side, Math.round(h * INFO_TOP), w - side, infoBottom));
+        // The plugin's getCriticalRect: a box centred across, CRITICAL_Y down, kept at least its
+        // own half clear of infoBounds' bottom. The plugin's box is 100px on a 1080px-wide
+        // screen, so its half is a fraction of the width here.
+        int half = Math.round(w * CRITICAL_HALF);
+        int cy = Math.round(h * CRITICAL_Y);
+        if (infoBottom - cy < half) cy = infoBottom - half;
+        display.putParcelable("criticalBounds",
+                new Rect(w / 2 - half, cy - half, w / 2 + half, cy + half));
         Bundle extra = cardExtra();
         extra.putBundle("livealert.immersive.display", display);
         return extra;
