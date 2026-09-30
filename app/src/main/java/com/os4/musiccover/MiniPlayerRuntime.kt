@@ -2423,9 +2423,11 @@ private class MiniPlayerController(
         // The camera pushing on the row takes the small island back first: it is the row's end.
         // A push on it moves it aside.
         val d = discDiameter().toFloat()
-        val tx = smallRest[0] - fw / 2f - v.left - squeeze.rowGivePx(1) + smallDx + smallNudgeX() +
-            squeeze.smallShift() * d + squeeze.smallPushPx()
-        val ty = smallRest[1] - fh / 2f - v.top + smallNudgeY()
+        val offX = -squeeze.rowGivePx(1) + smallDx + smallNudgeX() + squeeze.smallShift() * d +
+            squeeze.smallPushPx()
+        val offY = smallNudgeY()
+        var tx = smallRest[0] - fw / 2f - v.left + offX
+        var ty = smallRest[1] - fh / 2f - v.top + offY
         // Flattened by the pill, by its shape - a scale would draw its edge jagged - when nothing
         // else is shaping it this frame.
         if (swap == null && !smallGrowing && !islandDragging && group?.inPlace != true) {
@@ -2438,6 +2440,13 @@ private class MiniPlayerController(
         if (kotlin.math.abs(v.scaleX - swell) > 0.0005f) {
             v.scaleX = swell
             v.scaleY = swell
+        }
+        // At rest on whole pixels, as the pill and the discs are, or its rim is cut into steps.
+        if (offX == 0f && offY == 0f && swell == 1f && (follow == null || follow.isIdentity)) {
+            tx = kotlin.math.round(tx)
+            ty = kotlin.math.round(ty)
+            if (v.translationX != tx) v.translationX = tx
+            if (v.translationY != ty) v.translationY = ty
         }
         if (kotlin.math.abs(v.translationX - tx) > 0.25f) v.translationX = tx
         if (kotlin.math.abs(v.translationY - ty) > 0.25f) v.translationY = ty
@@ -7252,8 +7261,19 @@ private class MiniPlayerController(
             val fade = if (unheldInDoze(chainFade(button)) == 0f) 0f
                 else chainFade(button, disc.parent as? View ?: host)
             // Placed and zoomed with the button; its squeeze is its shape, at its own pixels.
-            setIfChanged(disc, cx - frame / 2f - disc.left, discPoint[1] - frame / 2f - disc.top,
-                zoom, zoom, fade)
+            var tx = cx - frame / 2f - disc.left
+            var ty = discPoint[1] - frame / 2f - disc.top
+            // At rest on whole pixels, as the pill (MiniPlayerView.rest): the glass is drawn on
+            // the pixel grid and the outline clip is not, so a disc left on a half pixel had its
+            // rim cut into steps on one side - a button centre at x.5 on a 1280px screen
+            // (warsaw, 2026-09-30), while the pill beside it on whole pixels was smooth.
+            if (kotlin.math.abs(zoom - 1f) < 0.0005f && squeeze.discShift(side) == 0f) {
+                tx = kotlin.math.round(tx)
+                ty = kotlin.math.round(ty)
+                if (disc.translationX != tx) disc.translationX = tx
+                if (disc.translationY != ty) disc.translationY = ty
+            }
+            setIfChanged(disc, tx, ty, zoom, zoom, fade)
             disc.setShape((d * squeeze.discScaleX(side)).roundToInt().coerceIn(1, frame),
                 (d * squeeze.discScaleY(side)).roundToInt().coerceIn(1, frame))
             squeezeButton(side, button, d)
