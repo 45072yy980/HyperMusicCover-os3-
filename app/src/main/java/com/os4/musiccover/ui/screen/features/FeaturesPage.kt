@@ -1,7 +1,6 @@
 package com.os4.musiccover.ui.screen.features
 
 import android.content.Intent
-import android.graphics.Bitmap
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -96,8 +95,18 @@ private fun FeatureList(
             Column {
                 // The 12dp under the bar that every other list page in this app leaves. It was
                 // missing on this one card, which put it flush against the title.
+                // The order is the user's (2026-09-30): the islands, the cover, the shade.
                 Card(
                     modifier = Modifier.padding(horizontal = 12.dp, vertical = 12.dp)
+                ) {
+                    ArrowPreference(
+                        title = stringResource(R.string.features_mini_title),
+                        summary = stringResource(R.string.features_mini_summary),
+                        onClick = { onOpen(MiniPlayerActivity::class.java) },
+                    )
+                }
+                Card(
+                    modifier = Modifier.padding(horizontal = 12.dp).padding(bottom = 12.dp)
                 ) {
                     ArrowPreference(
                         title = stringResource(R.string.features_cover_title),
@@ -114,33 +123,26 @@ private fun FeatureList(
                         onClick = { onOpen(ShadeActivity::class.java) },
                     )
                 }
-                Card(
-                    modifier = Modifier.padding(horizontal = 12.dp).padding(bottom = 12.dp)
-                ) {
-                    ArrowPreference(
-                        title = stringResource(R.string.features_mini_title),
-                        summary = stringResource(R.string.features_mini_summary),
-                        onClick = { onOpen(MiniPlayerActivity::class.java) },
-                    )
-                }
             }
         }
     }
 }
 
 /**
- * Everything the module can be told about the lock screen, with a picture of it above.
+ * Everything the module can be told about the lock screen, with what cover mode is played above.
  *
  * These are not app preferences: each one is a command to the hook inside SystemUI, and the
- * values shown are the ones it reports back. The preview is drawn from the same values, so a
- * drag can be judged here instead of by locking the phone after every change.
+ * values shown are the ones it reports back. The picture above them is CoverDemo, the 趣味拟物
+ * style animation that replaced the live composite on 2026-09-30 (user): it plays what cover mode
+ * does, and still follows the three settings here that change the look - the style, where a
+ * full-screen cover sits, and how small the clock goes.
  *
  * Two decisions about the layout, both departures from KernelSU's colour-palette screen this
  * follows:
  *
  * - **The preview is outside the scrolling area.** KernelSU makes its preview the first item of
  *   the list, which scrolls away; it can afford to because its controls are short. Here the
- *   preview is the thing being adjusted, so scrolling it off the screen would defeat the page.
+ *   preview answers the sliders under it, so scrolling it off the screen would defeat the page.
  * - **The tabs swap the controls in place, they do not navigate.** So there is one preview for
  *   the whole page rather than one per group, which is also the rule for the app as a whole:
  *   never two live previews on one screen, because that is two copies of a state to keep in
@@ -160,81 +162,37 @@ internal fun CoverPageView(
     val context = LocalContext.current
 
     var module by remember { mutableStateOf(ModuleBridge.State()) }
-    var art by remember { mutableStateOf<Bitmap?>(null) }
-    var shots by remember { mutableStateOf(ModuleBridge.Preview()) }
     var group by remember { mutableIntStateOf(0) }
 
     // Re-asked until it answers: this screen is reached straight after "重启全部作用域" as often
     // as not, and a single query then lands before SystemUI has a receiver - leaving every
     // control greyed out and every value at its default for as long as the screen stays open.
     LaunchedEffect(refreshKey) { module = ModuleBridge.queryAlive(context) }
-    // The pictures are asked for on their own and polled rather than fetched once: skipping a
-    // track with this page open would otherwise leave the preview showing the previous album,
-    // and the card's seek bar would sit still. The poll stays small because the module answers
-    // "same song" instead of resending the artwork, and it deliberately does NOT re-read the
-    // settings - a query landing mid-drag would snap a slider back to whatever the module had
-    // applied a moment ago.
+    // Polled while the page is open for the three things the rows under the picture read and
+    // that change without a settings change: whether the clock style has glass, which route the
+    // lyric came from, and the clock's size while nothing has set it. The reply is the old live
+    // preview's; `have` is kept current so the module answers "same song" instead of resending
+    // artwork this page no longer draws.
     var artTrack by remember { mutableStateOf("") }
     LaunchedEffect(refreshKey, module.alive) {
-        if (!module.alive) {
-            art = null
-            shots = ModuleBridge.Preview()
-            return@LaunchedEffect
-        }
+        if (!module.alive) return@LaunchedEffect
         while (true) {
-            // The shortcuts never change, so they are fetched once and then carried forward.
-            val want = shots.left == null || shots.right == null
-            val reply = ModuleBridge.preview(context, artTrack, want)
-            if (!reply.artUnchanged) {
-                art = reply.art
-                artTrack = reply.track
-            }
-            // The clock's geometry rides along with the pictures. Merged into the state rather
-            // than replacing it: a poll must never write back bias or the two clock values,
-            // which the user may be dragging at this very moment.
-            // Not inside the geometry block above: that one only runs when the clock could
-            // be measured, and this has to reach the settings page on a style whose clock it
-            // could not be measured on - which is exactly when the slider looks wrong.
+            val reply = ModuleBridge.preview(context, artTrack, false)
+            if (!reply.artUnchanged) artTrack = reply.track
             if (reply.clockHasGlass != module.clockHasGlass) {
                 module = module.copy(clockHasGlass = reply.clockHasGlass)
             }
             // Which route the words came from changes mid-track - the file answers first and the
-            // network lands after it, or the session's own payload turns up last - so it rides
-            // the same poll the pictures do. Empty means a module too old to send it.
+            // network lands after it, or the session's own payload turns up last. Empty means a
+            // module too old to send it.
             if (reply.lyricSource.isNotEmpty() && reply.lyricSource != module.lyricSource) {
                 module = module.copy(lyricSource = reply.lyricSource)
-            }
-            reply.clockGeometry?.let { g ->
-                if (g != clockGeometryOf(module)) {
-                    module = module.copy(
-                        geometry = module.geometry.copy(
-                            clockW = g.clockW,
-                            clockH = g.clockH,
-                            clockY = g.clockY,
-                            clockPad = g.clockPad,
-                            clockX = g.clockX,
-                            clockPivotX = g.clockPivotX,
-                            clockFull = g.clockFull,
-                        )
-                    )
-                }
             }
             // Only while the slider has never been moved: the size is then the dp default in
             // the style's terms, and it changes with the style. Once set, the slider owns it.
             if (module.clockSize <= 0f && reply.clockSize > 0f) {
                 module = module.copy(clockSize = reply.clockSize)
             }
-            shots = ModuleBridge.Preview(
-                card = reply.card ?: shots.card,
-                cardRadius = if (reply.cardRadius > 0f) reply.cardRadius else shots.cardRadius,
-                // Carried straight through, null included: no slot means the artwork is hidden.
-                artSlot = reply.artSlot,
-                clockHour = reply.clockHour ?: shots.clockHour,
-                clockMinute = reply.clockMinute ?: shots.clockMinute,
-                date = reply.date ?: shots.date,
-                left = reply.left ?: shots.left,
-                right = reply.right ?: shots.right,
-            )
             delay(SHOT_POLL_MS)
         }
     }
@@ -254,27 +212,16 @@ internal fun CoverPageView(
         extraBottomPadding = extraBottomPadding,
         onBack = onBack,
         pinned = {
-            Spacer(Modifier.height(24.dp))
-            LockPreview(
-                art = art,
-                bias = module.bias,
-                coverStyle = module.coverStyle,
-                coverCardFill = module.coverCardFill,
-                coverCardPos = module.coverCardPos,
-                clockSize = module.clockSize,
-                clockOffsetDp = module.clockOffsetDp,
-                glassEnd = module.glassEnd,
-                geometry = module.geometry,
-                card = shots.card,
-                cardRadius = shots.cardRadius,
-                artSlot = shots.artSlot,
-                cardHideArt = module.mcHideArt,
-                clockHour = shots.clockHour,
-                clockMinute = shots.clockMinute,
-                date = shots.date,
-                leftShortcut = shots.left,
-                rightShortcut = shots.right,
-            )
+            Spacer(Modifier.height(8.dp))
+            // Framed as the islands' page frames its demonstration: a card, three plays in it.
+            Card(Modifier.padding(horizontal = 12.dp)) {
+                CoverDemo(
+                    coverStyle = module.coverStyle,
+                    bias = module.bias,
+                    clockSize = module.clockSize,
+                    modifier = Modifier.padding(top = 16.dp),
+                )
+            }
             Spacer(Modifier.height(12.dp))
             TabRow(
                 tabs = groups,
@@ -672,20 +619,9 @@ internal fun ValueSlider(
     }
 }
 
-/** The clock half of a state's geometry, for comparing against a freshly reported one. */
-private fun clockGeometryOf(state: ModuleBridge.State) = ModuleBridge.Geometry(
-    clockW = state.geometry.clockW,
-    clockH = state.geometry.clockH,
-    clockY = state.geometry.clockY,
-    clockPad = state.geometry.clockPad,
-    clockX = state.geometry.clockX,
-    clockPivotX = state.geometry.clockPivotX,
-    clockFull = state.geometry.clockFull,
-)
-
 /**
- * How often the preview re-asks for its pictures. Long enough to be invisible on the battery,
- * short enough that a skipped track catches up before it is worth wondering about.
+ * How often the page re-asks the module for what its rows show. Long enough to be invisible on
+ * the battery, short enough that a skipped track catches up before it is worth wondering about.
  */
 private const val SHOT_POLL_MS = 3000L
 
