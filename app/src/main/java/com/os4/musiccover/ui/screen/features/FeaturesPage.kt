@@ -462,8 +462,24 @@ private fun LyricsGroup(
         // a lyric, and the two-finger tap on the lock screen is how the cover is asked for
         // instead. Neither is the band they are drawn in - its height, its place in the room, the
         // margin the lines are held inside and the size and weight of the main line are all fixed
-        // now (see LyricStyle). Everything below is a preference about the words rather than
-        // about where they go, so all three stay.
+        // now (see LyricStyle). The one thing about where the words go that is still the user's
+        // is where they settle between those margins; the switches below are about the words
+        // themselves, so all three stay.
+        val alignModes = listOf(
+            stringResource(R.string.lyrics_align_left),
+            stringResource(R.string.lyrics_align_center),
+            stringResource(R.string.lyrics_align_right),
+        )
+        WindowDropdownPreference(
+            title = stringResource(R.string.lyrics_align),
+            items = alignModes,
+            selectedIndex = module.lyricsAlign.coerceIn(0, alignModes.lastIndex),
+            enabled = enabled,
+            onSelectedIndexChange = {
+                onChange(module.copy(lyricsAlign = it))
+                ModuleBridge.setLyricsAlign(context, it)
+            },
+        )
         SwitchPreference(
             title = stringResource(R.string.lyrics_trans),
             checked = module.lyricsTrans,
