@@ -129,6 +129,7 @@ internal class SkeuoPalette(
     val line: Color,
     val accent: Color,
     val screen: Color,
+    val dark: Boolean,
 )
 
 @Composable
@@ -136,10 +137,10 @@ internal fun skeuoPalette(dark: Boolean): SkeuoPalette {
     val screen = MiuixTheme.colorScheme.surfaceContainer
     return if (dark) {
         SkeuoPalette(Color(0xFF666666), Color(0xFF333333), Color(0xFF424242), Color(0xFF565656),
-            Color(0xFF3281FF), screen)
+            Color(0xFF3281FF), screen, true)
     } else {
         SkeuoPalette(Color(0xFFBDC1D8), Color(0xFFE9EAF1), Color(0xFFDDDFEA), Color(0xFFC9CCDD),
-            Color(0xFF5D9AFE), screen)
+            Color(0xFF5D9AFE), screen, false)
     }
 }
 
@@ -323,40 +324,65 @@ private val CAMERA_EASE = CubicBezierEasing(0.4f, 0f, 0.2f, 1f)
  * Where a demonstration is looking: a point on the phone, in its units, held at the middle of the
  * picture, and how far in from the whole phone. Moved to the moment that matters and back out,
  * the way a narrated video would - the finger stays its own size throughout (see drawFinger).
+ *
+ * A move is one progress from the picture on screen to the one asked for, and the scale and the
+ * place are carried together on it: the phone glides in about a single still point, in one go.
+ * The point, the zoom and the way there used to be eased each on their own, which let the bottom
+ * edge drop out of the picture half way into a close-up of the island row; a guard added to keep
+ * it in then held the phone down and let it go, so every close-up arrived in two moves - in, then
+ * up - and a close-up high on the screen, the lyrics, was pushed off the top to keep an edge in
+ * view that belonged out of it (user, 2026-09-30). Carried on one progress, every edge moves one
+ * way only between the two ends, so there is nothing left to guard.
  */
 internal class DemoCamera {
-    val cx = Animatable(PHONE_W / 2f)
-    val cy = Animatable(PHONE_H / 2f)
-    /** 1 the whole phone; 2 twice as close. */
-    val k = Animatable(1f)
+    private class Framing(val cx: Float, val cy: Float, val k: Float)
+
+    private var from = WIDE
+    private var to = WIDE
+    private val t = Animatable(1f)
+    private var lastW = 0f
+    private var lastH = 0f
+    private var lastFill = 0.9f
 
     suspend fun reset() {
-        cx.snapTo(PHONE_W / 2f); cy.snapTo(PHONE_H / 2f); k.snapTo(1f)
+        from = WIDE; to = WIDE
+        t.snapTo(1f)
     }
 
-    suspend fun focus(x: Float, y: Float, zoom: Float, ms: Int = 650) = coroutineScope {
-        launch { cx.animateTo(x, tween(ms, easing = CAMERA_EASE)) }
-        launch { cy.animateTo(y, tween(ms, easing = CAMERA_EASE)) }
-        launch { k.animateTo(zoom, tween(ms, easing = CAMERA_EASE)) }
+    /** From wherever it is, to (x, y) at `zoom`, in one move. */
+    suspend fun focus(x: Float, y: Float, zoom: Float, ms: Int = 650) {
+        from = current()
+        to = Framing(x, y, zoom)
+        t.snapTo(0f)
+        t.animateTo(1f, tween(ms, easing = CAMERA_EASE))
     }
 
     suspend fun wide(ms: Int = 650) = focus(PHONE_W / 2f, PHONE_H / 2f, 1f, ms)
 
-    /**
-     * Scale (pixels per unit) and the offset of the phone's origin, for a picture this size.
-     *
-     * The focus is held at the middle unless that would take the phone's bottom edge - its stroke
-     * too - lower than it sits with the whole phone in view; then the phone is lifted until it
-     * does. The point, the zoom and the way there are each eased on their own, so half way into
-     * a close-up of the island row the zoom was well on and the point still high, and the edge
-     * dropped out of the picture for the length of the move (user, 2026-09-30).
-     */
+    /** Scale (pixels per unit) and the offset of the phone's origin, for a picture this size. */
     fun view(width: Float, height: Float, fill: Float = 0.9f): Pair<Float, Offset> {
-        val s = height * fill / PHONE_H * k.value
-        var oy = height / 2f - cy.value * s
-        val edge = oy + (PHONE_H + PHONE_STROKE / 2f) * s
-        val floor = height / 2f + (PHONE_H / 2f + PHONE_STROKE / 2f) * (height * fill / PHONE_H)
-        if (edge > floor) oy -= edge - floor
-        return s to Offset(width / 2f - cx.value * s, oy)
+        lastW = width; lastH = height; lastFill = fill
+        val (s0, o0) = frame(from, width, height, fill)
+        val (s1, o1) = frame(to, width, height, fill)
+        val p = t.value
+        return (s0 + (s1 - s0) * p) to Offset(o0.x + (o1.x - o0.x) * p, o0.y + (o1.y - o0.y) * p)
+    }
+
+    /** The picture on screen now, as a framing, so a move started mid-move starts from it. */
+    private fun current(): Framing {
+        if (t.value >= 1f || lastH <= 0f) return to
+        val (s, o) = view(lastW, lastH, lastFill)
+        val base = lastH * lastFill / PHONE_H
+        return Framing((lastW / 2f - o.x) / s, (lastH / 2f - o.y) / s, s / base)
+    }
+
+    /** One framing's scale and offset: its point at the middle of the picture. */
+    private fun frame(f: Framing, width: Float, height: Float, fill: Float): Pair<Float, Offset> {
+        val s = height * fill / PHONE_H * f.k
+        return s to Offset(width / 2f - f.cx * s, height / 2f - f.cy * s)
+    }
+
+    private companion object {
+        val WIDE = Framing(PHONE_W / 2f, PHONE_H / 2f, 1f)
     }
 }

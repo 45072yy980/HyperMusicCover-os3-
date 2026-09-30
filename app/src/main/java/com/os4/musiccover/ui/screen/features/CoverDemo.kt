@@ -273,8 +273,8 @@ private class CoverScene {
             launch { delay(300); burst.fire(1000) }
         }
         delay(800)
-        // Close in on the card, and pull it back down into the pill.
-        cam.focus(50f, 172f, 1.9f, 600)
+        // The card pulled back down into the pill, in the whole view: a second close-up straight
+        // after the pull-back would make the page go in and out twice.
         finger.arrive(CARD.cx, CARD.cy, fromDx = 28f, fromDy = -22f)
         finger.press()
         finger.slide(CARD.cx, CARD.cy + 16f, 340) { media.animateTo(0.76f, tween(340, easing = DRAG)) }
@@ -283,11 +283,8 @@ private class CoverScene {
             launch { media.animateTo(0f, MORPH) }
             launch { cover.animateTo(0f, COVER) }
             launch { fly.animateTo(0f, FLIGHT) }
-            launch { cam.focus(50f, 184f, 2.2f, 520) }
         }
-        delay(500)
-        cam.wide(600)
-        delay(300)
+        delay(1000)
     }
 
     /** Page two: the lyrics sing, a two-finger tap hands the cover back, another brings them. */
@@ -473,7 +470,7 @@ private fun DrawScope.drawArt(b: Rect2, r: Float, alpha: Float) {
  * the screen is its sky carried on, the way the module extends a cover to the screen's height.
  * `soft` is how far it is frosted: its marks spread and fade.
  */
-private fun DrawScope.drawArtBackdrop(bias: Float, soft: Float, alpha: Float) {
+internal fun DrawScope.drawArtBackdrop(bias: Float, soft: Float, alpha: Float) {
     drawRect(Brush.verticalGradient(listOf(ART_TOP, ART_BOTTOM), 0f, PH), Offset.Zero, Size(PW, PH), alpha = alpha)
     val a = fullArt(bias)
     drawArtMarks(a.x, a.y, a.w, alpha, soft)
