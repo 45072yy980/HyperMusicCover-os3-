@@ -1902,10 +1902,14 @@ private class MiniPlayerController(
         // With a shortcut switched off the row rides on the one left, or on the row's own frame
         // with neither; it used to take only the keyguard's zoom then, and stood still while
         // the swipe up carried the buttons away.
-        val lOn = !switchedOff(left)
-        val rOn = !switchedOff(right)
-        val single = if (lOn != rOn) (if (lOn) left else right) else null
-        if (!rowHeldOff && lOn && rOn && left.isShown && right.isShown) {
+        // Both switched on is not both drawn: with one of them not shown for a frame the pill
+        // fell through to the keyguard's zoom alone and stayed down while the swipe up carried
+        // the buttons off (#36). It rides on whichever one is drawn then, as with one switched off.
+        val lUp = followable(left)
+        val rUp = followable(right)
+        val single = if (lUp != rUp) (if (lUp) left else right) else null
+        if (!rowHeldOff && lUp && rUp) {
+            followBranch = "pair"
             fade *= rowFade
             // Where each button is drawn now and where it rests, both in the host's pixels.
             if (!drawnCentre(left, drawnL) || !drawnCentre(right, drawnR)) return
@@ -1925,7 +1929,8 @@ private class MiniPlayerController(
             matrix.setTranslate(-(restL[0] + restR[0]) / 2f, -(restL[1] + restR[1]) / 2f)
             matrix.postScale(scale, scale)
             matrix.postTranslate((restL[0] + restR[0]) / 2f + mx, (restL[1] + restR[1]) / 2f + my)
-        } else if (!rowHeldOff && single != null && single.isShown) {
+        } else if (!rowHeldOff && single != null) {
+            followBranch = if (single === left) "left" else "right"
             fade *= rowFade
             // Moved as its centre is, and zoomed about it as it is.
             if (!drawnCentre(single, drawnL)) return
@@ -1940,7 +1945,8 @@ private class MiniPlayerController(
             matrix.setTranslate(-restL[0], -restL[1])
             matrix.postScale(scale, scale)
             matrix.postTranslate(restL[0] + mx, restL[1] + my)
-        } else if (!rowHeldOff && !lOn && !rOn && row.isShown) {
+        } else if (!rowHeldOff && row.isShown) {
+            followBranch = "row"
             fade *= rowFade
             // The row's own zoom and movement, as the keyguard's below.
             matrix.reset()
@@ -1949,6 +1955,7 @@ private class MiniPlayerController(
             restOrigin(row, restL)
             matrix.preTranslate(-restL[0], -restL[1])
         } else if (keyguardRoot != null) {
+            followBranch = if (rowHeldOff) "root/held" else "root"
             // The keyguard's own zoom only, as a matrix from its untransformed slot.
             matrix.reset()
             keyguardRoot.transformMatrixToGlobal(matrix)
@@ -1956,6 +1963,7 @@ private class MiniPlayerController(
             restOrigin(keyguardRoot, restL)
             matrix.preTranslate(-restL[0], -restL[1])
         } else {
+            followBranch = "none"
             matrix.reset()
         }
         fade = unheldInDoze(fade)
@@ -2011,7 +2019,8 @@ private class MiniPlayerController(
     private fun editButtonUp(): Boolean =
         shortcutRow?.get()?.let { editButtonShown(it) > 0.01f } == true
 
-    /** What followShortcuts read and gave the pill last, for the doze trace. */
+    /** What followShortcuts read and gave the pill last, for the doze trace and `op mini`. */
+    private var followBranch = "-"
     private var followRowFade = 1f
     private var followPillFade = 1f
 
@@ -2026,6 +2035,11 @@ private class MiniPlayerController(
     private val restR = FloatArray(2)
     private val followValues = FloatArray(9)
     private val lastFollow = FloatArray(9)
+
+    /** A button the pill can take its motion from this frame: switched on, drawn, laid out. */
+    private fun followable(button: View): Boolean =
+        !switchedOff(button) && button.isAttachedToWindow && button.isShown &&
+            button.width > 0 && button.height > 0
 
     /** A view's centre as drawn, every ancestor's transform included, in host pixels. */
     private fun drawnCentre(v: View, out: FloatArray, inverse: Matrix = hostInverse): Boolean {
@@ -8318,7 +8332,8 @@ private class MiniPlayerController(
                 "seats=${x.seats?.big?.takeLast(6)}/${x.seats?.small?.takeLast(6)} " +
                 x.movers.values.joinToString(" ") { moverState(it) } }} " +
             "row=${islandKeys.size} sel=${selectedIsland?.takeLast(24)} " +
-            "small=${smallKey?.takeLast(24)} smallShown=${smallIsland?.visibility == View.VISIBLE} "
+            "small=${smallKey?.takeLast(24)} smallShown=${smallIsland?.visibility == View.VISIBLE} " +
+            "follow=$followBranch "
         val v = player ?: return islands + "no pill"
         val xy = IntArray(2).also(v::getLocationOnScreen)
         val icons = "pillArt=[${v.artworkState()}] smallIcon=[${smallIsland?.iconState()}] " +
