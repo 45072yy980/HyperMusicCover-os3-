@@ -56,6 +56,16 @@ object LyriconSource {
     @Volatile
     private var sPlayer: String? = null
 
+    /**
+     * Songs the active provider has published since it took over sPlayer - whether it can be
+     * waited for at all. A provider that is registered but broken is still the active one: the
+     * Apple plugin on AM 6.5.2 announces itself for com.apple.android.music and never publishes a
+     * song, and waiting CATCH_UP_MS for it held every Apple track change's lyrics back by two
+     * seconds before the file or the catalogues were even asked (user, 2026-09-30).
+     */
+    @Volatile
+    private var sPlayerSongs = 0
+
     /** Notified on every song the bridge publishes, for a lookup waiting out a stale one. */
     private val sSongLock = Object()
 
@@ -167,6 +177,7 @@ object LyriconSource {
                     sSong = song
                     if (song != null) {
                         sSongs++
+                        sPlayerSongs++
                     }
                     sSongLock.notifyAll()
                 }
@@ -180,7 +191,9 @@ object LyriconSource {
                 sProvider = providerInfo?.let {
                     it.providerPackageName + " -> " + it.playerPackageName
                 }
-                sPlayer = providerInfo?.playerPackageName
+                val player = providerInfo?.playerPackageName
+                if (player != sPlayer) sPlayerSongs = 0
+                sPlayer = player
             } catch (t: Throwable) {
                 sError = t.toString()
             }
@@ -223,7 +236,8 @@ object LyriconSource {
     fun linesFor(title: String?, artist: String?, player: String?): List<LyricLine>? {
         var song = sSong
         if (song == null || !isTrack(song, title, artist)) {
-            if (player != null && player == sPlayer) {
+            // Only a provider that has shown it publishes; see sPlayerSongs.
+            if (player != null && player == sPlayer && sPlayerSongs > 0) {
                 val until = android.os.SystemClock.uptimeMillis() + CATCH_UP_MS
                 synchronized(sSongLock) {
                     while (true) {
@@ -333,7 +347,7 @@ object LyriconSource {
     @JvmStatic
     fun describe(): String {
         val sb = StringBuilder("state=").append(sState)
-        sb.append(" songs=").append(sSongs)
+        sb.append(" songs=").append(sSongs).append(" playerSongs=").append(sPlayerSongs)
         sProvider?.let { sb.append(" provider=").append(it) }
         if (sSubscriber == null) {
             sb.append(" (no subscriber)")
