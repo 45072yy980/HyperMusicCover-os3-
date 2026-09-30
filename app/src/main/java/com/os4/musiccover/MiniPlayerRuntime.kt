@@ -9067,7 +9067,12 @@ private class MiniPlayerController(
         // their glass (2026-09-25, and #10/#17 after it). They stay wherever the row could be.
         discsWanted = enabled && !MiniPlayerScene.keyguardGoingAway && Main.keyguardLocked()
         rowWanted = keyguardOwned || discsWanted && LockIslands.releasedKeys().isNotEmpty()
-        val controlCenterOpen = keyguardOwned &&
+        // The control centre stands in for the lock screen's scene block, not for the row being
+        // presentable at all. Tapped into the cover, the music is still the pill's choice - the
+        // scene only borrows the card - so pulling the centre down put the pill up beside the
+        // cover's card: two media cards (the user, 2026-09-30). Pulled up into it, the choice
+        // was the card and it never showed.
+        val controlCenterOpen = keyguardOwned && presentable &&
             (MiniPlayerScene.controlCenterIsActive || Main.miniPlayerControlCenterUp())
         val nativeRequested = MiniPlayerRuntime.nativeRequested(current?.sessionToken)
         // The music's choice of card or pill is the row's only while the music is settled in
