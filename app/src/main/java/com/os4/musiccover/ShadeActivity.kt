@@ -5,6 +5,9 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.setValue
 import com.os4.musiccover.ui.screen.features.ShadePageView
 import com.os4.musiccover.ui.theme.AppTheme
 import top.yukonga.miuix.kmp.theme.ColorSchemeMode
@@ -38,10 +41,19 @@ class ShadeActivity : ComponentActivity() {
             AppTheme(themeMode = themeMode) {
                 ShadePageView(
                     isBlurEnabled = isBlurEnabled,
-                    refreshKey = 0,
+                    refreshKey = resumes,
                     onBack = { finish() },
                 )
             }
         }
+    }
+
+    // See CoverActivity: asked again each time the screen comes back to the front.
+    private var resumes by mutableIntStateOf(0)
+    private var resumedOnce = false
+
+    override fun onResume() {
+        super.onResume()
+        if (resumedOnce) resumes++ else resumedOnce = true
     }
 }

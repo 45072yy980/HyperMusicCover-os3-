@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -167,7 +168,12 @@ internal fun CoverPageView(
     // Re-asked until it answers: this screen is reached straight after "重启全部作用域" as often
     // as not, and a single query then lands before SystemUI has a receiver - leaving every
     // control greyed out and every value at its default for as long as the screen stays open.
-    LaunchedEffect(refreshKey) { module = ModuleBridge.queryAlive(context) }
+    // Asked again whenever the module is seen to go - a setting it did not acknowledge, or the
+    // poll below going unanswered - and greyed out until it answers: the values on screen are
+    // then only the last ones heard, and a switch moved on them would go nowhere.
+    val lost by ModuleBridge.lost.collectAsState()
+    LaunchedEffect(lost) { if (lost > 0) module = module.copy(alive = false) }
+    LaunchedEffect(refreshKey, lost) { module = ModuleBridge.queryAlive(context) }
     // Polled while the page is open for the three things the rows under the picture read and
     // that change without a settings change: whether the clock style has glass, which route the
     // lyric came from, and the clock's size while nothing has set it. The reply is the old live
@@ -178,6 +184,10 @@ internal fun CoverPageView(
         if (!module.alive) return@LaunchedEffect
         while (true) {
             val reply = ModuleBridge.preview(context, artTrack, false)
+            if (!reply.alive) {
+                ModuleBridge.markLost()
+                return@LaunchedEffect
+            }
             if (!reply.artUnchanged) artTrack = reply.track
             if (reply.clockHasGlass != module.clockHasGlass) {
                 module = module.copy(clockHasGlass = reply.clockHasGlass)

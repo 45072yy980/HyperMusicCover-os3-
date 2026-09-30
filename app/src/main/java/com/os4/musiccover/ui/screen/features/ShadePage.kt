@@ -4,6 +4,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.padding
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -43,7 +44,17 @@ internal fun ShadePageView(
     // it: "not loaded" is as wrong a thing to show a phone that is still starting SystemUI as
     // "on" is to show one where the feature is off.
     var asked by remember { mutableStateOf(false) }
-    LaunchedEffect(refreshKey) {
+    // A setting the module did not acknowledge means it went away under this page - SystemUI
+    // restarting while the page stayed open. What the page shows is then only what it last
+    // heard, so it greys out and asks again; the setting itself is kept and sent on its return.
+    val lost by ModuleBridge.lost.collectAsState()
+    LaunchedEffect(lost) {
+        if (lost > 0) {
+            module = module.copy(alive = false)
+            asked = false
+        }
+    }
+    LaunchedEffect(refreshKey, lost) {
         module = ModuleBridge.queryAlive(context)
         asked = true
     }

@@ -159,6 +159,8 @@ public class Main extends XposedModule {
     /** notifStateChange(float, boolean, NotificationTopChangeType), or null if it is gone. */
     private static volatile Method sNotifStateChange;
     private static boolean sReceiverRegistered;
+    /** The result code an op is answered with; the app sends 0. See ModuleBridge.OP_ACK. */
+    private static final int OP_ACK = 1;
 
     /**
      * While non-null, every notifStateChange() call - ours and the system's own
@@ -2789,6 +2791,9 @@ public class Main extends XposedModule {
                         // could not be measured - that is exactly when the slider it disables
                         // would otherwise look like it was doing something.
                         out.putBoolean("clockglass", clockHasGlass());
+                        // Every op is acknowledged below; this tells the app it can rely on that,
+                        // where a build from before it could only be sent to and hoped for.
+                        out.putBoolean("acks", true);
                         setResultExtras(out);
                     } else if ("diag".equals(op)) {
                         String report = clockReport();
@@ -2866,6 +2871,12 @@ public class Main extends XposedModule {
                 } catch (Throwable t) {
                     Xp.log(TAG + "op failed: " + Log.getStackTraceString(t));
                 }
+                // The receipt. A setting sent while SystemUI is down, or before this receiver
+                // exists, goes nowhere and the broadcast still comes back - only with the code it
+                // was sent with. This is how the app tells the two apart and sends it again once
+                // there is someone here. An op that threw is acknowledged too: it was received,
+                // and sending it again would only throw again.
+                if (isOrderedBroadcast()) setResultCode(OP_ACK);
             }
         };
         ctx.registerReceiver(r, new IntentFilter(ACTION), Context.RECEIVER_EXPORTED);

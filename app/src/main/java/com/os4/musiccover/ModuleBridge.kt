@@ -8,7 +8,14 @@ import android.graphics.BitmapFactory
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import kotlin.coroutines.resume
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
 
 /**
@@ -226,8 +233,124 @@ object ModuleBridge {
         putExtra("op", op)
     }
 
+    /**
+     * One setting, sent so that it cannot be lost.
+     *
+     * It goes out ordered and the module answers it with [OP_ACK]. A setting sent while SystemUI
+     * is down - or up, but before the module's receiver exists, which is seconds after a restart -
+     * still comes back, only with the 0 it left with, and a plain broadcast could not tell that
+     * from success. That was how a switch turned off on a page left open across a restart came
+     * back on: the page showed it off, the module never heard, and the file still said on.
+     *
+     * A setting that is not acknowledged is kept, newest per setting, and sent again by the next
+     * [query] that finds the module; [lost] ticks so an open page stops drawing values the module
+     * does not hold. A module from before the receipt never acknowledges anything, so for one of
+     * those this stays what it was - sent and hoped for.
+     *
+     * One setting has at most one broadcast in flight. A slider sends on every frame of a drag,
+     * and a queue of receipts backed up behind each other would run out the timeout and read as
+     * the module gone; values that arrive meanwhile collapse to the newest, sent when the one in
+     * flight comes back.
+     */
     fun send(context: Context, op: String, extras: Intent.() -> Unit = {}) {
-        context.applicationContext.sendBroadcast(intent(op).apply(extras))
+        val app = context.applicationContext
+        val intent = intent(op).apply(extras)
+        scope.launch {
+            if (!moduleAcks) {
+                app.sendBroadcast(intent)
+                return@launch
+            }
+            val key = pendingKey(intent)
+            queued[key] = Pending(++sendSeq, intent)
+            if (inFlight.add(key)) {
+                try {
+                    pump(app, key)
+                } finally {
+                    inFlight.remove(key)
+                }
+            }
+        }
+    }
+
+    private suspend fun pump(app: Context, key: String) {
+        while (true) {
+            val p = queued.remove(key) ?: return
+            if (deliver(app, p.intent)) {
+                // A newer value that got through settles any older one still waiting.
+                if ((pending[key]?.seq ?: Long.MAX_VALUE) <= p.seq) pending.remove(key)
+            } else {
+                // Whatever arrived behind it would meet the same nobody; the newest waits instead.
+                val newest = queued.remove(key)?.takeIf { it.seq > p.seq } ?: p
+                if ((pending[key]?.seq ?: Long.MIN_VALUE) < newest.seq) pending[key] = newest
+                markLost()
+                return
+            }
+        }
+    }
+
+    /**
+     * Ticks whenever something shows the module has gone - an unacknowledged setting, a preview
+     * nobody answered. A page keyed on it greys itself out and asks again until it comes back.
+     */
+    val lost: StateFlow<Int> get() = lostFlow
+
+    /** Something saw the module go. It is most likely SystemUI restarting, so wait for it as for one. */
+    fun markLost() {
+        restartingSince = SystemClock.elapsedRealtime()
+        lostFlow.value = lostFlow.value + 1
+    }
+
+    /** What the module answers an op with. The app sends 0; see Main.OP_ACK. */
+    private const val OP_ACK = 1
+
+    private class Pending(val seq: Long, val intent: Intent)
+
+    // All of the below is only touched on the main thread: [scope] is the main dispatcher and
+    // [query] is called from composition.
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+    private val pending = LinkedHashMap<String, Pending>()
+    private val queued = HashMap<String, Pending>()
+    private val inFlight = HashSet<String>()
+    private var sendSeq = 0L
+    private val lostFlow = MutableStateFlow(0)
+
+    /** Whether the module that last answered acknowledges ops. Learned from [query]. */
+    @Volatile private var moduleAcks = false
+
+    /** When SystemUI was last restarted from here, or seen to go; see [queryAlive]. */
+    @Volatile private var restartingSince = 0L
+
+    /**
+     * Which setting an intent sets, so a newer value replaces an older one in [pending]. The op
+     * alone is not enough: shadecfg carries its setting as "key", and mediacard sets whichever
+     * of its switches it carries.
+     */
+    private fun pendingKey(intent: Intent): String {
+        val names = intent.extras?.keySet()?.sorted()?.joinToString(",") ?: ""
+        return intent.getStringExtra("op") + "|" + (intent.getStringExtra("key") ?: "") + "|" + names
+    }
+
+    private suspend fun deliver(app: Context, intent: Intent): Boolean =
+        broadcast(app, Intent(intent), OP_TIMEOUT_MS)?.code == OP_ACK
+
+    /**
+     * Longer than a query's: a query that misses is asked again anyway, where a setting that
+     * misses greys the page out, and SystemUI's main thread can be busy for a second on its own.
+     */
+    private const val OP_TIMEOUT_MS = 3000L
+
+    /** Sends what is waiting, oldest first. True if anything got through. */
+    private suspend fun flush(app: Context): Boolean {
+        var any = false
+        for ((key, p) in pending.entries.toList()) {
+            // A newer value for the same setting is on its way already; sending this one now
+            // could land after it.
+            if (key in inFlight || key in queued || pending[key]?.seq != p.seq) continue
+            if (!deliver(app, p.intent)) break
+            if (pending[key]?.seq == p.seq) pending.remove(key)
+            any = true
+        }
+        return any
     }
 
     fun setAuto(context: Context, on: Boolean) = send(context, "auto") { putExtra("on", on) }
@@ -338,7 +461,18 @@ object ModuleBridge {
      * Asks the module for everything at once. Returns a dead State rather than throwing when the
      * module is not there - "not installed" is a normal thing for this screen to display.
      */
-    suspend fun query(context: Context): State = fromBundle(ask(context, "query"))
+    suspend fun query(context: Context): State {
+        val b = ask(context, "query")
+        val state = fromBundle(b)
+        if (!state.alive) return state
+        moduleAcks = b?.getBoolean("acks", false) == true
+        // Whatever was set while it was away goes first, and the answer is asked for again so
+        // the page shows those settings rather than the values they replaced.
+        if (pending.isNotEmpty() && flush(context.applicationContext)) {
+            return fromBundle(ask(context, "query"))
+        }
+        return state
+    }
 
     /**
      * The same question, asked again until it is answered.
@@ -351,20 +485,34 @@ object ModuleBridge {
      * user then appears to change go nowhere.
      *
      * Widening gaps and then it gives up: "the module is not installed" has to stay a state this
-     * settles into, not a poll that runs for as long as the screen is open.
+     * settles into, not a poll that runs for as long as the screen is open. Except straight after
+     * a restart: SystemUI's keyguard can take 20s to come up cold, longer than those gaps add up
+     * to, and a page that gave up inside that told the user to go and restart SystemUI - which
+     * starts the wait over. So for [RESTART_WAIT_MS] after one it keeps asking, and only then
+     * counts down the gaps.
      */
     suspend fun queryAlive(context: Context): State {
         var state = query(context)
-        for (gap in RETRY_GAPS_MS) {
-            if (state.alive) return state
+        var tries = 0
+        while (!state.alive) {
+            val gap = if (restarting()) RESTART_POLL_MS
+                      else RETRY_GAPS_MS.getOrNull(tries++) ?: return state
             kotlinx.coroutines.delay(gap)
             state = query(context)
         }
         return state
     }
 
-    /** The waits between [queryAlive]'s attempts. Each attempt itself costs up to the timeout. */
+    private fun restarting(): Boolean =
+        restartingSince != 0L && SystemClock.elapsedRealtime() - restartingSince < RESTART_WAIT_MS
+
+    /**
+     * The waits between [queryAlive]'s attempts. An attempt at a process with no receiver comes
+     * back at once; only one that is there and slow costs up to the timeout.
+     */
     private val RETRY_GAPS_MS = longArrayOf(1000L, 2000L, 4000L, 8000L)
+    private const val RESTART_POLL_MS = 2000L
+    private const val RESTART_WAIT_MS = 60_000L
 
     /**
      * A picture of one of SystemUI's own views, with the screen rectangle it occupies.
@@ -393,6 +541,8 @@ object ModuleBridge {
      * you already have; [shortcuts] are only filled in when they were asked for.
      */
     data class Preview(
+        /** False when nothing answered - the module is gone, not merely without a picture. */
+        val alive: Boolean = true,
         val track: String = "",
         val art: Bitmap? = null,
         val artUnchanged: Boolean = false,
@@ -432,10 +582,13 @@ object ModuleBridge {
         have: String = "",
         shortcuts: Boolean = false,
     ): Preview {
-        val b = ask(context, "preview") {
+        val reply = broadcast(context.applicationContext, intent("preview").apply {
             putExtra("have", have)
             putExtra("shortcuts", shortcuts)
-        } ?: return Preview()
+        })
+        // Back without extras is nobody there; not back at all is a SystemUI too busy to answer
+        // within the timeout, which is not a reason to grey the page out.
+        val b = reply?.extras ?: return Preview(alive = reply == null)
         val same = b.getBoolean("same", false)
         return Preview(
             track = if (same) have else (b.getString("track") ?: ""),
@@ -497,9 +650,21 @@ object ModuleBridge {
         context: Context,
         op: String,
         extras: Intent.() -> Unit = {},
-    ): Bundle? =
+    ): Bundle? = broadcast(context.applicationContext, intent(op).apply(extras))?.extras
+
+    private class Reply(val code: Int, val extras: Bundle?)
+
+    /**
+     * The ordered broadcast under both [ask] and [send]. It comes back even when no receiver is
+     * registered - with the 0 it was sent with and no extras - so null here means only that the
+     * timeout ran out first.
+     */
+    private suspend fun broadcast(
+        app: Context,
+        intent: Intent,
+        timeoutMs: Long = QUERY_TIMEOUT_MS,
+    ): Reply? =
         suspendCancellableCoroutine { cont ->
-            val app = context.applicationContext
             var done = false
             val handler = Handler(Looper.getMainLooper())
 
@@ -508,21 +673,19 @@ object ModuleBridge {
                     if (done) return
                     done = true
                     handler.removeCallbacksAndMessages(null)
-                    cont.resume(getResultExtras(false))
+                    cont.resume(Reply(resultCode, getResultExtras(false)))
                 }
             }
-            // No reply means no module; do not leave the caller hanging on it.
+            // Nothing back within the timeout; do not leave the caller hanging on it.
             handler.postDelayed({
                 if (!done) {
                     done = true
                     cont.resume(null)
                 }
-            }, QUERY_TIMEOUT_MS)
+            }, timeoutMs)
 
             try {
-                app.sendOrderedBroadcast(
-                    intent(op).apply(extras), null, receiver, handler, 0, null, null
-                )
+                app.sendOrderedBroadcast(intent, null, receiver, handler, 0, null, null)
             } catch (_: Throwable) {
                 if (!done) {
                     done = true
@@ -603,7 +766,10 @@ object ModuleBridge {
     private fun fullOf(b: Bundle): Float = b.getFloat("clockfull", 0f).let { if (it > 0f) it else 0f }
 
     /** Restarting SystemUI is how most module changes are picked up. Needs root. */
-    fun restartSystemUi(): Boolean = kill("com.android.systemui")
+    fun restartSystemUi(): Boolean {
+        restartingSince = SystemClock.elapsedRealtime()
+        return kill("com.android.systemui")
+    }
 
     /**
      * The wallpaper process is the other half of the module and restarts independently. It is
@@ -624,6 +790,7 @@ object ModuleBridge {
      * process the hooks on it had to be re-read into. [killTree] takes the sub-processes too.
      */
     fun restartScope(context: Context): Boolean {
+        restartingSince = SystemClock.elapsedRealtime()
         val scoped = context.resources.getStringArray(R.array.xposedscope)
         var all = true
         for (pkg in scoped) if (!killTree(pkg)) all = false

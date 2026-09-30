@@ -11,7 +11,9 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.padding
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -37,17 +39,31 @@ class MiniPlayerActivity : ComponentActivity() {
         val settings = AppSettings.load(this)
         val theme = runCatching { ColorSchemeMode.valueOf(settings.themeMode) }
             .getOrDefault(ColorSchemeMode.System)
-        setContent { AppTheme(themeMode = theme) { MiniPlayerPage(settings.isBlurEnabled, ::finish) } }
+        setContent {
+            AppTheme(themeMode = theme) { MiniPlayerPage(settings.isBlurEnabled, resumes, ::finish) }
+        }
+    }
+
+    // See CoverActivity: asked again each time the screen comes back to the front.
+    private var resumes by mutableIntStateOf(0)
+    private var resumedOnce = false
+
+    override fun onResume() {
+        super.onResume()
+        if (resumedOnce) resumes++ else resumedOnce = true
     }
 }
 
 @Composable
-private fun MiniPlayerPage(blur: Boolean, onBack: () -> Unit) {
+private fun MiniPlayerPage(blur: Boolean, refreshKey: Int, onBack: () -> Unit) {
     val context = LocalContext.current
     var configText by remember { mutableStateOf(MiniPlayerConfig.defaultJson()) }
     var alive by remember { mutableStateOf(false) }
     val config = remember(configText) { JSONObject(configText) }
-    LaunchedEffect(Unit) {
+    // See ShadePageView: a setting the module did not take greys the page until it answers again.
+    val lost by ModuleBridge.lost.collectAsState()
+    LaunchedEffect(lost) { if (lost > 0) alive = false }
+    LaunchedEffect(refreshKey, lost) {
         val reply = ModuleBridge.queryAlive(context)
         alive = reply.alive
         if (reply.alive) configText = reply.miniConfig
