@@ -16,7 +16,6 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -25,9 +24,7 @@ import com.os4.musiccover.ui.screen.features.IslandDemo
 import com.os4.musiccover.ui.theme.AppTheme
 import com.os4.musiccover.ui.util.PageScaffold
 import org.json.JSONObject
-import kotlinx.coroutines.launch
 import top.yukonga.miuix.kmp.basic.Card
-import top.yukonga.miuix.kmp.preference.ArrowPreference
 import top.yukonga.miuix.kmp.preference.SwitchPreference
 import top.yukonga.miuix.kmp.theme.ColorSchemeMode
 
@@ -100,30 +97,6 @@ private fun MiniPlayerPage(blur: Boolean, refreshKey: Int, onBack: () -> Unit) {
                         enabled = alive && config.optBoolean(MiniPlayerConfig.ENABLED),
                         onCheckedChange = { push(MiniPlayerConfig.ADAPTIVE_WIDTH, it) })
                 }
-            }
-        }
-        item {
-            // For a jagged island or disc edge on a phone we do not have: the module's op edge
-            // report - the phone, the outlines, who else set the material, the rim's pixels from
-            // the last few times the lock screen was up - copied for an issue. Said in the row:
-            // this app has no Toast (see UpdateUi).
-            var edgeNote by remember { mutableStateOf<String?>(null) }
-            val scope = rememberCoroutineScope()
-            Card(Modifier.padding(horizontal = 12.dp).padding(bottom = 12.dp)) {
-                ArrowPreference(title = "复制边缘诊断信息",
-                    summary = edgeNote ?: "岛或圆盘边缘有锯齿时，先在锁屏上看一会儿，再回来点这里，把复制的内容连同锁屏截图一起反馈",
-                    enabled = alive,
-                    onClick = {
-                        scope.launch {
-                            edgeNote = "正在读取…"
-                            val report = ModuleBridge.edgeReport(context)
-                            edgeNote = if (report.isNullOrEmpty()) "SystemUI 模块没有回应" else {
-                                val clip = context.getSystemService(android.content.ClipboardManager::class.java)
-                                clip.setPrimaryClip(android.content.ClipData.newPlainText("edge", report))
-                                "已复制 " + report.lines().size + " 行"
-                            }
-                        }
-                    })
             }
         }
     }

@@ -927,7 +927,7 @@ object MiniPlayerRuntime {
                 else if (action == MotionEvent.ACTION_UP) {
                     live().firstOrNull { it.pill() === target }?.selectSmallIsland()
                 }
-                if (action == MotionEvent.ACTION_UP) noteTouch("tap small=$routedSmall")
+                if (action == MotionEvent.ACTION_UP) noteTouch("tap small=$routedSmall ${target.touchState()}")
                 if (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL) endRoute()
                 return true
             }

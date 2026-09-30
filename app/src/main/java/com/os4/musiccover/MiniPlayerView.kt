@@ -666,12 +666,17 @@ internal class MiniPlayerView(context: Context) : FrameLayout(context) {
     fun inMorph(): Boolean = morphing
 
     /** For `op mini`: why it would not take a touch. */
-    fun touchState(): String = "interactive=$interactionsEnabled morphing=$morphing"
+    fun touchState(): String = "interactive=$interactionsEnabled morphing=$morphing" +
+        "${if (morphing && layoutOnly) "(layout)" else ""} play=${if (toggle.isEnabled) "on" else "off"}"
 
     fun setInteractionsEnabled(enabled: Boolean) {
         if (interactionsEnabled == enabled) return
         interactionsEnabled = enabled
-        toggle.isEnabled = enabled && !morphing
+        // As beginMorph and acceptsTouch have it: a morph that only lays the pill out (the row's
+        // spring narrowing it for a small island, a switch) leaves its buttons working. Given
+        // back mid-way through one as `!morphing`, the play button stayed off after a message
+        // came in beside the music until the next full morph ended (issue #35).
+        toggle.isEnabled = enabled && (!morphing || layoutOnly)
         toggle2.isEnabled = toggle.isEnabled
         if (!enabled) finish()
     }

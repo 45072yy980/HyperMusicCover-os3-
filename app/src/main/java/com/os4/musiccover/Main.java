@@ -2814,7 +2814,23 @@ public class Main extends XposedModule {
                     } else if ("ink".equals(op)) {
                         dumpInk();
                     } else if ("mini".equals(op)) {
-                        setResultData(MiniPlayerRuntime.describe());
+                        // To a file, with only its head in the reply: the whole of it - every
+                        // ring of traces - outgrew what a broadcast's result can carry, the
+                        // result never got back, and SystemUI was killed for the broadcast
+                        // (ANR, 2026-09-30). Read it with su cat.
+                        String all = MiniPlayerRuntime.describe();
+                        java.io.File mf = new java.io.File(c.getFilesDir(), "mc_mini.txt");
+                        try {
+                            java.io.FileOutputStream os = new java.io.FileOutputStream(mf);
+                            os.write(all.getBytes("UTF-8"));
+                            os.close();
+                            mf.setReadable(true, false);
+                            setResultData(all.length() + " chars -> " + mf.getAbsolutePath()
+                                    + "\n" + all.substring(0, Math.min(all.length(), 1500)));
+                        } catch (Throwable t) {
+                            setResultData("mini not written: " + t + "\n"
+                                    + all.substring(0, Math.min(all.length(), 1500)));
+                        }
                     } else if ("edge".equals(op)) {
                         // The pill's and the discs' clips, outlines and material, and the rim as
                         // the window's pixels hold it (EdgeProbe, EdgeWatch). The pixels come a
