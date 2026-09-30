@@ -21,6 +21,8 @@ object SettingsBackup {
 
     private const val KEY_BIAS = "coverBias"
     private const val KEY_COVER_STYLE = "coverStyle"
+    /** The size as a fraction of the style's full clock; the same key the trimmed builds dropped. */
+    private const val KEY_CLOCK_SIZE = "clockSizeFraction"
     private const val KEY_CARD_TITLE_TAP = "cardTitleTap"
     private const val KEY_HIDE_FINGERPRINT = "hideFingerprint"
     private const val KEY_FORCE_COLON = "forceClockColon"
@@ -39,7 +41,7 @@ object SettingsBackup {
         val module = ModuleBridge.query(context)
         if (module.alive) {
             // The settings that are no longer settings are not written, and not read back on
-            // import either: the square's size and place, the clock's size and offset, the glass
+            // import either: the square's size and place, the clock's offset, the glass
             // end, the spring, the two media card switches, the small AOD clock, the lyrics
             // switch and the five values the lyric band and its type were. Each is fixed where it
             // is used now, so a backup that carries one is a backup of something that can no
@@ -48,6 +50,7 @@ object SettingsBackup {
             // worse than not importing it.
             json.put(KEY_BIAS, module.bias.toDouble())
             json.put(KEY_COVER_STYLE, module.coverStyle)
+            if (module.clockSize > 0f) json.put(KEY_CLOCK_SIZE, module.clockSize.toDouble())
             json.put(KEY_CARD_TITLE_TAP, module.mcTitleTap)
             json.put(KEY_HIDE_FINGERPRINT, module.hideFingerprint)
             json.put(KEY_FORCE_COLON, module.forceColon)
@@ -76,6 +79,9 @@ object SettingsBackup {
             // before them is not read for any of it - the module holds them where they are.
             ModuleBridge.setCoverStyle(context, "mode",
                 if (obj.has(KEY_COVER_STYLE)) obj.getInt(KEY_COVER_STYLE).toFloat() else 0f)
+            if (obj.has(KEY_CLOCK_SIZE)) {
+                ModuleBridge.setClockSize(context, obj.getDouble(KEY_CLOCK_SIZE).toFloat())
+            }
             if (obj.has(KEY_CARD_TITLE_TAP)) {
                 ModuleBridge.setCardTitleTap(context, obj.getBoolean(KEY_CARD_TITLE_TAP))
             }

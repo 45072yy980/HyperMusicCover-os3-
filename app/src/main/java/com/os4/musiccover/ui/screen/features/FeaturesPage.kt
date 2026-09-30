@@ -350,13 +350,29 @@ private fun ClockGroup(
 ) {
     val context = LocalContext.current
     Column {
-        // Four rows were here and are gone: the clock's size, how far the date and the clock are
-        // moved together, how solid the liquid-glass styles go, and the spring the whole
-        // transition runs on. All four are fixed now - the first two at the values cover mode has
-        // always been tuned to, the third at the OEM's own ramp end, and the spring at the OEM's
-        // preset for this transition, which is also what the wallpaper's crossfade is derived
-        // from. A fifth, the full-screen AOD keeping cover mode's small clock, is fixed on. See
-        // Main and LyricStyle for each value.
+        // A fraction of the style's own full clock, the one shown with cover mode off. The
+        // collapse cannot make a clock bigger than that, so 100% is the top. Cut with the others
+        // below on 2026-09-28 and put back on its own two days later (user).
+        ValueSlider(
+            title = stringResource(R.string.clock_size),
+            value = (if (module.clockSize > 0f) module.clockSize else DEFAULT_CLOCK_SIZE)
+                .coerceIn(CLOCK_SIZE_MIN, 1f),
+            valueRange = CLOCK_SIZE_MIN..1f,
+            enabled = enabled,
+            label = { "${(it * 100f).roundToInt()}%" },
+            onValueChange = {
+                val size = (it * 100f).roundToInt() / 100f
+                onChange(module.copy(clockSize = size))
+                ModuleBridge.setClockSize(context, size)
+            },
+        )
+        // Three rows were here and are gone: how far the date and the clock are moved together,
+        // how solid the liquid-glass styles go, and the spring the whole transition runs on. All
+        // three are fixed now - the first at the value cover mode has always been tuned to, the
+        // second at the OEM's own ramp end, and the spring at the OEM's preset for this
+        // transition, which is also what the wallpaper's crossfade is derived from. A fourth, the
+        // full-screen AOD keeping cover mode's small clock, is fixed on. See Main and LyricStyle
+        // for each value.
         //
         // Not a cover setting and not tied to cover mode: it is the clock the lock screen always
         // has. It sits here because this is the page about the clock, and it is a switch rather
@@ -672,6 +688,10 @@ private fun clockGeometryOf(state: ModuleBridge.State) = ModuleBridge.Geometry(
  * short enough that a skipped track catches up before it is worth wondering about.
  */
 private const val SHOT_POLL_MS = 3000L
+
+/** The clock size's floor and default, matching CLOCK_SIZE_MIN and DEFAULT_CLOCK_SIZE in Main. */
+private const val CLOCK_SIZE_MIN = 0.05f
+private const val DEFAULT_CLOCK_SIZE = 0.09f
 
 /** Two decimals, without dragging java.util.Formatter's locale into it. */
 private fun format(v: Float): String {

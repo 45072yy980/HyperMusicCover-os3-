@@ -59,7 +59,7 @@ object ModuleBridge {
          * The collapsed clock's size as a fraction of the style's full clock, 1 = unchanged.
          * The module reports what the clock is at whether or not anything has set it; 0 = the
          * module has not measured yet - the app's preview draws 0.09 until it does, which is the
-         * size the module is fixed at (Main.DEFAULT_CLOCK_SIZE).
+         * size the module starts at (Main.DEFAULT_CLOCK_SIZE).
          */
         val clockSize: Float = 0f,
         /** How far the date and clock are moved together, in dp. Positive is down. */

@@ -408,11 +408,10 @@ public class Main extends XposedModule {
      * The collapsed clock's size as a fraction of the style's own full-size clock - the one the
      * lock screen shows with cover mode off, before any notification squeezes it. 1 = unchanged.
      *
-     * NOT a setting any more: the app has no slider for it and loadState does not read one, so
-     * this is the size every phone gets. 0.09 is the share the 36dp digits come to on the style
-     * they were chosen on. `op clocksize` still moves it for the rest of the session - nothing
-     * writes it down, so a restart puts it back. NaN is what that op asks for to hand the size
-     * back to sClockHeightDp, which is otherwise unused now.
+     * A setting again (user, 2026-09-30): the app's slider sends `op clocksize`, and the state
+     * file keeps it. It was fixed at 0.09 for two days with the settings cut, and 0.09 is still
+     * the default - the share the 36dp digits come to on the style they were chosen on. NaN is
+     * what the op asks for to hand the size back to sClockHeightDp, and is not written down.
      *
      * One thing this number does that NaN did not: it wakes ClockCollapse.targetY, which walks
      * the OEM's own squeeze so the variable font is DRAWN at the height asked for instead of
@@ -1888,15 +1887,16 @@ public class Main extends XposedModule {
                     new java.io.FileOutputStream(new java.io.File(sAppCtx.getFilesDir(), STATE_FILE));
             f.write(("cover=" + (sCoverMode ? 1 : 0)
                     + "\nbias=" + sBias
-                    // Only the mode. The square's size, place and corners, the clock's size and
-                    // offset, the glass end and the spring are all fixed now, and loadState does
-                    // not read any of them - writing them down would be a value nothing could
-                    // ever have set. See loadState.
+                    // Only the mode. The square's size, place and corners, the clock's offset,
+                    // the glass end and the spring are all fixed now, and loadState does not read
+                    // any of them - writing them down would be a value nothing could ever have
+                    // set. See loadState.
                     + "\ncoverstyle=" + sCoverCardStyle.mode
                     // A pending pre-dp value is written as itself: it cannot be converted until
                     // a confirmed box exists, and writing the default over it would lose the
                     // setting the user actually had.
                     + "\nclock=" + (Float.isNaN(sClockLegacyK) ? sClockHeightDp : sClockLegacyK)
+                    + (Float.isNaN(sClockSize) ? "" : "\nclocksize=" + sClockSize)
                     // A measurement, like cardrect: the full clock the size is a fraction of.
                     + (ClockCollapse.fullUnitState() == null ? ""
                             : "\nclockfull=" + ClockCollapse.fullUnitState())
@@ -2000,9 +2000,10 @@ public class Main extends XposedModule {
                         // cover takes is still the user's.
                         else if ("clock".equals(k)) setClockHeightDp(Float.parseFloat(v));
                         else if ("clockfull".equals(k)) ClockCollapse.restoreFullUnit(v);
-                        // clocksize, clockoff, glass and spring are not read either: the clock's
-                        // size and offset, the glass clock's end and the transition's spring are
-                        // all fixed. Each is still reachable from its own op, for the session.
+                        else if ("clocksize".equals(k)) setClockSize(Float.parseFloat(v));
+                        // clockoff, glass and spring are not read: the clock's offset, the glass
+                        // clock's end and the transition's spring are all fixed. Each is still
+                        // reachable from its own op, for the session.
                         else if ("mctap".equals(k)) sMcTitleTap = "1".equals(v);
                         else if ("tap".equals(k)) sTapToggle = "1".equals(v);
                         else if ("fadewp".equals(k)) sFadeWp = "1".equals(v);

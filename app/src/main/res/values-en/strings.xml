@@ -20,6 +20,7 @@
     <string name="clock_section">Clock</string>
     <string name="cover_clock_section">Cover &amp; clock</string>
     <string name="lyrics_section">Lyrics</string>
+    <string name="clock_size">Clock size</string>
     <string name="clock_force_colon">Always show the clock colon</string>
     <string name="clock_force_colon_summary">No effect on some styles</string>
     <string name="restart_menu">Restart</string>
