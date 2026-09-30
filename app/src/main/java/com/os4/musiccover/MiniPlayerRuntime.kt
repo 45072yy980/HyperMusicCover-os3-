@@ -1320,6 +1320,9 @@ object MiniPlayerRuntime {
     @JvmStatic fun rowTree(match: String): String =
         live().firstOrNull()?.rowTree(match) ?: "no controller"
 
+    /** The row spread out as the list is being pulled home (NumState's hands-up folds it). */
+    @JvmStatic fun spreadFolding(): Boolean = live().any { it.spreadFolding() }
+
     /** The keyguard's notification stack, for NumStateProbe. */
     @JvmStatic fun stackForProbe(): ViewGroup? = live().firstNotNullOfOrNull { it.stackForProbe() }
 
@@ -6144,6 +6147,11 @@ private class MiniPlayerController(
         var focusBefore: Int? = null
         /** Open, the list's place was read again and the stack sent there once. */
         var reaimed = false
+        /** The stack's own drag was on it last frame; and the let-go already sent it home. */
+        var wasDragged = false
+        var letGoSent = false
+        /** The open list's last frame was logged as busy (watchOpen). */
+        var loggedBusy = false
         /** Pulled open by a finger still on the island: it scrolls the stack (followFinger). */
         var finger: SpreadFinger? = null
     }
@@ -6226,7 +6234,7 @@ private class MiniPlayerController(
         player?.setInteractionsEnabled(false)
         // Every focus notification's row into the stack, out of sight till its morph takes it.
         LockIslands.setSpread(true)
-        trace("spread asked ($why): " + describeSpread())
+        spreadTrace("spread asked ($why): " + describeSpread())
         MiniPlayerRuntime.noteTouch("spread ($why) items=${items.size} stack=${s.stackSeat}")
         Choreographer.getInstance().removeFrameCallback(spreadFrame)
         Choreographer.getInstance().postFrameCallback(spreadFrame)
@@ -6285,7 +6293,8 @@ private class MiniPlayerController(
         if (finger?.ended == true) s.finger = null
         val held = s.finger
         s.islandsY = NumState.scrollTo("NUMBER") ?: NumState.position() ?: 0
-        s.cardsY = NumState.scrollTo("LIST") ?: s.islandsY
+        // As far as the stack really scrolls: aimed past it, the spread stood short of its end.
+        s.cardsY = NumState.listScroll() ?: s.islandsY
         startSpreadMorphs(s, toCards = true)
         s.phase = SPREAD_OPENING
         s.since = android.os.SystemClock.uptimeMillis()
@@ -6295,7 +6304,7 @@ private class MiniPlayerController(
         LockIslands.openStack("spread", scroll = held == null)
         if (held != null) held.base = held.pulled()
         applySpread(s, spreadProgress(s, NumState.position() ?: s.islandsY))
-        trace("spread out after ${waited}ms ready=$ready measured=$measured: " + describeSpread())
+        spreadTrace("spread out after ${waited}ms ready=$ready measured=$measured: " + describeSpread())
     }
 
     /**
@@ -6393,28 +6402,92 @@ private class MiniPlayerController(
             return
         }
         applySpread(s, p)
+        if (y != s.lastY) spreadFrameLog(s, y, p)
         // Held by the finger, it rests where the finger does; the let-go sends it to an end.
         if (s.finger?.ended == false) {
             s.lastY = y
             s.still = 0
             return
         }
-        val moving = y != s.lastY || NumState.busy() || listPulled()
+        // At an end and the stack already reading that state, no finger on it: done now. The fold
+        // overshoots - the scroll ran to -275 and took 700ms coming back to 0 - and waiting for it
+        // to stand still held the media card out for all of it after the islands had landed
+        // (the user's "pause" on a pull down, 2026-09-30). The finger by the stack's own drag
+        // alone: the overshoot is a pull past the scroll too (os= in the frame log), not a finger.
+        if (!stackDragged()) {
+            if (s.phase == SPREAD_CLOSING && p <= 0.02f && NumState.inNumber == true) {
+                endSpread(folded = true, why = "folded")
+                return
+            }
+            if (s.phase == SPREAD_OPENING && p >= 0.995f && NumState.state() == "LIST") {
+                finishOpen(s, y)
+                return
+            }
+        }
+        // Let go on the way home: sent there now. A fling never reaches the hands-up (NumState),
+        // and a fling let go at 0.67 came to rest as the pile (filmed and logged 2026-09-30).
+        val dragged = stackDragged()
+        if (s.phase == SPREAD_CLOSING && s.wasDragged && !dragged && p < SPREAD_FOLD_BELOW && !s.letGoSent) {
+            s.letGoSent = true
+            NumState.goTo("NUMBER", why = "spread let go folding at ${"%.2f".format(p)}")
+        }
+        s.wasDragged = dragged
+        // Still by the stack's own drag, not its pull: a fling left the pull at 44 for good, and
+        // counted as a finger the spread never came to rest and stood half folded for 10s.
+        val moving = y != s.lastY || NumState.busy() || dragged
         s.still = if (moving) 0 else s.still + 1
         s.lastY = y
         if (s.still < SPREAD_STILL_FRAMES) return
+        val late = android.os.SystemClock.uptimeMillis() - s.since > SPREAD_GIVE_UP_MS
         when {
             p >= 0.98f -> finishOpen(s, y)
             p <= 0.02f -> endSpread(folded = true, why = "folded")
+            // Pulled toward home and come to rest short of it: home, whichever end is nearer. Sent
+            // to the nearer one, a pull let go at 0.57 was sent back out to the list (filmed
+            // 2026-09-30).
+            s.phase == SPREAD_CLOSING -> when {
+                !s.nudged -> {
+                    s.nudged = true
+                    s.still = 0
+                    NumState.goTo("NUMBER", why = "spread closing stuck at ${"%.2f".format(p)}")
+                }
+                late -> endSpread(folded = true, why = "gave up closing")
+            }
+            // Opening and come to rest a good way out, the stack no longer folded: the list ends
+            // here - it goes no further than this, whatever its place was worked out to be.
+            p >= SPREAD_OPEN_AT && NumState.inNumber != true -> {
+                spreadTrace("spread opened short at ${"%.2f".format(p)} ($y of ${s.cardsY})")
+                finishOpen(s, y)
+            }
             !s.nudged -> {
-                // At rest between the two - a scroll that never came, a pile the hands-up missed.
+                // At rest near the fold - a scroll that never came.
                 s.nudged = true
                 s.still = 0
-                NumState.goTo(if (p > 0.5f) "LIST" else "NUMBER", why = "spread stuck at ${"%.2f".format(p)}")
+                NumState.goTo("LIST", why = "spread stuck at ${"%.2f".format(p)}")
             }
-            android.os.SystemClock.uptimeMillis() - s.since > SPREAD_GIVE_UP_MS ->
-                if (p > 0.5f) finishOpen(s, y) else endSpread(folded = true, why = "gave up")
+            late -> endSpread(folded = true, why = "gave up")
         }
+    }
+
+    /** The spread's own events, in `op mini` and in `op numstate`'s frames with its frames. */
+    private fun spreadTrace(what: String) {
+        trace(what)
+        NumState.frame(what.take(160))
+    }
+
+    /** One frame of the spread moving, for `op numstate` (frames=). */
+    private fun spreadFrameLog(s: Spread, y: Int, p: Float) {
+        val phase = when (s.phase) { SPREAD_OPENING -> "o"; SPREAD_CLOSING -> "c"; SPREAD_OPEN -> "O"; else -> "w" }
+        NumState.frame("$phase y=$y sy=${NumState.scrollY()} os=${NumState.overScrollParts()} " +
+            "p=${"%.2f".format(p)} ${s.islandsY}->${s.cardsY} d=${if (stackDragged()) 1 else 0}" +
+            "${if (NumState.busy()) "b" else ""} st=${NumState.state()?.take(1)}" +
+            (s.finger?.let { f -> " f=${f.pulled().toInt()}${if (f.ended) "e" else ""}" } ?: ""))
+    }
+
+    /** For NumState's hands-up: the row spread out is being pulled home. */
+    fun spreadFolding(): Boolean {
+        val s = spread ?: return false
+        return s.phase == SPREAD_CLOSING && s.progress < SPREAD_FOLD_BELOW
     }
 
     /** The stack scrolled out as far as the finger has pulled past where it started to follow. */
@@ -6448,7 +6521,7 @@ private class MiniPlayerController(
             s.phase == SPREAD_WAIT -> true
             else -> s.progress >= SPREAD_OPEN_AT
         }
-        trace("spread let go p=${"%.2f".format(s.progress)} v=${velocityY.toInt()} list=${f.toList}")
+        spreadTrace("spread let go p=${"%.2f".format(s.progress)} v=${velocityY.toInt()} list=${f.toList}")
         // Still waiting for the rows: waitSpread takes the decision when they are in.
         if (s.phase != SPREAD_OPENING) return true
         s.finger = null
@@ -6479,13 +6552,13 @@ private class MiniPlayerController(
         // The list's place read again, from the stack as it is now: asked from a sample still
         // short of the rows that came in, it was short of the list (the stack's pile). The cards
         // are the stack's own from here, so the rest of the way is its scroll alone.
-        val list = NumState.scrollTo("LIST")
+        val list = NumState.listScroll()
         val state = NumState.state()
         if (!s.reaimed && list != null && kotlin.math.abs(list - y) > dp(2f) && state != "LIST") {
             s.reaimed = true
             NumState.goTo("LIST", why = "spread re-aimed ($state at $y, list at $list)")
         }
-        trace("spread open ($state): " + describeSpread())
+        spreadTrace("spread open ($state): " + describeSpread())
     }
 
     /** The stack's own finger on it (NotificationStackScrollLayout.mIsBeingDragged). */
@@ -6501,6 +6574,13 @@ private class MiniPlayerController(
     private fun watchOpen(s: Spread) {
         val y = NumState.position() ?: return
         val islandsY = NumState.scrollTo("NUMBER") ?: return
+        // Logged while anything has it - a pull the reads here miss still shows as busy.
+        val busy = NumState.busy()
+        if (y != s.lastY || busy && !s.loggedBusy) {
+            if (listPulled() || busy) spreadFrameLog(s, y, spreadProgress(s, y))
+            s.lastY = y
+        }
+        s.loggedBusy = busy
         val toward = if (s.cardsY >= islandsY) s.cardsY - y else y - s.cardsY
         val folded = NumState.inNumber == true
         if (folded || listPulled() && toward > dp(SPREAD_PULL_DP)) {
@@ -6510,9 +6590,11 @@ private class MiniPlayerController(
             s.since = android.os.SystemClock.uptimeMillis()
             s.still = 0
             s.nudged = false
+            s.wasDragged = stackDragged()
+            s.letGoSent = false
             s.lastY = Int.MIN_VALUE
             applySpread(s, spreadProgress(s, y))
-            trace("spread closing (${if (folded) "folded" else "pulled"}): " + describeSpread())
+            spreadTrace("spread closing (${if (folded) "folded" else "pulled"}): " + describeSpread())
             return
         }
         if (!listPulled() && !NumState.busy()) s.cardsY = y
@@ -6562,9 +6644,11 @@ private class MiniPlayerController(
         val smallTaken = s.stackSeat == SEAT_SMALL || s.items.any { it.seat == SEAT_SMALL }
         if (cameHome != null) preferredSmall = if (smallTaken) smallKey else cameHome
         snapSmallOnce = smallTaken || cameHome == null
-        trace("spread end ($why) folded=$folded")
+        spreadTrace("spread end ($why) folded=$folded")
         MiniPlayerRuntime.noteTouch("spread end ($why) folded=$folded")
         LockIslands.setSpread(false)
+        // Folded home but the stack left at its pile (a let-go it read as the pile): folded too.
+        if (folded) NumState.foldIfPiled("spread folded")
         // The row as it is now: the media card put away again, the small island in its place.
         refresh()
         schedulePosition()
@@ -10268,6 +10352,9 @@ private const val SPREAD_GIVE_UP_MS = 3000L
 
 /** A finger pulling the open list this far toward the fold takes the cards home with it. */
 private const val SPREAD_PULL_DP = 8f
+
+/** Pulled home past this (from 1, the list), the let-go folds the row home: see spreadFolding. */
+private const val SPREAD_FOLD_BELOW = 0.95f
 
 /** A pulled-open spread let go this fast goes the way it was flung, whatever its progress. */
 private const val SPREAD_FLING_DP = 800f

@@ -51,7 +51,8 @@ internal object NumState {
     fun describe(): String = "numstate folding=$folding available=$available in=$inNumber " +
         LockIslands.systemHiddenForProbe().let { if (it.isEmpty()) "" else "sysHidden=[$it] " } +
         "default=${runCatching { defaultFlow()?.let { Xp.callMethod(it, "getValue") } }.getOrNull()} " +
-        "log=" + synchronized(log) { log.joinToString(" ; ") }
+        "log=" + synchronized(log) { log.joinToString(" ; ") } +
+        " || frames=" + framesText()
 
     fun install(classLoader: ClassLoader) {
         val vmClass = runCatching {
@@ -105,12 +106,40 @@ internal object NumState {
         if ((Xp.getObjectField(info, "normalNotifCount") as Number).toInt() <= 0) return null
         val factory = Xp.getObjectField(Xp.getObjectField(model, "\$\$delegate_0"), "strategyFactory")
         fun strategy(name: String) = Xp.callMethod(Xp.getObjectField(factory, name), "get")
+        fun number() = (Xp.callMethod(strategy("numberStrategy"), "calculateTargetYPosition", info) as Number).toFloat()
+        // The row spread out as the list and pulled toward home: folded. The stack's own hands-up
+        // reads the list's top without the pull on it (nsslTopYPositionWithoutOverScroll), and a
+        // pull down on the list moves only the pull - so it put the list back every time, and with
+        // the media card and a focus card in it the list and the pile rest at the same place
+        // (the clock's smallest): the row stood half folded (filmed 2026-09-30).
+        if (LockIslands.spreadingNow() && MiniPlayerRuntime.spreadFolding()) {
+            val number = number()
+            trace("hands up with the row going home: folded ($target -> $number)")
+            return number
+        }
         val stack = (Xp.callMethod(strategy("stackStrategy"), "calculateTargetYPosition", info) as Number).toFloat()
-        if (kotlin.math.abs(stack - target) >= 1f) return null
-        val number = (Xp.callMethod(strategy("numberStrategy"), "calculateTargetYPosition", info) as Number).toFloat()
+        if (kotlin.math.abs(stack - target) >= 1f && !pileAt(model, info, target)) return null
+        val number = number()
         trace("hands up at the pile: folded instead ($target -> $number)")
         return number
     }
+
+    /**
+     * Whether the stack resting with its top at [top] reads as its pile (STACK): its own sum
+     * (NotificationContainerViewModel's currentsStackState), the room under the top against the
+     * number threshold and the pile's height. The strategy's pile top can be clamped to the
+     * clock's smallest, where it is not where a hands-up leaves it.
+     */
+    private fun pileAt(model: Any, info: Any, top: Float): Boolean = runCatching {
+        val sample = value(model, "getOnUpdateChildSampleStackInfo") ?: return false
+        val bottom = (Xp.getObjectField(info, "notificationBottomOnKeyguard") as Number).toFloat()
+        val scrim = (Xp.getObjectField(info, "scrimTopPadding") as Number).toFloat()
+        val focus = (Xp.getObjectField(info, "focusNotifsHeight") as Number).toFloat()
+        val room = bottom - top - scrim - focus
+        val threshold = (Xp.callMethod(model, "getNumStateHeightThreshold", sample) as Number).toFloat()
+        val pile = kotlin.math.ceil((Xp.callMethod(model, "stackingStateHeight\$default", model) as Number).toFloat())
+        room >= threshold && room <= pile
+    }.getOrDefault(false)
 
     // ---------------------------------------------------------------- the model and its state
 
@@ -181,11 +210,63 @@ internal object NumState {
      * pulling the list down toward the fold moves this, not the scroll: the scroll only follows
      * on the let-go, as the hands-up settles it (calculateNotifTop = base - scrollY + this).
      */
-    fun overScroll(): Float = runCatching {
-        val model = model() ?: return 0f
-        (Xp.callMethod(Xp.getObjectField(Xp.getObjectField(model, "overScrollAmount"), "flow"),
-            "getValue") as Number).toFloat()
-    }.getOrDefault(0f)
+    fun overScroll(): Float {
+        val fromModel = runCatching {
+            val model = model() ?: return@runCatching 0f
+            (Xp.callMethod(Xp.getObjectField(Xp.getObjectField(model, "overScrollAmount"), "flow"),
+                "getValue") as Number).toFloat()
+        }.getOrDefault(0f)
+        // The stack's own reading of its pull at the top, should the model's not carry it.
+        val fromStack = runCatching {
+            (Xp.callMethod(MiniPlayerRuntime.stackForProbe() ?: return@runCatching 0f,
+                "getCurrentOverScrollAmount", true) as Number).toFloat()
+        }.getOrDefault(0f)
+        return if (kotlin.math.abs(fromStack) > kotlin.math.abs(fromModel)) fromStack else fromModel
+    }
+
+    /** Both pulls apart, for the frame log. */
+    fun overScrollParts(): String = runCatching {
+        val m = model()?.let {
+            (Xp.callMethod(Xp.getObjectField(Xp.getObjectField(it, "overScrollAmount"), "flow"), "getValue") as Number).toInt()
+        }
+        val s = MiniPlayerRuntime.stackForProbe()?.let {
+            (Xp.callMethod(it, "getCurrentOverScrollAmount", true) as Number).toInt()
+        }
+        "$m/$s"
+    }.getOrDefault("?")
+
+    /**
+     * The furthest the stack scrolls (NotificationStackScrollLayout.getScrollRange). The list's
+     * place as the click-to-list strategy works it out can be past it - 658 against a stack that
+     * went no further than 375 with the media card and a focus card in it (2026-09-30) - and the
+     * spread, aimed there, stood at 0.57 for seconds, sent there again and again.
+     */
+    fun maxScroll(): Int? = runCatching {
+        (Xp.callMethod(MiniPlayerRuntime.stackForProbe() ?: return null, "getScrollRange") as Number).toInt()
+    }.getOrNull()
+
+    /** Where the list rests: the strategy's place, as far as the stack can scroll. */
+    fun listScroll(): Int? {
+        val list = scrollTo("LIST") ?: return null
+        val max = maxScroll() ?: return list
+        val number = scrollTo("NUMBER") ?: return list
+        return if (list > number) minOf(list, maxOf(max, number)) else list
+    }
+
+    // ---------------------------------------------------------------- the spread's frame log
+
+    /** Every frame of the spread moving, for `op numstate`: the last FRAMES_KEPT of them. */
+    private val frames = ArrayDeque<String>()
+    private const val FRAMES_KEPT = 90
+
+    fun frame(what: String) {
+        synchronized(frames) {
+            frames.addLast("${SystemClock.uptimeMillis() % 100000} $what")
+            while (frames.size > FRAMES_KEPT) frames.removeFirst()
+        }
+    }
+
+    fun framesText(): String = synchronized(frames) { frames.joinToString(" ; ") }
 
     /**
      * Where the stack's top is, as a scroll: the scroll less the pull on it, so a finger's pull
