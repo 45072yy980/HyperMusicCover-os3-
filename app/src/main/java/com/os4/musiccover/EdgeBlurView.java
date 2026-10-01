@@ -35,6 +35,9 @@ import java.util.List;
  * map. 高德's map is light by day and the clock's glass shows the map it is over: without the
  * scrim the clock and the date were the colour of the map around them (2026-09-30).
  *
+ * Under the PIN pad, one more region over the whole screen (setPad): the pad's own blur is a
+ * view in the same window and does not reach a page drawn under it (issue #40).
+ *
  * All sizes are fractions of the view's height, or dp: nothing here depends on the display.
  */
 final class EdgeBlurView extends View {
@@ -76,6 +79,16 @@ final class EdgeBlurView extends View {
     private float mFade = 1f;
     private boolean mUnavailable;
     private Method mSetRadius;
+    /** The whole screen's blur under the PIN pad. See setPad. */
+    private Drawable mPad;
+    private float mPadLevel;
+    /** The emptied pad region has been drawn once, which is what tells SurfaceFlinger. */
+    private boolean mPadCleared = true;
+    /**
+     * The pad region's radius, the one CoverCardLayer and LyricView blur themselves by under the
+     * pad. Its strength goes by alpha, as the strips' does: one radius, blurred once.
+     */
+    private static final float PAD_RADIUS_DP = 24f;
 
     EdgeBlurView(Context ctx) {
         super(ctx);
@@ -124,6 +137,27 @@ final class EdgeBlurView extends View {
         return mUnavailable;
     }
 
+    /**
+     * How far the PIN pad's blur has come, 0..1: the page under the window blurs with it. Emptied
+     * and drawn once at 0, like setBand(null), so no region is left registered.
+     */
+    void setPad(float level) {
+        if (level == mPadLevel) return;
+        mPadLevel = level;
+        Drawable d = mPad;
+        if (d != null) {
+            if (level <= 0f) {
+                d.setBounds(0, 0, 0, 0);
+                d.setAlpha(0);
+                mPadCleared = false;
+            } else {
+                d.setBounds(0, 0, getWidth(), getHeight());
+                d.setAlpha(Math.round(255f * level));
+            }
+        }
+        invalidate();
+    }
+
     @Override
     protected void onAttachedToWindow() {
         super.onAttachedToWindow();
@@ -135,6 +169,7 @@ final class EdgeBlurView extends View {
         super.onDetachedFromWindow();
         mStrips.clear();
         mAlphas.clear();
+        mPad = null;
     }
 
     @Override
@@ -145,6 +180,12 @@ final class EdgeBlurView extends View {
 
     @Override
     protected void onDraw(Canvas canvas) {
+        Drawable pad = mPad;
+        if (pad != null && (mPadLevel > 0f || !mPadCleared)) {
+            if (mPadLevel > 0f) pad.setBounds(0, 0, getWidth(), getHeight());
+            pad.draw(canvas);
+            mPadCleared = mPadLevel <= 0f;
+        }
         if (Float.isNaN(mTop)) {
             if (!mCleared) {
                 for (Drawable d : mStrips) d.draw(canvas);
@@ -173,10 +214,19 @@ final class EdgeBlurView extends View {
                 mStrips.add(d);
                 mAlphas.add(1f);
             }
+            Drawable pad = (Drawable) create.invoke(vri);
+            mSetRadius.invoke(pad, Math.round(PAD_RADIUS_DP * getResources().getDisplayMetrics().density));
+            pad.setBounds(0, 0, 0, 0);
+            pad.setAlpha(0);
+            mPad = pad;
+            float level = mPadLevel;
+            mPadLevel = 0f;
+            setPad(level);
             mUnavailable = false;
         } catch (Throwable t) {
             mStrips.clear();
             mAlphas.clear();
+            mPad = null;
             mUnavailable = true;
             Xp.log("MCImmersive: edge blur unavailable: " + t);
         }

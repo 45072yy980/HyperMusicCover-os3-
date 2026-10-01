@@ -157,6 +157,17 @@ final class ImmersiveHost {
     /** The page is on screen. */
     private static boolean sShown;
 
+    /**
+     * How far the PIN pad's blur has come over the page, 0..1 (issue #40). The OEM blurs the lock
+     * screen under the pad, but not what this slot holds: the countdown's dial stood sharp through
+     * the keys. So the page blurs itself, eased with the pad - CoverCardLayer.followBouncer's
+     * level, radius and time constant.
+     */
+    private static float sPadP;
+    private static long sPadFrameAt;
+    private static final float PAD_BLUR_DP = 24f;
+    private static final float PAD_TAU = 0.03f;
+
     /** Closed on the lit lock screen, and fading out: still shown until the fade is over. */
     private static ImmersiveScene sLeaving;
     /**
@@ -784,6 +795,8 @@ final class ImmersiveHost {
         sEdge = null;
         sVeil = null;
         sShown = false;
+        sPadP = 0f;
+        sPadFrameAt = 0L;
         beat(false);
     }
 
@@ -815,9 +828,54 @@ final class ImmersiveHost {
                     }
                 }
             }
-            return !apply();
+            boolean changed = apply();
+            if (followPad()) slot.postInvalidateOnAnimation();
+            return !changed;
         }
     };
+
+    /**
+     * The page's blur under the PIN pad, one frame of its ease. The page is in two places: views
+     * in this window (the countdown's dial), which a RenderEffect blurs, and surfaces under it
+     * (the map, the countdown's ground), which only the cross-window blur reaches - EdgeBlurView's
+     * pad region. Returns whether it is still moving, so the frames keep coming until it lands.
+     */
+    private static boolean followPad() {
+        FrameLayout slot = sSlot;
+        if (slot == null) return false;
+        float want = sShown ? Main.bouncerLevel() : 0f;
+        long now = android.os.SystemClock.uptimeMillis();
+        float dt = sPadFrameAt == 0L ? 0f : Math.min(0.1f, (now - sPadFrameAt) / 1000f);
+        sPadFrameAt = now;
+        if (sPadP == want) {
+            sPadFrameAt = 0L;
+            return false;
+        }
+        if (!sShown) {
+            // Cut, not eased: nothing shows it, and a PIN unlock takes the window's frames away
+            // before an ease could land - the next page would come up blurred.
+            sPadP = 0f;
+        } else {
+            // The first step has no dt; it still has to start moving.
+            float k = dt <= 0f ? 0.25f : (float) (1.0 - Math.exp(-dt / PAD_TAU));
+            sPadP += (want - sPadP) * k;
+            if (Math.abs(want - sPadP) < 0.01f) sPadP = want;
+        }
+        float r = sPadP * PAD_BLUR_DP * slot.getResources().getDisplayMetrics().density;
+        android.graphics.RenderEffect fx = r < 0.5f ? null
+                : android.graphics.RenderEffect.createBlurEffect(r, r,
+                        android.graphics.Shader.TileMode.DECAL);
+        for (int i = 0; i < slot.getChildCount(); i++) {
+            View v = slot.getChildAt(i);
+            // A SurfaceView's content is not in its view, and the edge blur and the veil are
+            // ours, not the page's.
+            if (v instanceof android.view.SurfaceView || v == sEdge || v == sVeil) continue;
+            v.setRenderEffect(fx);
+        }
+        EdgeBlurView edge = sEdge;
+        if (edge != null) edge.setPad(sPadP);
+        return sPadP != want;
+    }
 
     // ---------------------------------------------------------------- the one decision
 
@@ -1307,6 +1365,7 @@ final class ImmersiveHost {
                 .append(" leaving=").append(sLeaving == null ? "-" : sLeaving.id())
                 .append(" fade=").append(sFade).append("->").append(sFadeTo)
                 .append(" slot=").append(sSlot != null)
+                .append(" pad=").append(sPadP)
                 .append(" fullDoze=").append(sFullDoze)
                 .append(" veil=").append(sVeil == null ? "-" : String.valueOf(sVeil.getAlpha()))
                 .append(" edge=").append(sEdge == null ? "-"
