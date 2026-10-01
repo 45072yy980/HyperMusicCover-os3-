@@ -3,9 +3,6 @@ import java.util.Properties
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.compose)
-    // Only the self-updater's release JSON is @Serializable; everything else in the app still
-    // parses with the platform org.json, as AppSettings and SettingsBackup always have.
-    alias(libs.plugins.kotlin.serialization)
 }
 
 /**
@@ -69,6 +66,9 @@ android {
             )
             signingConfig = signingConfigs.findByName("release")
                 ?: signingConfigs.getByName("debug")
+            // minSdk 35 never runs on a 32-bit or x86 phone; the other three copies of the one
+            // Compose .so are dead weight.
+            ndk { abiFilters += "arm64-v8a" }
         }
     }
 
@@ -94,15 +94,20 @@ android {
     }
 }
 
+// Deflate the dex instead of storing it page-aligned. The default (stored) lets ART mmap it
+// straight out of the APK, but this APK is downloaded from GitHub by hand and by the
+// self-updater, and stored dex is half its size. LSPosed reads the module's dex into memory
+// either way, so SystemUI does not care. Release only: debug keeps the fast install path.
+androidComponents {
+    onVariants(selector().withBuildType("release")) {
+        it.packaging.dex.useLegacyPackaging.set(true)
+    }
+}
+
 dependencies {
     // Modern Xposed API. compileOnly on purpose: the framework provides it at runtime and
     // packaging it would shadow the real one. Zero bytes in the APK either way.
     compileOnly("io.github.libxposed:api:102.0.0")
-
-    // The self-updater, and the app's first network stack. Both ship their own R8 consumer
-    // rules, so proguard-rules.pro needs nothing for them.
-    implementation(libs.okhttp)
-    implementation(libs.kotlinx.serialization.json)
 
     // The lyric parser. Its classes end up in the same dex as Main.java's, so they are also
     // loaded into SystemUI when the module is - see LyricProbe, which is why it has to stay

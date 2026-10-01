@@ -9,7 +9,6 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
-import okhttp3.Call
 import java.io.File
 import java.io.IOException
 
@@ -88,9 +87,9 @@ object UpdateInstaller {
     var progress: Float? = null
         private set
 
-    /** The in-flight OkHttp call, so [cancel] can abort it mid-download. */
+    /** The in-flight request, so [cancel] can abort it mid-download. */
     @Volatile
-    private var currentCall: Call? = null
+    private var currentCall: HttpCall? = null
 
     /** Set by [cancel] so the coroutine reports [InstallOutcome.Cancelled] rather than a failure. */
     @Volatile
@@ -166,15 +165,17 @@ object UpdateInstaller {
                 val call = UpdateApi.newApkCall(url)
                 currentCall = call
                 if (cancelled) call.cancel()
-                call.execute().use { response ->
-                    if (!response.isSuccessful) throw IOException("HTTP ${response.code}")
-                    val body = response.body
-                    val total = body.contentLength()
-                    body.byteStream().use { input ->
+                val connection = call.open()
+                try {
+                    val code = connection.responseCode
+                    if (code !in 200..299) throw IOException("HTTP $code")
+                    val total = connection.contentLengthLong
+                    connection.inputStream.use { input ->
                         target.outputStream().use { output ->
                             val buffer = ByteArray(8 * 1024)
                             var written = 0L
                             while (true) {
+                                if (System.nanoTime() > call.deadline) throw IOException("timed out")
                                 val read = input.read(buffer)
                                 if (read < 0) break
                                 output.write(buffer, 0, read)
@@ -187,6 +188,8 @@ object UpdateInstaller {
                             }
                         }
                     }
+                } finally {
+                    connection.disconnect()
                 }
                 // Against the asset's own URL, not the first of the list: that is whichever host
                 // worked last time, and the proxy's address taken as the original read back as

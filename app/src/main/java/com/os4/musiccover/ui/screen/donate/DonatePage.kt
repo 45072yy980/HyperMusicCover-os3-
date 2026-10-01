@@ -72,8 +72,8 @@ fun DonatePageContent(
     val alipay = stringResource(R.string.donate_alipay)
     val channels = remember(wechat, alipay) {
         listOf(
-            DonateChannel(wechat, R.drawable.donate_wechat, "HyperMusicCover-WeChat.png", "image/png"),
-            DonateChannel(alipay, R.drawable.donate_alipay, "HyperMusicCover-Alipay.jpg", "image/jpeg"),
+            DonateChannel(wechat, R.drawable.donate_wechat, "HyperMusicCover-WeChat.webp", "image/webp"),
+            DonateChannel(alipay, R.drawable.donate_alipay, "HyperMusicCover-Alipay.webp", "image/webp"),
         )
     }
     // Alipay, not the first tab: it is the one the author is paid through most, and a tab row
@@ -202,8 +202,9 @@ fun DonatePageContent(
  * Copies the poster into the user's album.
  *
  * The bytes are copied rather than a Bitmap re-encoded: `openRawResource` on a drawable that is
- * already a PNG or a JPEG hands back the file itself, so what lands in the album is the image the
- * payment app was given, not a second-generation copy of it.
+ * already a WebP hands back the file itself, so what lands in the album is exactly what ships.
+ * WebP to keep the APK small - the WeChat one is lossless, the Alipay one was a JPEG to begin
+ * with, and both were checked to decode to the same payment URL as the originals.
  *
  * No permission is asked for. Since Android 10 an app owns what it inserts into MediaStore, and
  * this app's minimum is well past that.

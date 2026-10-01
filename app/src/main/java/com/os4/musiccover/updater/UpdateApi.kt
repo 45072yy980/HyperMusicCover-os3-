@@ -6,15 +6,12 @@ import com.os4.musiccover.BuildConfig
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import kotlinx.serialization.SerialName
-import kotlinx.serialization.Serializable
-import kotlinx.serialization.json.Json
-import okhttp3.Call
-import okhttp3.OkHttpClient
-import okhttp3.Request
+import org.json.JSONArray
+import org.json.JSONObject
 import java.io.File
+import java.net.HttpURLConnection
+import java.net.URL
 import java.security.MessageDigest
-import java.util.concurrent.TimeUnit
 
 
 /**
@@ -43,26 +40,88 @@ private val STABLE_TAG = Regex("^v(\\d{1,3})\\.(\\d{1,2})\\.(\\d{1,2})$")
 /** The leading triple of a local version name, nightly `-nightly.<date>.<sha>` suffixes and all. */
 private val LEADING_TRIPLE = Regex("^(\\d{1,3})\\.(\\d{1,2})\\.(\\d{1,2})")
 
-/**
- * One release, as much of it as this app uses.
- *
- * Every field has a default because [Json] ignores unknown keys but still requires the ones it
- * knows about, and GitHub's release object carries dozens more than these five.
- */
-@Serializable
+/** One release, as much of it as this app uses. GitHub's release object carries dozens more. */
 internal data class GithubRelease(
-    @SerialName("tag_name") val tagName: String = "",
-    val prerelease: Boolean = false,
-    val body: String = "",
-    @SerialName("html_url") val htmlUrl: String = "",
-    val assets: List<GithubAsset> = emptyList(),
+    val tagName: String,
+    val prerelease: Boolean,
+    val body: String,
+    val htmlUrl: String,
+    val assets: List<GithubAsset>,
 )
 
-@Serializable
 internal data class GithubAsset(
-    val name: String = "",
-    @SerialName("browser_download_url") val url: String = "",
+    val name: String,
+    val url: String,
 )
+
+/**
+ * The release list, read with the platform's org.json.
+ *
+ * [str] and not `optString`: a release with no notes has `"body": null`, and `optString` turns a
+ * JSON null into the four-letter string "null", which would then be shown as the changelog.
+ */
+internal fun parseReleases(text: String): List<GithubRelease> {
+    val releases = JSONArray(text)
+    return (0 until releases.length()).map { i ->
+        val release = releases.getJSONObject(i)
+        val assets = release.optJSONArray("assets") ?: JSONArray()
+        GithubRelease(
+            tagName = release.str("tag_name"),
+            prerelease = release.optBoolean("prerelease"),
+            body = release.str("body"),
+            htmlUrl = release.str("html_url"),
+            assets = (0 until assets.length()).map { j ->
+                val asset = assets.getJSONObject(j)
+                GithubAsset(asset.str("name"), asset.str("browser_download_url"))
+            },
+        )
+    }
+}
+
+private fun JSONObject.str(key: String): String = if (isNull(key)) "" else optString(key)
+
+/**
+ * One HTTP exchange that another thread can abort.
+ *
+ * [cancel] disconnects the connection, which makes a read blocked on the socket throw at once;
+ * one cancelled before [open] got as far as creating the connection is disconnected as soon as it
+ * exists.
+ *
+ * [HttpURLConnection] has no call timeout, only a per-read one, so a server that drips a byte
+ * every few seconds would hold a download open forever. [deadline] is the cap the reader checks
+ * between reads instead.
+ */
+internal class HttpCall(private val url: String, private val connectTimeoutMs: Int) {
+
+    @Volatile
+    private var connection: HttpURLConnection? = null
+
+    @Volatile
+    private var cancelled = false
+
+    val deadline: Long = System.nanoTime() + CALL_TIMEOUT_NS
+
+    /** Connects lazily, as [HttpURLConnection] does; the caller disconnects it when done. */
+    fun open(accept: String? = null): HttpURLConnection {
+        val c = URL(url).openConnection() as HttpURLConnection
+        c.connectTimeout = connectTimeoutMs
+        c.readTimeout = READ_TIMEOUT_MS
+        if (accept != null) c.setRequestProperty("Accept", accept)
+        connection = c
+        if (cancelled) c.disconnect()
+        return c
+    }
+
+    fun cancel() {
+        cancelled = true
+        connection?.disconnect()
+    }
+
+    private companion object {
+        const val READ_TIMEOUT_MS = 30_000
+        const val CALL_TIMEOUT_NS = 10L * 60 * 1_000_000_000
+    }
+}
 
 /** A newer stable release, already checked against the running build. */
 data class UpdateInfo(
@@ -81,27 +140,6 @@ data class UpdateInfo(
 )
 
 object UpdateApi {
-
-    private val json = Json {
-        // Mandatory, not a nicety: the first key we did not model would otherwise be a
-        // SerializationException rather than a field we do not care about.
-        ignoreUnknownKeys = true
-    }
-
-    /**
-     * One client for the whole process, used for the release JSON and the APK body alike.
-     *
-     * `callTimeout` is the one that matters here, and a plain `readTimeout` would not do: the
-     * read timeout is per-read, so a server that drips a byte a second holds the connection open
-     * forever. A call timeout caps the whole exchange, which is what a download needs.
-     */
-    private val client by lazy {
-        OkHttpClient.Builder()
-            .connectTimeout(15, TimeUnit.SECONDS)
-            .readTimeout(30, TimeUnit.SECONDS)
-            .callTimeout(10, TimeUnit.MINUTES)
-            .build()
-    }
 
     /**
      * Is this build allowed to update itself at all?
@@ -180,13 +218,13 @@ object UpdateApi {
     /** The newest stable release, or null when there is nothing newer or nothing was answered. */
     suspend fun latest(): UpdateInfo? = withContext(Dispatchers.IO) {
         try {
-            val request = Request.Builder()
-                .url(RELEASES_LIST)
-                .header("Accept", "application/vnd.github+json")
-                .build()
-            client.newCall(request).execute().use { response ->
-                if (!response.isSuccessful) return@withContext null
-                toUpdateInfo(json.decodeFromString<List<GithubRelease>>(response.body.string()))
+            val connection = HttpCall(RELEASES_LIST, 15_000).open("application/vnd.github+json")
+            try {
+                if (connection.responseCode !in 200..299) return@withContext null
+                val text = connection.inputStream.bufferedReader().use { it.readText() }
+                toUpdateInfo(parseReleases(text))
+            } finally {
+                connection.disconnect()
             }
         } catch (e: CancellationException) {
             throw e
@@ -198,21 +236,16 @@ object UpdateApi {
     /**
      * A not-yet-executed call for the APK body.
      *
-     * Returned instead of executed so the caller can hold the [Call] and cancel it mid-download.
+     * Returned instead of opened so the caller can hold the [HttpCall] and cancel it mid-download.
      *
-     * A client of its own, with a much shorter connect timeout than the shared one. The download
+     * A much shorter connect timeout than the release list's 15 seconds. The download
      * hands over a list of candidate hosts and takes the first that answers, and the one that does
      * not is a host that never answers at all - measured on the project's test device, the direct
      * GitHub URL spends the full 15 seconds of a healthy connect timeout before failing. Paying
      * that on every update to discover the same thing again is the whole of what made the download
      * feel slow. Six seconds is still far longer than any working connection needs.
      */
-    internal fun newApkCall(url: String): Call = downloadClient
-        .newCall(Request.Builder().url(url).build())
-
-    private val downloadClient by lazy {
-        client.newBuilder().connectTimeout(6, TimeUnit.SECONDS).build()
-    }
+    internal fun newApkCall(url: String): HttpCall = HttpCall(url, 6_000)
 
     /**
      * The release worth offering, or null.

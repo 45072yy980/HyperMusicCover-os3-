@@ -170,10 +170,6 @@
     <string name="update_cancel">取消</string>
     <string name="update_close">关闭</string>
     <string name="update_failed">更新失败：%1$s</string>
-    <string name="tl_okhttp">OkHttp</string>
-    <string name="tl_okhttp_summary">Apache-2.0</string>
-    <string name="tl_serialization">kotlinx.serialization</string>
-    <string name="tl_serialization_summary">Apache-2.0</string>
     <string name="update_status_title">更新</string>
     <string name="update_no_installer">没有找到可以安装 APK 的应用，请在文件管理器里手动安装</string>
     <string name="update_confirm">更新</string>
