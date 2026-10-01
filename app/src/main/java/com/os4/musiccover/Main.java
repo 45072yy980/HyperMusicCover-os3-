@@ -951,6 +951,8 @@ public class Main extends XposedModule {
         // these have anything to do with the clock, and a build that renamed the container must
         // not cost them too.
         HyperTweaks.systemUi(cl);
+        // The home screen magnified behind the shade, after the lock screen (PassBlurScaleFix).
+        PassBlurScaleFix.install();
         // The mini player hangs off the shortcut row, not the clock container.
         MiniPlayerRuntime.install(cl);
 
