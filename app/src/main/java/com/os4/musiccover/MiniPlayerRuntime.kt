@@ -1680,6 +1680,8 @@ private class MiniPlayerController(
     private var artBridged = false
     /** Whether the pill is bound to the music as refresh last bound it, not to a notification. */
     private var pillShowsMusic = false
+    /** Refresh had nothing to bind the pill's island to: it still holds another's picture. */
+    private var pillUnbound = false
     private var lastTrack = ""
     private var cachedCover: Bitmap? = null
     private var refreshPosted = false
@@ -2002,7 +2004,8 @@ private class MiniPlayerController(
         }
         // A notification flying out of the pill, or home into it, is the flight: the pill under
         // it stays out of sight until the flight lands on it.
-        val pillFade = if (pillHeld() || exchangeHoldsPill()) 0f else fade
+        // Nor is it shown with another island's picture still in it, waiting to be bound.
+        val pillFade = if (pillHeld() || exchangeHoldsPill() || pillUnbound) 0f else fade
         followPillFade = pillFade
         if (kotlin.math.abs(view.transitionAlpha - pillFade) > 0.002f) view.transitionAlpha = pillFade
     }
@@ -6985,7 +6988,10 @@ private class MiniPlayerController(
 
     /** Where an island's picture, title and text land on a notification's row, and its corners. */
     private fun rowLanding(row: View) = MiniCardMorph.Landing(
-        findNamed(row, ICON_NAMES) { it is ImageView },
+        // A focus template's own picture before any icon: searched in one pass, the header's
+        // small app icon came first in the tree and the picture flew to it. From PR #15.
+        findNamed(row, FOCUS_ART_NAMES) { it.width > 0 && it.height > 0 }
+            ?: findNamed(row, ICON_NAMES) { it is ImageView },
         findNamed(row, TITLE_NAMES) { it is TextView },
         findNamed(row, TEXT_NAMES) { it is TextView },
         Main.notificationRowRadius(row),
@@ -8946,11 +8952,19 @@ private class MiniPlayerController(
         // after the notification had landed there (2026-09-25).
         val note = notes.firstOrNull { it.key == selected }
             ?: selected.takeIf { it != MUSIC_ISLAND }?.let(LockIslands::noteFor)
+        // The music only for the music's seat: a notification whose row has not come back yet
+        // took the music's picture for those frames, under the flight landing on the pill. It
+        // binds nothing now, and the pill stays out of sight until it has (pillUnbound).
+        // From TakeKazeX's PR #15.
+        val showsMusic = selected == MUSIC_ISLAND && music != null
         traced("MC r.bind") {
-            if (note == null && music != null) bindMusic(view, music, config)
+            if (showsMusic) bindMusic(view, music!!, config)
             else if (note != null) bindNote(view, note, config)
         }
-        pillShowsMusic = note == null && music != null
+        pillShowsMusic = showsMusic
+        // The music's own seat with no session for a moment (a stop between two tracks) keeps
+        // what it showed, as it always has.
+        pillUnbound = selected != MUSIC_ISLAND && note == null
         // After the small island is chosen: whether the music is it decides its picture's bridge.
         updateSmallIsland(music, notes)
         traced("MC r.artBridge") { applyArtBridge() }
@@ -10394,6 +10408,9 @@ private const val SPREAD_OPEN_AT = 0.35f
 private val ICON_NAMES = setOf("right_icon", "icon", "app_icon", "notification_icon", "left_icon",
     "focus_animation", "focus_animation_static", "focus_icon")
 private val TITLE_NAMES = setOf("title", "notification_title", "chronometer", "focus_title")
+/** A focus template's picture, which the island's picture lands on before any icon. */
+private val FOCUS_ART_NAMES = setOf("focus_animation", "focus_animation_static", "focus_icon",
+    "focus_large_icon", "focus_small_icon")
 private val TEXT_NAMES = setOf("text", "big_text", "notification_text", "focus_content")
 
 /** Below this progress, a flight coming home fades off the small island shown under it. */
