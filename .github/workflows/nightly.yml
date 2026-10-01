@@ -29,6 +29,9 @@ jobs:
     runs-on: ubuntu-latest
     env:
       GH_TOKEN: ${{ github.token }}
+    outputs:
+      published: ${{ steps.check.outputs.publish }}
+      tag: nightly-${{ steps.build.outputs.date_tag }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -156,3 +159,14 @@ jobs:
               echo "Deleting $old"
               gh release delete "$old" --cleanup-tag --yes
             done
+
+  # Into the Telegram group too, the same push a stable release gets - unpinned, so the pinned
+  # message stays the stable one (telegram.yml pins only what is not a pre-release). Called
+  # rather than left to the release event: a release made with github.token raises none.
+  telegram:
+    needs: nightly
+    if: needs.nightly.outputs.published == 'true'
+    uses: ./.github/workflows/telegram.yml
+    with:
+      tag: ${{ needs.nightly.outputs.tag }}
+    secrets: inherit

@@ -5,14 +5,15 @@ name: Telegram
 # It never reads the triggering event's payload. The tag is the only input; everything else
 # comes back from `gh release view`, so the same job serves all three entry points:
 #
-#   workflow_call     release.yml calls this after it publishes. Releases created with
-#                     github.token do not raise a `release` event (GitHub refuses to let a
-#                     workflow trigger a workflow), so this call is the only thing that
-#                     covers a tag-driven release.
+#   workflow_call     release.yml and nightly.yml call this after they publish. Releases
+#                     created with github.token do not raise a `release` event (GitHub
+#                     refuses to let a workflow trigger a workflow), so this call is the only
+#                     thing that covers a tag-driven release or a nightly.
 #   release           a release published by hand in the web UI, which release.yml never sees.
 #   workflow_dispatch re-sending one that failed, without cutting a new release.
 #
-# Nightlies are deliberately not wired up - one message a night would bury the group.
+# Nightlies are pushed too, but never pinned: the pinned message stays the stable release. A
+# nightly only runs when main has moved, so it is at most one message a night.
 on:
   workflow_call:
     inputs:
@@ -142,8 +143,9 @@ jobs:
           # Pin the announcement. disable_notification=true pins silently - the group gets a
           # pinned-message banner but nobody is pinged for it. A missing 'Pin Messages' admin
           # right is a config problem worth surfacing, not a reason to fail a release that has
-          # already gone out, so it is a warning rather than an error.
-          if [ -n "$msg_id" ]; then
+          # already gone out, so it is a warning rather than an error. Not a pre-release: a
+          # nightly pinned over the stable announcement would hide it.
+          if [ -n "$msg_id" ] && [ "$PRERELEASE" != "true" ]; then
             if ! curl -sS -X POST "$API/pinChatMessage" \
               -F chat_id="$CHAT_ID" \
               ${THREAD_ID:+-F message_thread_id="$THREAD_ID"} \
