@@ -2328,11 +2328,12 @@ public class Main extends XposedModule {
                     } else if ("lyricalign".equals(op)) {
                         // Same shape as the translation switch: the view notices the change and
                         // lays the lines out again, refresh only has to start the frames that let
-                        // it.
+                        // it. Saved the way lyricstyle is, folding a quick run of picks into one
+                        // write.
                         if (LockLyrics.setAlign(i.getIntExtra("v", LockLyrics.sAlign))) {
                             Xp.log(TAG + "lyrics alignment: " + LockLyrics.sAlign);
                             LockLyrics.refresh();
-                            saveState();
+                            saveStateSoon();
                         }
                     } else if ("lyricinfo".equals(op)) {
                         // The playing session's metadata, every string key, with lyricInfo written
