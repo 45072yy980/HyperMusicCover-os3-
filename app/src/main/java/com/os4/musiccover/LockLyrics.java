@@ -97,8 +97,32 @@ final class LockLyrics {
      * than leaving a gap where it was.
      */
     static volatile boolean sTrans = true;
+    /** Where the lines settle in their column: left, centre or right, as the settings offer. */
+    static final int ALIGN_LEFT = 0, ALIGN_CENTER = 1, ALIGN_RIGHT = 2;
+    /**
+     * The alignment pref: one of the three constants above.
+     *
+     * Unlike the switches this cannot be drawn around once changed - the alignment is baked into
+     * every StaticLayout - so LyricView lays the lines out again when this differs from what the
+     * layout in use was built with (see its builtAlign). Left is what the lyrics did before the
+     * setting existed, and what a state file written before it loads as.
+     */
+    static volatile int sAlign = ALIGN_LEFT;
     /** Immutable snapshot: the UI, renderer and state loader all use the same validated values. */
     static volatile LyricStyle sStyle = LyricStyle.DEFAULT;
+
+    /**
+     * Applies one alignment pref, validated here rather than at the callers: a state file and an
+     * adb broadcast are both untrusted, and no screen could have set a fourth value.
+     */
+    static boolean setAlign(int mode) {
+        int next = mode <= ALIGN_LEFT ? ALIGN_LEFT : Math.min(mode, ALIGN_RIGHT);
+        if (next == sAlign) return false;
+        sAlign = next;
+        LyricView view = sView;
+        if (view != null) view.kick();
+        return true;
+    }
 
     static boolean setStyle(String key, float value) {
         LyricStyle next = sStyle.with(key, value);

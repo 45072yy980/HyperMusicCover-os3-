@@ -316,9 +316,13 @@ final class LyricView extends View {
     private int wantVersion = -1, wantWidth = -1;
     /** The translation switch the layout in the air is for; -1 above means none is. */
     private boolean wantTrans;
+    /** The alignment pref the layout in the air is for; only meaningful with a version above. */
+    private int wantAlign;
     private LyricStyle wantStyle;
     /** The translation switch the layout now in use was made under. */
     private boolean builtTrans = true;
+    /** The alignment pref the layout now in use was made under; see LockLyrics.sAlign. */
+    private int builtAlign = LockLyrics.ALIGN_LEFT;
     /** Diagnostics: how long the last layout took on its thread. */
     private long layoutMs;
     /** From this distance on the blur is wide enough to be made at a quarter of the resolution. */
@@ -550,6 +554,9 @@ final class LyricView extends View {
                 // is. Compared against what the layout in use was built with, not the field, or
                 // the request would still look outstanding the moment it landed.
                 || LockLyrics.sTrans != builtTrans
+                // The alignment is in the layout too, and asked for the same way: against what
+                // the layout in use was built with, not against the field.
+                || LockLyrics.sAlign != builtAlign
                 || !LockLyrics.sStyle.sameLayout(layoutStyle))
                 && (LockLyrics.wantsAttached() || show == 0f)) {
             if (layOut()) {
@@ -1456,10 +1463,11 @@ final class LyricView extends View {
         final int v = LockLyrics.version();
         final int width = getWidth();
         final boolean transOn = LockLyrics.sTrans;
+        final int alignOn = LockLyrics.sAlign;
         final LyricStyle style = LockLyrics.sStyle;
         final List<LyricLine> ls = LockLyrics.lines();
         if (!ls.isEmpty() && v == wantVersion && width == wantWidth && transOn == wantTrans
-                && style.sameLayout(wantStyle)) return false;
+                && alignOn == wantAlign && style.sameLayout(wantStyle)) return false;
         final float buildTextPx = TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_SP,
                 style.sizeSp, getResources().getDisplayMetrics());
         final float buildSidePx = style.sidePx(width, shortSide(), density, buildTextPx);
@@ -1475,24 +1483,28 @@ final class LyricView extends View {
         if (ls.isEmpty()) {
             wantVersion = wantWidth = -1;
             wantTrans = transOn;
+            wantAlign = alignOn;
             wantStyle = null;
-            apply(build(v, width, ls, p, bp, tp, transOn, style, buildTextPx, buildSidePx));
+            apply(build(v, width, ls, p, bp, tp, transOn, alignOn, style,
+                    buildTextPx, buildSidePx));
             return true;
         }
         wantVersion = v;
         wantWidth = width;
         wantTrans = transOn;
+        wantAlign = alignOn;
         wantStyle = style;
         layoutHandler().post(new Runnable() {
             @Override
             public void run() {
-                final Built b = build(v, width, ls, p, bp, tp, transOn,
+                final Built b = build(v, width, ls, p, bp, tp, transOn, alignOn,
                         style, buildTextPx, buildSidePx);
                 post(new Runnable() {
                     @Override
                     public void run() {
                         // Overtaken by a newer request: that one's answer is the one to wait for.
                         if (v != wantVersion || width != wantWidth || transOn != wantTrans
+                                || alignOn != wantAlign
                                 || !style.sameLayout(wantStyle)) return;
                         wantVersion = wantWidth = -1;
                         wantStyle = null;
@@ -1500,6 +1512,7 @@ final class LyricView extends View {
                         // being switched off: the next step asks again when it is due.
                         if (v != LockLyrics.version() || width != getWidth()
                                 || transOn != LockLyrics.sTrans
+                                || alignOn != LockLyrics.sAlign
                                 || !style.sameLayout(LockLyrics.sStyle)
                                 || !LockLyrics.wantsAttached()) {
                             return;
@@ -1520,6 +1533,8 @@ final class LyricView extends View {
         LyricStyle style;
         /** The translation switch this layout was made under; see LockLyrics.sTrans. */
         boolean transOn;
+        /** The alignment pref this layout was made under; see LockLyrics.sAlign. */
+        int align;
         List<LyricLine> lines;
         StaticLayout[] main, trans, bgLay;
         float[] base, height, dotsTop;
@@ -1527,16 +1542,30 @@ final class LyricView extends View {
         long tookMs;
     }
 
+    /**
+     * Where a line settles in its column: the user's choice (one of LockLyrics' ALIGN_
+     * constants), except that a duet's second voice keeps to the edge against the other singer.
+     * Left and right swap for it rather than converge - the two voices are told apart by being
+     * on opposite sides - and the centre is the one answer with no opposite.
+     */
+    private static Layout.Alignment alignFor(boolean opposite, int align) {
+        if (align == LockLyrics.ALIGN_CENTER) return Layout.Alignment.ALIGN_CENTER;
+        boolean right = align == LockLyrics.ALIGN_RIGHT;
+        if (opposite) right = !right;
+        return right ? Layout.Alignment.ALIGN_OPPOSITE : Layout.Alignment.ALIGN_NORMAL;
+    }
+
     /** Touches nothing of the view's but its constants, so it can run off the UI thread. */
     private Built build(int v, int width, List<LyricLine> ls, TextPaint p, TextPaint bp,
-                        TextPaint tp, boolean transOn, LyricStyle style, float buildTextPx,
-                        float buildSidePx) {
+                        TextPaint tp, boolean transOn, int alignOn, LyricStyle style,
+                        float buildTextPx, float buildSidePx) {
         long t0 = SystemClock.uptimeMillis();
         Built b = new Built();
         b.version = v;
         b.width = width;
         b.style = style;
         b.transOn = transOn;
+        b.align = alignOn;
         b.lines = ls;
         int n = ls.size();
         int w = Math.max(1, width - Math.round(2f * buildSidePx));
@@ -1561,8 +1590,7 @@ final class LyricView extends View {
             } else {
                 b.dotsTop[i] = Float.NaN;
             }
-            Layout.Alignment align = l.opposite
-                    ? Layout.Alignment.ALIGN_OPPOSITE : Layout.Alignment.ALIGN_NORMAL;
+            Layout.Alignment align = alignFor(l.opposite, alignOn);
             b.main[i] = StaticLayout.Builder.obtain(l.text, 0, l.text.length(), p, w)
                     .setAlignment(align)
                     .setIncludePad(false)
@@ -1605,6 +1633,7 @@ final class LyricView extends View {
         applyPaintStyle(b.style);
         version = b.version;
         builtTrans = b.transOn;
+        builtAlign = b.align;
         lines = b.lines;
         layoutWidth = b.width;
         layoutMs = b.tookMs;
@@ -1876,7 +1905,15 @@ final class LyricView extends View {
         if (group <= 0.01f) return;
         float size = DOT_EM * textPx;
         float gap = DOT_GAP_EM * textPx * group;
-        float cx = x + size / 2f + DOT_GAP_EM * textPx;
+        // They sit in the slot of the line they lead into, so they go where it goes: the user's
+        // alignment, with a duet's second voice against the other edge (see alignFor). Laid out
+        // at their rest spacing, which is the anchor the breath moves them around.
+        float groupW = size + 2f * DOT_GAP_EM * textPx;
+        Layout.Alignment align = alignFor(lines.get(d).opposite, builtAlign);
+        float colW = main[d].getWidth();
+        float left = align == Layout.Alignment.ALIGN_CENTER ? x + (colW - groupW) / 2f
+                : align == Layout.Alignment.ALIGN_OPPOSITE ? x + colW - groupW : x;
+        float cx = left + size / 2f + DOT_GAP_EM * textPx;
         float cy = top + DOT_CENTER_EM * textPx;
         float r = size / 2f * group;
         for (int k = 0; k < 3; k++) {
@@ -1894,7 +1931,9 @@ final class LyricView extends View {
         float e = emph[i];
         float sc = scale[i];
         // Pivot on the line's own edge, so a size change does not shift it sideways.
-        float pivotX = l.opposite ? lay.getWidth() : 0f;
+        Layout.Alignment align = alignFor(l.opposite, builtAlign);
+        float pivotX = align == Layout.Alignment.ALIGN_CENTER ? lay.getWidth() / 2f
+                : align == Layout.Alignment.ALIGN_OPPOSITE ? lay.getWidth() : 0f;
         // In the AOD's still mode a word-timed line is drawn whole, like a line-timed one: a fill
         // frozen at whatever syllable the one frame caught would be wrong for the whole line.
         boolean still = LockLyrics.still();
@@ -2048,6 +2087,7 @@ final class LyricView extends View {
         // every frame, so it gets copies, and it lays the text out again for itself.
         final int gen = buildGen;
         final LyricLine l = lines.get(i);
+        final int alignOn = builtAlign;
         final int width = main[i].getWidth();
         final int fullW = width + 2 * blurPad, fullH = Math.round(height[i]) + 2 * blurPad;
         final float radius = blurFor(rows);
@@ -2062,7 +2102,7 @@ final class LyricView extends View {
             @Override
             public void run() {
                 final Bitmap b = makeBlurred(l, width, fullW, fullH, pad, radius, p, tp, bp,
-                        transGap, bgGap, down);
+                        transGap, bgGap, down, alignOn);
                 post(new Runnable() {
                     @Override
                     public void run() {
@@ -2083,7 +2123,7 @@ final class LyricView extends View {
      */
     private static Bitmap makeBlurred(LyricLine l, int width, int fullW, int fullH, int pad,
                                       float radius, TextPaint p, TextPaint tp, TextPaint bp,
-                                      float transGap, float bgGap, int down) {
+                                      float transGap, float bgGap, int down, int alignOn) {
         try {
             Bitmap b = Bitmap.createBitmap(Math.max(1, fullW / down), Math.max(1, fullH / down),
                     Bitmap.Config.ARGB_8888);
@@ -2091,8 +2131,7 @@ final class LyricView extends View {
             c.scale(1f / down, 1f / down);
             c.translate(pad, pad);
             BlurMaskFilter mf = new BlurMaskFilter(radius, BlurMaskFilter.Blur.NORMAL);
-            Layout.Alignment align = l.opposite
-                    ? Layout.Alignment.ALIGN_OPPOSITE : Layout.Alignment.ALIGN_NORMAL;
+            Layout.Alignment align = alignFor(l.opposite, alignOn);
             p.setShader(null);
             p.clearShadowLayer();
             p.setAlpha(255);
