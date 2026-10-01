@@ -3139,10 +3139,28 @@ private class MiniPlayerController(
         val xy = IntArray(2).also(host::getLocationOnScreen)
         val reach = kotlin.math.abs(rest.cx() - xy[0] - smallRest[0]) + rest.w / 2f
         val wide = maxOf(discFrame(discDiameter()), (reach * 2f + dp(16f)).roundToInt())
-        if (small.layoutParams.width != wide) {
-            small.layoutParams = small.layoutParams.apply { width = wide }
-        }
+        resizeSmallIsland(small, wide, small.layoutParams.height)
         smallWide = true
+    }
+
+    /**
+     * The small island's frame to a new size now, about the centre it is drawn at. Set only in
+     * its layout params, the size took the next layout pass, and for the frame before it the
+     * island was placed by one size and drawn at the other - a jump sideways as it grew for a
+     * flight or went back to its circle. From TakeKazeX's PR #15.
+     */
+    private fun resizeSmallIsland(small: ShortcutDisc, width: Int, height: Int) {
+        if (small.layoutParams.width != width || small.layoutParams.height != height) {
+            small.layoutParams = small.layoutParams.apply { this.width = width; this.height = height }
+        }
+        if (small.width == width && small.height == height) return
+        val cx = small.x + small.width / 2f
+        val cy = small.y + small.height / 2f
+        small.measure(View.MeasureSpec.makeMeasureSpec(width, View.MeasureSpec.EXACTLY),
+            View.MeasureSpec.makeMeasureSpec(height, View.MeasureSpec.EXACTLY))
+        small.layout(small.left, small.top, small.left + width, small.top + height)
+        small.translationX = cx - small.left - width / 2f
+        small.translationY = cy - small.top - height / 2f
     }
 
     private var smallWide = false
@@ -3151,9 +3169,7 @@ private class MiniPlayerController(
         val small = smallIsland ?: return
         val d = discDiameter()
         val frame = discFrame(d)
-        if (smallWide && (small.layoutParams.width != frame || small.layoutParams.height != frame)) {
-            small.layoutParams = small.layoutParams.apply { width = frame; height = frame }
-        }
+        if (smallWide) resizeSmallIsland(small, frame, frame)
         smallWide = false
         small.setShape(d, d, 0)
         small.setIconAlpha(1f)
@@ -7205,10 +7221,8 @@ private class MiniPlayerController(
         val h = maxOf(discFrame(discDiameter()), (box.h + pad).roundToInt())
         // Only ever widened while landing: the shape shrinks inside the room it was given.
         if (landingBox == null || small.layoutParams.width < w || small.layoutParams.height < h) {
-            small.layoutParams = small.layoutParams.apply {
-                width = maxOf(width, w)
-                height = maxOf(height, h)
-            }
+            resizeSmallIsland(small, maxOf(small.layoutParams.width, w),
+                maxOf(small.layoutParams.height, h))
             smallWide = true
         }
         landingBox = box
