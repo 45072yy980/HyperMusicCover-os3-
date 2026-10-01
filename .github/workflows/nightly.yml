@@ -105,9 +105,32 @@ jobs:
           short_sha=$(git rev-parse --short HEAD)
           echo "date_tag=$date_tag" >> "$GITHUB_OUTPUT"
           echo "short_sha=$short_sha" >> "$GITHUB_OUTPUT"
+          # Numbered after the stable release it follows, so it installs over that release and
+          # the next one installs over it. release.yml gives vX.Y.Z the code
+          # (X*10000 + Y*100 + Z) * 1000; a nightly takes that and adds one more than the
+          # number of commits since the tag - 708001 and up after 0.7.8, all under 0.7.9's
+          # 709000, and rising along main from one nightly to the next. Its name carries the
+          # same version, which is what the app's updater compares: a nightly after 0.7.8 is
+          # offered 0.7.9, not 0.7.8 again.
+          last=$(git describe --tags --abbrev=0 --match 'v[0-9]*.[0-9]*.[0-9]*' HEAD 2>/dev/null || true)
+          base="0.0.0"
+          if [ -n "$last" ]; then
+            base="${last#v}"
+            since=$(git rev-list --count "$last..HEAD")
+          else
+            since=$(git rev-list --count HEAD)
+          fi
+          major="${base%%.*}"
+          rest="${base#*.}"
+          minor="${rest%%.*}"
+          patch="${rest#*.}"
+          if [ "$since" -gt 998 ]; then since=998; fi
+          code=$(( (major * 10000 + minor * 100 + patch) * 1000 + since + 1 ))
+          echo "after ${last:-no release}: $since commits, versionCode $code"
           ./gradlew --no-daemon assembleRelease \
+            "-PmcVersionName=${base}" \
             "-PmcVersionSuffix=-nightly.${date_tag}.${short_sha}" \
-            "-PmcVersionCode=${{ github.run_number }}"
+            "-PmcVersionCode=${code}"
           mkdir -p dist
           cp app/build/outputs/apk/release/app-release.apk \
              "dist/HyperMusicCover-nightly-${date_tag}-${short_sha}.apk"

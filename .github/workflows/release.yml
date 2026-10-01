@@ -61,10 +61,13 @@ jobs:
             esac
           done
           # Monotonic across every tag this scheme can produce, so a later release always
-          # installs over an earlier one without anyone having to remember a counter.
+          # installs over an earlier one without anyone having to remember a counter. The
+          # times 1000 leaves room above each release for the nightlies after it (nightly.yml):
+          # a nightly after 0.7.8 is 708001 and up, over 0.7.8 and under 0.7.9's 709000.
+          # Releases up to 0.7.8 were cut without it (708), and every later code is above that.
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
           echo "name=$name" >> "$GITHUB_OUTPUT"
-          echo "code=$((major * 10000 + minor * 100 + patch))" >> "$GITHUB_OUTPUT"
+          echo "code=$(( (major * 10000 + minor * 100 + patch) * 1000 ))" >> "$GITHUB_OUTPUT"
 
       - uses: actions/setup-java@v4
         with:

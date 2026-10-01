@@ -21,10 +21,10 @@ import java.util.concurrent.TimeUnit
  * Finding out whether GitHub has a newer release than the one we are running.
  *
  * Only stable releases are considered. The project publishes two lines from the same tag-driven
- * workflow - `vMAJOR.MINOR.PATCH` and `nightly-YYYYMMDD` - and a nightly is a pre-release whose
- * versionCode is GitHub's run counter, a number on a completely different scale from the stable
- * line's `major*10000 + minor*100 + patch`. Offering a nightly here would be comparing two
- * unrelated numbers, so both the tag shape and the `prerelease` flag are checked.
+ * workflow - `vMAJOR.MINOR.PATCH` and `nightly-YYYYMMDD`. The stable line's versionCode is
+ * `(major*10000 + minor*100 + patch) * 1000`, and a nightly sits in the thousand above the release
+ * it follows, named after it. A nightly is for whoever went and got one, not something to push
+ * on everyone, so both the tag shape and the `prerelease` flag are checked.
  *
  * Nothing in here throws. A check that could not be completed and a check that found nothing are
  * the same answer - no update to offer - which is how [com.os4.musiccover.ModuleBridge] already
@@ -261,7 +261,7 @@ object UpdateApi {
             }
         return Release(
             versionName = release.tagName.removePrefix("v"),
-            versionCode = major.toInt() * 10_000 + minor.toInt() * 100 + patch.toInt(),
+            versionCode = (major.toInt() * 10_000 + minor.toInt() * 100 + patch.toInt()) * 1000,
             notes = release.body.trim(),
             apkUrl = apk?.url,
             releaseUrl = release.htmlUrl,
