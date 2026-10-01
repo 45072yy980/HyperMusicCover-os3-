@@ -1,7 +1,9 @@
 package com.os4.musiccover
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class MiniPlayerMaterialStateTest {
@@ -17,5 +19,11 @@ class MiniPlayerMaterialStateTest {
         values[0] = 0.5f
         assertNotEquals(previous, MiniPlayerMaterialState.snapshot(values))
         assertEquals(listOf(0.2f, 0.8f), previous)
+    }
+
+    @Test fun onlyAnotherEffectReplacesTheLayer() {
+        assertFalse(MiniPlayerMaterialState.replacesLayer(null, "Blur#1"))
+        assertFalse(MiniPlayerMaterialState.replacesLayer("Blur#1", "Blur#2"))
+        assertTrue(MiniPlayerMaterialState.replacesLayer("Blur#2", "Glass#3"))
     }
 }

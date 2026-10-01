@@ -193,6 +193,12 @@ object MiniPlayerRuntime {
      */
     @Volatile internal var materialGeneration = 0
         private set
+
+    /**
+     * The pill's material key: the effect, then the generation after a '#'. The pill builds a
+     * new layer only when the effect before the '#' changes (MiniPlayerMaterialState).
+     */
+    internal val materialStyleKey: String get() = "$cardEffect#$materialGeneration"
     /** The last recipe's values, for telling a new one from the same one again. */
     private var materialSignature: Any? = null
     private var materialRepeats = 0
@@ -9036,7 +9042,7 @@ private class MiniPlayerController(
             shown,
             stateOf(current)?.state == PlaybackState.STATE_PLAYING,
             config,
-            "#${MiniPlayerRuntime.materialGeneration}",
+            MiniPlayerRuntime.materialStyleKey,
             { target -> MiniPlayerRuntime.material(target, loader) },
             ::togglePlayback,
             { skip(next = false) },
@@ -9081,7 +9087,7 @@ private class MiniPlayerController(
             noteBitmap(note),
             false,
             config,
-            "#${MiniPlayerRuntime.materialGeneration}",
+            MiniPlayerRuntime.materialStyleKey,
             { target -> MiniPlayerRuntime.material(target, loader) },
             {},
             {},
@@ -9593,9 +9599,14 @@ private class MiniPlayerController(
             if (timerViews.remove(view) != null) view.titleView.fontFeatureSettings = null
             return
         }
+        // Bound again to the timer it already shows (every refresh): the line is set again over
+        // what bind wrote, but a tick still coming goes on where it was rather than starting
+        // over. One that stopped - every view it had detached - is started again. PR #15.
+        val same = timerViews[view] === timer && handler.hasCallbacks(timerTick)
         timerViews[view] = timer
         if (view.titleView.fontFeatureSettings != "tnum") view.titleView.fontFeatureSettings = "tnum"
         timerText(view, timer, timer.text())
+        if (same) return
         handler.removeCallbacks(timerTick)
         timerTick.run()
     }
