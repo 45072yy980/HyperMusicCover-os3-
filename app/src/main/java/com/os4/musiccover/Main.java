@@ -5607,8 +5607,21 @@ public class Main extends XposedModule {
      * SHORTCUT_SHOT_W, all together well inside the ordered broadcast's binder budget. The
      * shortcuts are only sent when asked for - they never change - and the artwork is skipped
      * when the caller says it already has this track's.
+     *
+     * shots=false is the app's features page, which polls every few seconds for the state
+     * fields alone and draws none of the pictures: it gets those fields and nothing is drawn.
+     * Every capture is a software draw on this main thread, and the card's forces its keyguard
+     * layout on and back off, so the full reply on that poll was work thrown away while the page
+     * stayed open.
      */
     private static android.os.Bundle previewBundle(Context c, Intent i) {
+        if (!i.getBooleanExtra("shots", true)) {
+            android.os.Bundle out = new android.os.Bundle();
+            out.putBoolean("alive", true);
+            out.putString("track", sCardKey);
+            putPreviewState(out);
+            return out;
+        }
         android.os.Bundle out = new android.os.Bundle();
         // One line per request, in debug builds, saying where every piece of the picture came
         // from or why it is missing. The preview has six independent sources and a user reports
@@ -5697,27 +5710,7 @@ public class Main extends XposedModule {
         }
 
         putDate(out, dump);
-        // Sent with the pictures, not only in answer to a query. The query happens once, when
-        // the page is opened; the clock's geometry changes whenever the user changes the lock
-        // screen clock style, and a stale zero here is the app holding a picture of a clock it
-        // then refuses to draw for want of somewhere to put it.
-        float[] cg = clockGeometry();
-        if (cg != null) {
-            out.putFloat("clockw", cg[0]);
-            out.putFloat("clockh", cg[1]);
-            out.putFloat("clocky", cg[2]);
-            out.putFloat("clockx", cg[3]);
-            out.putFloat("clockpivotx", cg[4]);
-            out.putFloat("clockpad", CLOCK_PAD);
-            out.putFloat("clockfull", clockFullRatio());
-            // For a size the slider has never set: the dp default, in this style's terms.
-            out.putFloat("clocksize", effectiveClockSize());
-        }
-        out.putBoolean("clockglass", clockHasGlass());
-        // Sent with every picture rather than only in the query: which route the lyric came from
-        // changes mid-track - the session's payload turns up after the file, a network lookup
-        // lands after that - and the row that names it is read while this page is open.
-        out.putString("lyricsrc", LockLyrics.sourceName());
+        float[] cg = putPreviewState(out);
         if (diag != null) {
             View date = visibleDate();
             diag.append("\n  date: view=").append(date == null ? "NOT FOUND"
@@ -5762,6 +5755,35 @@ public class Main extends XposedModule {
 
         if (diag != null) Xp.log(TAG + diag);
         return out;
+    }
+
+    /**
+     * The fields of the preview that are not pictures, and the clock geometry they came from.
+     *
+     * Sent with the pictures, not only in answer to a query. The query happens once, when the
+     * page is opened; the clock's geometry changes whenever the user changes the lock screen
+     * clock style, and a stale zero here is the app holding a picture of a clock it then refuses
+     * to draw for want of somewhere to put it.
+     */
+    private static float[] putPreviewState(android.os.Bundle out) {
+        float[] cg = clockGeometry();
+        if (cg != null) {
+            out.putFloat("clockw", cg[0]);
+            out.putFloat("clockh", cg[1]);
+            out.putFloat("clocky", cg[2]);
+            out.putFloat("clockx", cg[3]);
+            out.putFloat("clockpivotx", cg[4]);
+            out.putFloat("clockpad", CLOCK_PAD);
+            out.putFloat("clockfull", clockFullRatio());
+            // For a size the slider has never set: the dp default, in this style's terms.
+            out.putFloat("clocksize", effectiveClockSize());
+        }
+        out.putBoolean("clockglass", clockHasGlass());
+        // Which route the lyric came from changes mid-track - the session's payload turns up
+        // after the file, a network lookup lands after that - and the row that names it is read
+        // while the page is open.
+        out.putString("lyricsrc", LockLyrics.sourceName());
+        return cg;
     }
 
     /**

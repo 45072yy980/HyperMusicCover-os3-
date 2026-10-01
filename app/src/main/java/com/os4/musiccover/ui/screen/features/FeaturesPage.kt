@@ -177,13 +177,13 @@ internal fun CoverPageView(
     // Polled while the page is open for the three things the rows under the picture read and
     // that change without a settings change: whether the clock style has glass, which route the
     // lyric came from, and the clock's size while nothing has set it. The reply is the old live
-    // preview's; `have` is kept current so the module answers "same song" instead of resending
-    // artwork this page no longer draws.
+    // preview's, asked for without its pictures: this page draws none of them, and each one is
+    // a software draw on SystemUI's main thread every poll.
     var artTrack by remember { mutableStateOf("") }
     LaunchedEffect(refreshKey, module.alive) {
         if (!module.alive) return@LaunchedEffect
         while (true) {
-            val reply = ModuleBridge.preview(context, artTrack, false)
+            val reply = ModuleBridge.preview(context, artTrack, shortcuts = false, shots = false)
             if (!reply.alive) {
                 ModuleBridge.markLost()
                 return@LaunchedEffect

@@ -576,15 +576,18 @@ object ModuleBridge {
      * [have] is the track whose artwork the caller already holds - a poller passes it and gets
      * a few hundred bytes back instead of the same JPEG. [shortcuts] asks for the torch and
      * camera buttons, which never change, so it is worth passing once and then not again.
+     * [shots] false asks for the state fields alone, with no picture drawn on SystemUI's side.
      */
     suspend fun preview(
         context: Context,
         have: String = "",
         shortcuts: Boolean = false,
+        shots: Boolean = true,
     ): Preview {
         val reply = broadcast(context.applicationContext, intent("preview").apply {
             putExtra("have", have)
             putExtra("shortcuts", shortcuts)
+            putExtra("shots", shots)
         })
         // Back without extras is nobody there; not back at all is a SystemUI too busy to answer
         // within the timeout, which is not a reason to grey the page out.
