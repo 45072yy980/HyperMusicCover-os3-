@@ -1913,6 +1913,9 @@ public class Main extends XposedModule {
                     // the key did not exist before this setting did, and the lyrics are supposed
                     // to look the way they always have on a file that predates it.
                     + "\nlyrictrans=" + (LockLyrics.sTrans ? 1 : 0)
+                    // 0 left, 1 centre, 2 right, and left when the key is absent: a file from
+                    // before this setting is one where the lyrics always sat left.
+                    + "\nlyricalign=" + LockLyrics.sAlign
                     // The band's five values are fixed now and are not written; see LyricStyle.
                     // Not a setting - whether the last lookup got its lyric from the session.
                     // Kept across restarts so the settings page does not accuse a working
@@ -2018,6 +2021,8 @@ public class Main extends XposedModule {
                         else if ("lyrichidden".equals(k)) LockLyrics.sTapHidden = "1".equals(v);
                         else if ("lyrichdr".equals(k)) LockLyrics.sHdr = "1".equals(v);
                         else if ("lyrictrans".equals(k)) LockLyrics.sTrans = "1".equals(v);
+                        // Clamped in the setter; absent or unreadable means left, see saveState.
+                        else if ("lyricalign".equals(k)) LockLyrics.setAlign(Integer.parseInt(v));
                         // The dp lyricoff and lyricgap from before the shares are dropped: what
                         // they meant depends on the room, which is not known here. lyricfill,
                         // lyricpos, lyricside, lyricsize and lyricweight are dropped with them:
@@ -2318,6 +2323,16 @@ public class Main extends XposedModule {
                     } else if ("lyricstyle".equals(op)) {
                         String key = i.getStringExtra("key");
                         if (LockLyrics.setStyle(key, i.getFloatExtra("v", Float.NaN))) {
+                            saveStateSoon();
+                        }
+                    } else if ("lyricalign".equals(op)) {
+                        // Same shape as the translation switch: the view notices the change and
+                        // lays the lines out again, refresh only has to start the frames that let
+                        // it. Saved the way lyricstyle is, folding a quick run of picks into one
+                        // write.
+                        if (LockLyrics.setAlign(i.getIntExtra("v", LockLyrics.sAlign))) {
+                            Xp.log(TAG + "lyrics alignment: " + LockLyrics.sAlign);
+                            LockLyrics.refresh();
                             saveStateSoon();
                         }
                     } else if ("lyricinfo".equals(op)) {
@@ -2772,6 +2787,7 @@ public class Main extends XposedModule {
                         out.putBoolean("lyrickeep", LockLyrics.sKeepOn);
                         out.putBoolean("lyrichdr", LockLyrics.sHdr);
                         out.putBoolean("lyrictrans", LockLyrics.sTrans);
+                        out.putInt("lyricalign", LockLyrics.sAlign);
                         out.putFloat("lyricfill", LockLyrics.sStyle.fill);
                         out.putFloat("lyricpos", LockLyrics.sStyle.pos);
                         out.putFloat("lyricside", LockLyrics.sStyle.sideDp);

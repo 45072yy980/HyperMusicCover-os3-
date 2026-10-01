@@ -124,6 +124,8 @@ object ModuleBridge {
         val lyricsHdr: Boolean = false,
         /** Draw each line's translation under it. On unless the user turns it off. */
         val lyricsTrans: Boolean = true,
+        /** Where the lines settle in their column: 0 left, 1 centre, 2 right. */
+        val lyricsAlign: Int = 0,
         /** The lyric band's height as a share of the room between the clock and the card. */
         val lyricFill: Float = 1f,
         /** Where the band sits in the height it leaves: 0 top, 0.5 centre, 1 bottom. */
@@ -425,6 +427,9 @@ object ModuleBridge {
 
     fun setLyricsTrans(context: Context, on: Boolean) =
         send(context, "lyrictrans") { putExtra("on", on) }
+
+    fun setLyricsAlign(context: Context, mode: Int) =
+        send(context, "lyricalign") { putExtra("v", mode) }
 
     /**
      * One of the five values the lyric band and its type are made of. All five are fixed now and
@@ -740,6 +745,7 @@ object ModuleBridge {
             lyricsHdr = b.getBoolean("lyrichdr", false),
             // Defaults the other way: this one is on for anyone whose module predates the key.
             lyricsTrans = b.getBoolean("lyrictrans", true),
+            lyricsAlign = b.getInt("lyricalign", 0),
             lyricFill = b.getFloat("lyricfill", 1f),
             lyricPos = b.getFloat("lyricpos", 0.5f),
             lyricSideDp = b.getFloat("lyricside", 30f),
