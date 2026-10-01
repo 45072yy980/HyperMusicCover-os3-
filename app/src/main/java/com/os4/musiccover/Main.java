@@ -6038,9 +6038,10 @@ public class Main extends XposedModule {
     private static byte[] shoot(View v, int maxW, View extraBg) {
         int w = v.getWidth(), h = v.getHeight();
         if (w <= 0 || h <= 0) return null;
+        Bitmap b = null;
         try {
             float k = Math.min(1f, maxW / (float) w);
-            Bitmap b = Bitmap.createBitmap(Math.max(1, Math.round(w * k)),
+            b = Bitmap.createBitmap(Math.max(1, Math.round(w * k)),
                     Math.max(1, Math.round(h * k)), Bitmap.Config.ARGB_8888);
             android.graphics.Canvas cv = new android.graphics.Canvas(b);
             cv.scale(k, k);
@@ -6049,11 +6050,12 @@ public class Main extends XposedModule {
             redrawAfterCapture(v);
             java.io.ByteArrayOutputStream bos = new java.io.ByteArrayOutputStream();
             b.compress(Bitmap.CompressFormat.PNG, 100, bos);
-            b.recycle();
             return bos.toByteArray();
         } catch (Throwable t) {
             Xp.log(TAG + "view capture failed: " + t);
             return null;
+        } finally {
+            if (b != null) b.recycle();
         }
     }
 
@@ -10043,6 +10045,16 @@ public class Main extends XposedModule {
         CoverPush.sShownArtPrint = 0;
         main().removeCallbacks(CoverPush.sCoverFadeTimeout);
         if (iv == null) return;
+        // Taken now, not when the post below runs: a cover put back up in between (a fast
+        // pull-down-and-up of the mini player) installs its own bitmaps here first, and the post
+        // read them back and recycled the ones the new view was about to draw - a SystemUI crash.
+        // Only the composed ones are ours - albumArt() hands back a bitmap the media session
+        // owns, and recycling that would take the card's thumbnail with it.
+        final Bitmap b = sCoverBitmap;
+        final Bitmap fb = sCoverBlurBitmap;
+        sCoverBitmap = null;
+        sCoverBlurBitmap = null;
+        sVideoCoverBlurred = false;
         iv.post(new Runnable() {
             @Override
             public void run() {
@@ -10052,15 +10064,15 @@ public class Main extends XposedModule {
                     ViewGroup p = (ViewGroup) iv.getParent();
                     if (p != null) p.removeView(iv);
                     iv.setImageDrawable(null);
-                    // Only the composed one is ours - albumArt() hands back a bitmap the media
-                    // session owns, and recycling that would take the card's thumbnail with it.
-                    Bitmap b = sCoverBitmap;
-                    sCoverBitmap = null;
                     if (b != null) b.recycle();
-                    Bitmap fb = sCoverBlurBitmap;
-                    sCoverBlurBitmap = null;
                     if (fb != null && fb != b) fb.recycle();
-                    sVideoCoverBlurred = false;
+                    // A cover put back up since owns the video surfaces now and keeps them
+                    // hidden; handing them back here would show the wallpaper's cut-out subject
+                    // in front of it.
+                    if (sCover != null) {
+                        Xp.log(TAG + "cover detached, surfaces kept for the new cover");
+                        return;
+                    }
                     // The live wallpaper was only hidden because this view was covering it.
                     // Whatever removed the view - an exit, a keyguard rebuild, a failure part
                     // way through - the wallpaper has to come back with it, or the lock screen
