@@ -104,7 +104,7 @@ final class CoverPush {
             CoverCardLayer.clear();
             if (Main.sVideoWallpaper) showVideoCover(ctx, false, null, null, 0);
             out.putExtra("off", true);
-            ctx.sendBroadcast(out);
+            ProbeGuard.send(ctx, out);
             Main.sTrackKey = "";
             // Nothing behind the clock any more, so nothing to take a colour from. The repaint
             // that hands the OEM's own colours back happens with the rest of cover mode.
@@ -141,7 +141,7 @@ final class CoverPush {
             if (shared != null) {
                 out.putExtra("src", shared);
                 out.putExtra("tsent", android.os.SystemClock.uptimeMillis());
-                ctx.sendBroadcast(out);
+                ProbeGuard.send(ctx, out);
                 long sent = android.os.SystemClock.uptimeMillis();
                 // Still composed here, but now after the send: the clock's tint and the shade
                 // both need the picture, and neither of them is what the user is waiting on.
@@ -256,7 +256,7 @@ final class CoverPush {
         else out.putExtra("jpg", jpg);
         // Send broadcast first so wallpaper process begins decoding/encoding immediately!
         out.putExtra("tsent", android.os.SystemClock.uptimeMillis());
-        ctx.sendBroadcast(out);
+        ProbeGuard.send(ctx, out);
         // After the send: the shade's background is not what anyone is waiting on.
         ShadeLayer.setArt(art);
         Xp.log(Main.TAG + "pushart " + w + "x" + h + " bias=" + Main.sBias
@@ -659,14 +659,12 @@ final class CoverPush {
     static volatile int sVideoReloadSignals;
 
     /**
-     * The bounds on a fade that is matched to the wallpaper process's own timing.
-     *
-     * A floor because a fast reload - a cover video that has not changed, an encode off the cache
-     * - would otherwise leave a 50ms dissolve, which is a cut. A ceiling because a phone that
+     * The ceiling on a fade that is matched to the wallpaper process's own timing: a phone that
      * was busy for a second on one transition must not leave the next one dissolving for a
-     * second and a half.
+     * second and a half. The floor is coverFadeMs() itself, which the matched length never goes
+     * under (armCoverFade).
      */
-    private static final long COVER_FADE_MIN_MS = 200L, COVER_FADE_MAX_MS = 800L;
+    private static final long COVER_FADE_MAX_MS = 800L;
 
     /**
      * How long the owed fade waits for that word before starting anyway.
@@ -1098,7 +1096,7 @@ final class CoverPush {
         Intent out = wallpaperIntent(op);
         out.putExtra("on", on);
         if (decidedAt > 0L) out.putExtra("blurseq", decidedAt);
-        c.sendBroadcast(out);
+        ProbeGuard.send(c, out);
     }
 
     static Intent wallpaperIntent(String op) {
@@ -1127,7 +1125,7 @@ final class CoverPush {
      */
     static void pushFadeMs(Context ctx) {
         if (ctx == null) return;
-        ctx.sendBroadcast(wallpaperIntent("fadems")
+        ProbeGuard.send(ctx, wallpaperIntent("fadems")
                 .putExtra("v", (int) Main.fadeMsFor(Main.sClockResponse)));
         Xp.log(Main.TAG + "wallpaper fade = " + Main.fadeMsFor(Main.sClockResponse) + "ms for response "
                 + Main.sClockResponse);
@@ -1135,7 +1133,7 @@ final class CoverPush {
 
     /** Asks the wallpaper process to re-upload the art it already has on disk. */
     static void requestWallpaperReload(Context ctx) {
-        ctx.sendBroadcast(wallpaperIntent("reload"));
+        ProbeGuard.send(ctx, wallpaperIntent("reload"));
         Xp.log(Main.TAG + "wallpaper reload requested");
     }
 
@@ -1239,11 +1237,15 @@ final class CoverPush {
      */
     private static String writeSharedArt(byte[] jpg) {
         try {
+            // Written beside it and renamed over it, as writeSource does: the wallpaper process
+            // may still be reading the last track's file when a quick skip writes the next one.
             java.io.File f = new java.io.File(SHARE_DIR, SHARE_FILE);
-            java.io.FileOutputStream out = new java.io.FileOutputStream(f);
-            out.write(jpg);
-            out.close();
-            f.setReadable(true, false);
+            java.io.File tmp = new java.io.File(SHARE_DIR, SHARE_FILE + ".tmp");
+            try (java.io.FileOutputStream out = new java.io.FileOutputStream(tmp)) {
+                out.write(jpg);
+            }
+            tmp.setReadable(true, false);
+            if (!tmp.renameTo(f)) throw new java.io.IOException("rename " + tmp + " -> " + f);
             return f.getAbsolutePath();
         } catch (Throwable t) {
             Xp.log(Main.TAG + "shared art write failed, carrying it in the broadcast: " + t);

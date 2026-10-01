@@ -823,8 +823,6 @@ object MiniPlayerRuntime {
 
     internal fun takeRestoreScene(): Boolean = restoreScene.also { restoreScene = false }
 
-    internal fun restorePending(): Boolean = restoreScene
-
     private var routed: WeakReference<MiniPlayerView>? = null
 
     /**
@@ -841,6 +839,11 @@ object MiniPlayerRuntime {
             routedDrag = false
             routedMorph = false
             routedPullRefused = false
+            // What the last gesture was, in case it never reached its UP or CANCEL here.
+            routedOwner?.stopAnticipating()
+            routedIsland = false
+            routedNote = false
+            routedOwner = null
             routedTracker?.recycle()
             routedTracker = null
             // A morph still moving on its own is taken hold of where it is: a pull, a let-go and
@@ -849,8 +852,8 @@ object MiniPlayerRuntime {
             val catcher = live().firstOrNull { it.catchableAt(ev.rawX, ev.rawY) }
             routed = catcher?.pill()?.let(::WeakReference)
             if (catcher != null && routed != null) {
-                routedTracker = VelocityTracker.obtain()
                 if (catchDrag(catcher, ev)) {
+                    routedTracker = VelocityTracker.obtain()
                     routedDrag = true
                     routedMorph = true
                 } else routed = null
@@ -8206,8 +8209,12 @@ private class MiniPlayerController(
         // this runtime no longer watches: gone with it, not left asking for vsyncs.
         Choreographer.getInstance().let { c ->
             listOf(pulseFrame, smallNudgeFrame, swapFrame, rowFrame, appearFrame, smallGrowFrame,
-                traceFrame, pileSettle, spreadFrame).forEach(c::removeFrameCallback)
+                traceFrame, pileSettle, spreadFrame, switchWait, rowWait).forEach(c::removeFrameCallback)
         }
+        // The waits for a row would otherwise go on to open it, on a controller already gone;
+        // and a card still pinned is the stack's again, drawn where the stack has it.
+        rowWaitKey = null
+        unpinCard()
         if (spread != null) {
             spread?.items?.forEach { it.morph?.cancel() }
             spread = null
@@ -8227,8 +8234,6 @@ private class MiniPlayerController(
         controller = null
         handler.removeCallbacksAndMessages(null)
     }
-
-    fun isShowing(): Boolean = player?.visibility == View.VISIBLE
 
     fun shortcutGeometry(): FloatArray? {
         if (host.width <= 0 || left.width <= 0 || right.width <= 0) return null
@@ -10198,7 +10203,6 @@ private class MiniPlayerController(
 
     private fun dp(value: Float) = (value * context.resources.displayMetrics.density + .5f).toInt()
 
-    private fun Float.approximatelyEquals(other: Float): Boolean = abs(this - other) <= 0.01f
 }
 
 /** The small island's nudge home: MiniPlayerView's OFFSET_RESPONSE, CoverMorphMotion's damping. */
@@ -10314,8 +10318,6 @@ private const val SWIPE_SHARE = 0.14f
  */
 private fun pillNudgeX(dx: Float, d: Float): Float =
     Math.copySign(MiniCardMorph.rubber(kotlin.math.abs(dx), 24f * d, 0.6f), dx)
-/** How much of the pull the pill still follows past the row's end (islandDrag). */
-private const val SWIPE_END_GIVE = 0.35f
 /** The stack island's other rows come in over this part of their own way out from under it (pileStack). */
 private const val PILE_IN_FROM = 0f
 private const val PILE_IN_TO = 0.3f

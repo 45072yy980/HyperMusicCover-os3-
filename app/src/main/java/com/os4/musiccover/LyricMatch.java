@@ -37,7 +37,6 @@ final class LyricMatch {
     }
 
     static final int PASS_SCORE = 85;
-    private static final long STRONG_DURATION_TOLERANCE_MS = 1500L;
 
     /** One search result, in the terms the scoring asks about. `extra` is the source's own. */
     static final class Candidate {
@@ -126,7 +125,10 @@ final class LyricMatch {
         int score = 0;
         if (w.durationMs > 0 && c.durationMs > 0) score += durationScore(w.durationMs, c.durationMs);
         String t = clean(c.title);
-        if (!w.title.isEmpty() && (w.title.equals(t) || t.contains(w.title) || w.title.contains(t))) {
+        // Both sides non-empty: a result whose title was all brackets cleans to "", and every
+        // title contains "".
+        if (!w.title.isEmpty() && !t.isEmpty()
+                && (w.title.equals(t) || t.contains(w.title) || w.title.contains(t))) {
             score += 50;
         }
         if (hasCommonArtist(w.artists, cleanedArtists(c.artist))) score += 30;
@@ -140,10 +142,6 @@ final class LyricMatch {
             }
         }
         return score;
-    }
-
-    static boolean strongDuration(long wantedMs, long gotMs) {
-        return wantedMs <= 0L || Math.abs(wantedMs - gotMs) < STRONG_DURATION_TOLERANCE_MS;
     }
 
     private static int durationScore(long local, long remote) {
