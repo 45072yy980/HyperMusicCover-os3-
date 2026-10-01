@@ -73,6 +73,16 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
         if: steps.check.outputs.publish == 'true'
 
+      # tools/zopfli-apk.py re-deflates the APK after Gradle - see that file.
+      - uses: actions/setup-python@v5
+        if: steps.check.outputs.publish == 'true'
+        with:
+          python-version: '3.12'
+
+      - name: Install Zopfli
+        if: steps.check.outputs.publish == 'true'
+        run: python -m pip install zopfli
+
       # Without the secrets the build still succeeds, but it is signed with the throwaway debug
       # key - a different signature, which Android refuses to install over a properly signed
       # build. The release notes say so rather than letting someone find out on their phone.
@@ -131,6 +141,7 @@ jobs:
             "-PmcVersionName=${base}" \
             "-PmcVersionSuffix=-nightly.${date_tag}.${short_sha}" \
             "-PmcVersionCode=${code}"
+          python tools/zopfli-apk.py app/build/outputs/apk/release/app-release.apk
           mkdir -p dist
           cp app/build/outputs/apk/release/app-release.apk \
              "dist/HyperMusicCover-nightly-${date_tag}-${short_sha}.apk"

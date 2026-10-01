@@ -72,6 +72,25 @@ android {
         }
     }
 
+    // The app is translated into Chinese (the default values/) and English, nothing else. The
+    // libraries bring strings for dozens more locales, and resources.arsc - which has to be stored
+    // uncompressed - carries all of them.
+    androidResources {
+        localeFilters += listOf("zh", "en")
+    }
+
+    // Library licence texts, version markers and Kotlin's reflection metadata: nothing at runtime
+    // reads them. The licences are credited on the About page instead.
+    packaging {
+        resources.excludes += listOf(
+            "META-INF/**/LICENSE*",
+            "META-INF/*.version",
+            "META-INF/*.kotlin_module",
+            "kotlin/**",
+            "DebugProbesKt.bin",
+        )
+    }
+
     // Pinned, not left to the platform default. NcmLyrics' health check compares against a
     // song title written as characters, and a javac that read this file as the system codepage
     // would hand it a mangled one - the search would then never find the id it looks for, the

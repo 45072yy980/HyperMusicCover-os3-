@@ -14,3 +14,5 @@
 # not packaged, so R8 sees dangling references to it.
 -dontwarn io.github.libxposed.**
 -keep class io.github.libxposed.api.** { *; }
+
+-repackageclasses

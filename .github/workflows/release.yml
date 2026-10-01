@@ -82,6 +82,14 @@ jobs:
 
       - uses: gradle/actions/setup-gradle@v4
 
+      # tools/zopfli-apk.py re-deflates the APK after Gradle - see that file.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Zopfli
+        run: python -m pip install zopfli
+
       # Unlike the nightly, a missing key is fatal here. A debug-signed stable release would
       # carry a signature no other release shares, and nobody could install it over one.
       - name: Restore the signing key
@@ -106,6 +114,7 @@ jobs:
           ./gradlew --no-daemon assembleRelease \
             "-PmcVersionName=${{ steps.v.outputs.name }}" \
             "-PmcVersionCode=${{ steps.v.outputs.code }}"
+          python tools/zopfli-apk.py app/build/outputs/apk/release/app-release.apk
           mkdir -p dist
           cp app/build/outputs/apk/release/app-release.apk \
              "dist/HyperMusicCover-${{ steps.v.outputs.tag }}.apk"
