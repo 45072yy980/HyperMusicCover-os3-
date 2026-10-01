@@ -19,4 +19,8 @@ internal object MiniPlayerMaterialState {
         is List<*> -> value.map(::snapshot)
         else -> value
     }
+
+    /** Another effect, not only new values for the same one: keys are "effect#generation". */
+    fun replacesLayer(previous: String?, next: String): Boolean =
+        previous != null && previous.substringBefore('#') != next.substringBefore('#')
 }
