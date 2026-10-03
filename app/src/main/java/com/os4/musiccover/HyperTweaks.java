@@ -99,13 +99,42 @@ final class HyperTweaks {
     private static final String CLS_TEMPLATE_HISTORY_DAO =
             "com.miui.keyguard.editor.data.db.TemplateHistoryDao_Impl";
     private static final String CLS_CLOCK_BEAN = "com.miui.clock.module.ClockBean";
+    /**
+     * The material utility that decides whether a global theme switched the soft glass off.
+     *
+     * OS4 only: {@code com.miui.systemui.controlcenter.utils.MiuiMaterialUtils} does not exist on
+     * HyperOS 3 at all (verified on OS3.0.304.0 - the class is absent from both MiuiSystemUI.apk
+     * and MIUISystemUIPlugin.apk). On OS3 the soft glass answer lives in the theme utils, the
+     * plugin and the device config instead - see softGlassTheme / softGlassPlugin /
+     * advancedMaterial below.
+     */
     private static final String CLS_MATERIAL_UTILS = "com.miui.systemui.controlcenter.utils.MiuiMaterialUtils";
     private static final String CLS_SYSUI_THEME_UTILS = "com.miui.utils.MiuiThemeUtils";
     private static final String CLS_CONFIG_CONTROLLER = "com.android.systemui.statusbar.phone.ConfigurationControllerImpl";
     private static final String CLS_PLUGIN_THEME_UTILS = "miui.systemui.util.ThemeUtils";
+    /**
+     * The blur compatibility facade, which differs only in its package between the two builds:
+     * OS4 ships {@code miui.systemui.util.MiBlurCompat} in the plugin, OS3 ships the same class
+     * there AND {@code com.miui.systemui.util.MiBlurCompat} inside SystemUI itself. Both are tried.
+     */
     private static final String CLS_MI_BLUR_COMPAT = "miui.systemui.util.MiBlurCompat";
+    private static final String CLS_MI_BLUR_COMPAT_OS3 = "com.miui.systemui.util.MiBlurCompat";
+    /**
+     * OS4 only: {@code miui.systemui.controlcenter.windowview.MiuiDefaultThemeControllerImpl} is
+     * not in OS3 either. On OS3 the equivalent "is the default theme up" answers come from
+     * MiuiThemeUtils.sDefaultSysUiTheme and from the keyguard's own
+     * {@code DozeServiceHostInjector.mLockscreenIsDefaultTheme}.
+     */
     private static final String CLS_DEFAULT_THEME_CONTROLLER =
             "miui.systemui.controlcenter.windowview.MiuiDefaultThemeControllerImpl";
+    /**
+     * HyperOS 3's device config, which gates the advanced material (background blur) the lock
+     * screen is drawn with. See {@link #advancedMaterial}.
+     */
+    private static final String CLS_DEVICE_CONFIG = "com.miui.clock.utils.DeviceConfig";
+    /** The keyguard's own copy of the default-theme question, on OS3. See #keyguardDefaultTheme. */
+    private static final String CLS_DOZE_HOST_INJECTOR =
+            "com.android.keyguard.injector.DozeServiceHostInjector";
 
     /** The stock threshold: a picture whose subject covers less than a fifth is refused. */
     private static final double DEPTH_THRESHOLD_STOCK = 0.2;
@@ -129,6 +158,7 @@ final class HyperTweaks {
         openDepthThreshold(cl, "systemui");
         keyguardDepth(cl);
         thirdPartyWallpaperDepth(cl);
+        advancedMaterial(cl);
         softGlassTheme(cl);
         softGlassPlugin(cl, "systemui");
         // Nothing found from SystemUI's own loader, which is the normal case: wait for the
@@ -312,6 +342,11 @@ final class HyperTweaks {
         openDepthThreshold(cl, "aod");
         hierarchyBypass(cl);
         aodWallpaperDepth(cl);
+        // The always-on display renders the same clock library and asks the same device config
+        // whether the advanced material is up - so OS3 needs the same two hooks here as in
+        // SystemUI, or the cover goes flat the moment the AOD comes on.
+        advancedMaterial(cl);
+        softGlassTheme(cl);
         templateLimit(cl);
         historyTrimLimit(cl);
         // The always-on clock is drawn in this process, by the same clock library, so the same
@@ -344,6 +379,137 @@ final class HyperTweaks {
     /** The control centre, where the soft glass a global theme switched off actually shows. */
     static void plugin(ClassLoader cl) {
         softGlassPlugin(cl, "plugin");
+    }
+
+    // ------------------------------------------------------------------ OS3 / OS4 compatibility
+
+    /**
+     * The first of {@code names} that this loader can see, or null.
+     *
+     * OEM internals get renamed and moved between HyperOS builds - a class that is
+     * {@code com.miui.systemui.controlcenter.utils.MiuiMaterialUtils} on OS4 is simply gone on
+     * OS3, and MiBlurCompat lives in a different package on each. A hook that needs one of these
+     * must not take the whole module down when it is missing, so they are resolved through here
+     * rather than straight through Xp.findClass.
+     */
+    private static Class<?> findClassAny(ClassLoader cl, String... names) {
+        for (String name : names) {
+            try {
+                return Xp.findClass(name, cl);
+            } catch (Throwable ignored) {
+                // Not on this build; the next name gets its turn.
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Whether a named method with the given parameter count exists on the class.
+     *
+     * Used to pick a hook by shape when the OEM renamed it - OS3's material check is
+     * {@code getBackgroundBlurOpenedInDefaultTheme} where OS4's is
+     * {@code getBackgroundMaterialOpenedInDefaultTheme}, same call site, same arguments.
+     */
+    private static boolean hasMethod(Class<?> cls, String name, int params) {
+        if (cls == null) return false;
+        for (Method m : cls.getDeclaredMethods()) {
+            if (m.getName().equals(name) && m.getParameterCount() == params) return true;
+        }
+        return false;
+    }
+
+    // ------------------------------------------------------------------ advanced material (OS3)
+
+    /**
+     * HyperOS 3's 高级材质 ("advanced material"), which the lock screen has no way around.
+     *
+     * On OS4 the soft glass answer travels through the control centre's theme utils
+     * ({@link #softGlassTheme}); on OS3 the same look is gated a level lower, in the device
+     * config that says whether this hardware supports the background blur at all and whether the
+     * user has it on. Both are kept up by {@code com.miui.clock.utils.DeviceConfig}, verified on
+     * OS3.0.304.0:
+     *
+     *   SUPPORT_BACKGROUND_BLUR      boolean, static final - hardware/user capability
+     *   mBackgroundBlurEnabled       int, static          - the running switch
+     *   BACKGROUND_BLUR_SUPPORTED_2  boolean, static final - the version-2 capability
+     *   OS2_ADVANCED_VISUAL_VERSION  int, static final     - the visual feature level
+     *
+     * This module's cover mode replaces the wallpaper with an album cover, which is a picture the
+     * config was never asked about; the lock screen then falls back to its flat material and the
+     * cover sits behind a plain scrim. Forcing the four fields above on - the capability flags to
+     * true and the switch to a value that reads as "on" (the OEM stores it as an int and treats
+     * anything above zero as enabled) - is what keeps the advanced material up under the cover,
+     * which is the only material OS3 has to offer the lock screen.
+     *
+     * Every write stands on its own: a build that lost one of the fields still gets the others.
+     */
+    private static void advancedMaterial(ClassLoader cl) {
+        Class<?> cfg = findClassAny(cl, CLS_DEVICE_CONFIG);
+        if (cfg == null) {
+            STATUS.put("adv-material", "device config not present");
+            return;
+        }
+        boolean any = false;
+        for (String name : new String[] {
+                "SUPPORT_BACKGROUND_BLUR", "BACKGROUND_BLUR_SUPPORTED_2",
+                "BACKGROUND_BLUR_STATUS_DEFAULT"}) {
+            try {
+                Field f = cfg.getDeclaredField(name);
+                f.setAccessible(true);
+                f.setBoolean(null, true);
+                any = true;
+            } catch (Throwable ignored) {
+                // Not on this build; the others still hold.
+            }
+        }
+        try {
+            Field enabled = cfg.getDeclaredField("mBackgroundBlurEnabled");
+            enabled.setAccessible(true);
+            if ((Integer) enabled.get(null) < 1) enabled.setInt(null, 1);
+            any = true;
+        } catch (Throwable ignored) {
+        }
+        try {
+            Field version = cfg.getDeclaredField("OS2_ADVANCED_VISUAL_VERSION");
+            version.setAccessible(true);
+            if ((Integer) version.get(null) < 1) version.setInt(null, 1);
+            any = true;
+        } catch (Throwable ignored) {
+        }
+        if (!any) {
+            STATUS.put("adv-material", "no fields on " + CLS_DEVICE_CONFIG);
+            return;
+        }
+        try {
+            Xp.hookAllConstructors(cfg, chain -> {
+                Object result = chain.proceed();
+                forceAdvancedMaterial(cfg);
+                return result;
+            });
+        } catch (Throwable ignored) {
+            // No constructors to hook is normal for a holder class; the writes above stand.
+        }
+        ok("adv-material");
+        Xp.log(TAG + "adv-material: advanced material forced on for " + CLS_DEVICE_CONFIG);
+    }
+
+    /** Re-asserts the advanced-material fields, read back by {@link #advancedMaterial} hooks. */
+    private static void forceAdvancedMaterial(Class<?> cfg) {
+        for (String name : new String[] {
+                "SUPPORT_BACKGROUND_BLUR", "BACKGROUND_BLUR_SUPPORTED_2"}) {
+            try {
+                Field f = cfg.getDeclaredField(name);
+                f.setAccessible(true);
+                f.setBoolean(null, true);
+            } catch (Throwable ignored) {
+            }
+        }
+        try {
+            Field enabled = cfg.getDeclaredField("mBackgroundBlurEnabled");
+            enabled.setAccessible(true);
+            if ((Integer) enabled.get(null) < 1) enabled.setInt(null, 1);
+        } catch (Throwable ignored) {
+        }
     }
 
     // ------------------------------------------------------------------ depth
@@ -746,16 +912,23 @@ final class HyperTweaks {
      * from the theme and the hooks below only cover the paths that ask.
      */
     private static void softGlassTheme(ClassLoader cl) {
-        try {
-            Class<?> materialUtils = Xp.findClass(CLS_MATERIAL_UTILS, cl);
-            Xp.hookAll(materialUtils, "onDefaultThemeChanged", chain -> {
-                Object[] args = chain.getArgs().toArray();
-                if (args.length == 1) args[0] = Boolean.TRUE;
-                return chain.proceed(args);
-            });
-            ok("glass-theme");
-        } catch (Throwable t) {
-            failed("glass-theme", t);
+        Class<?> materialUtils = findClassAny(cl, CLS_MATERIAL_UTILS);
+        if (materialUtils != null) {
+            try {
+                Xp.hookAll(materialUtils, "onDefaultThemeChanged", chain -> {
+                    Object[] args = chain.getArgs().toArray();
+                    if (args.length == 1) args[0] = Boolean.TRUE;
+                    return chain.proceed(args);
+                });
+                ok("glass-theme");
+            } catch (Throwable t) {
+                failed("glass-theme", t);
+            }
+        } else {
+            // OS3: the material utility is not in this build. Not a failure - the flag below and
+            // keyguardDefaultTheme are what carry the soft glass here, so say so and carry on.
+            STATUS.put("glass-theme", "not present (OS3 build - theme flag + keyguard flag only)");
+            Xp.log(TAG + "glass-theme: " + CLS_MATERIAL_UTILS + " not visible, OS3 path");
         }
         try {
             Class<?> themeUtils = Xp.findClass(CLS_SYSUI_THEME_UTILS, cl);
@@ -775,6 +948,68 @@ final class HyperTweaks {
             ok("glass-theme-flag");
         } catch (Throwable t) {
             failed("glass-theme-flag", t);
+        }
+        keyguardDefaultTheme(cl);
+    }
+
+    // ------------------------------------------------------------------ keyguard default theme (OS3)
+
+    /**
+     * The keyguard's own copy of "is the default theme up", which OS3 keeps where OS4 does not.
+     *
+     * HyperOS 3's {@code com.android.keyguard.injector.DozeServiceHostInjector} carries
+     * {@code mLockscreenIsDefaultTheme}, and the lock screen asks it before it draws its soft
+     * glass. A global theme arriving while the phone is locked flips this to false and the panel
+     * goes flat under the album cover - which is exactly what this module cannot have on OS3,
+     * where the soft glass is the only material the lock screen has.
+     *
+     * Absent on OS4, where the same question is answered through the plugin's ThemeUtils and
+     * MiuiDefaultThemeControllerImpl instead; the lookup below therefore finds nothing there and
+     * does nothing, which is correct.
+     */
+    private static void keyguardDefaultTheme(ClassLoader cl) {
+        String what = "glass-keyguard-theme";
+        try {
+            Class<?> injector = findClassAny(cl, CLS_DOZE_HOST_INJECTOR);
+            if (injector == null) {
+                STATUS.put(what, "not present");
+                return;
+            }
+            Field flag = null;
+            try {
+                flag = injector.getDeclaredField("mLockscreenIsDefaultTheme");
+                flag.setAccessible(true);
+            } catch (Throwable ignored) {
+                // The field is absent although the class is there: leave the class alone.
+            }
+            final Field f = flag;
+            // Written at construction for the instance already up, so a theme change mid-session
+            // cannot leave it false.
+            Xp.hookAllConstructors(injector, chain -> {
+                Object result = chain.proceed();
+                if (f != null) {
+                    try {
+                        f.setBoolean(chain.getThisObject(), true);
+                    } catch (Throwable ignored) {
+                    }
+                }
+                return result;
+            });
+            if (f != null) {
+                // The field is what the getter reads, so re-writing it is enough; hook the getter
+                // as well for a build that computes instead.
+                for (String name : new String[] {
+                        "isLockscreenDefaultTheme", "getLockscreenIsDefaultTheme"}) {
+                    try {
+                        Xp.hookAll(injector, name, chain -> Boolean.TRUE);
+                    } catch (Throwable ignored) {
+                        // Not on this build; the field write above still holds.
+                    }
+                }
+            }
+            ok(what);
+        } catch (Throwable t) {
+            failed(what, t);
         }
     }
 
@@ -834,7 +1069,12 @@ final class HyperTweaks {
             return;
         }
         try {
-            for (String name : new String[] {"getDefaultPluginTheme", "getDefaultSysUiTheme"}) {
+            // OS3 keeps the field defaultPluginTheme and little else; every name is tried on
+            // its own and a miss is silent, so the field write in forceThemeFlags below is what
+            // covers OS3 while OS4 answers through its getters.
+            for (String name : new String[] {
+                    "getDefaultPluginTheme", "getDefaultSysUiTheme",
+                    "isDefaultPluginTheme", "isDefaultSysUiTheme"}) {
                 try {
                     Xp.hookAll(themeUtils, name, chain -> Boolean.TRUE);
                 } catch (Throwable ignored) {
@@ -873,20 +1113,52 @@ final class HyperTweaks {
         }
     }
 
-    /** Newer builds keep their own copy of the answer; these are the two that ask. */
+    /**
+     * Newer builds keep their own copy of the answer; these are the two that ask.
+     *
+     * The method names moved between builds: OS4 asks
+     * {@code getBackgroundMaterialOpenedInDefaultTheme}, HyperOS 3 asks
+     * {@code getBackgroundBlurOpenedInDefaultTheme} - same call site, same arguments, one word
+     * changed. Both spellings are hooked on whichever MiBlurCompat the loader can see, and on OS3
+     * the class also lives in a second package ({@code com.miui.systemui.util} inside SystemUI,
+     * beside the plugin's own), so both are looked up through findClassAny.
+     */
     private static void pluginMaterialGuards(ClassLoader cl) {
-        try {
-            Class<?> blurCompat = Xp.findClass(CLS_MI_BLUR_COMPAT, cl);
-            Xp.hookAll(blurCompat, "getBackgroundMaterialOpenedInDefaultTheme",
-                    chain -> Boolean.TRUE);
-        } catch (Throwable t) {
-            failed("glass-blur-compat", t);
+        Class<?> blurCompat = findClassAny(cl, CLS_MI_BLUR_COMPAT, CLS_MI_BLUR_COMPAT_OS3);
+        if (blurCompat != null) {
+            boolean any = false;
+            for (String name : new String[] {
+                    "getBackgroundMaterialOpenedInDefaultTheme",   // OS4
+                    "getBackgroundBlurOpenedInDefaultTheme",        // OS3
+                    "getBackgroundBlurOpened"}) {                   // SystemUI-side spelling
+                if (!hasMethod(blurCompat, name, 0)) continue;
+                try {
+                    Xp.hookAll(blurCompat, name, chain -> Boolean.TRUE);
+                    any = true;
+                } catch (Throwable t) {
+                    failed("glass-blur-compat:" + name, t);
+                }
+            }
+            if (any) {
+                ok("glass-blur-compat");
+            } else {
+                STATUS.put("glass-blur-compat", "no material getter on " + blurCompat.getName());
+            }
+        } else {
+            STATUS.put("glass-blur-compat", "not present");
         }
-        try {
-            Class<?> controller = Xp.findClass(CLS_DEFAULT_THEME_CONTROLLER, cl);
-            Xp.hookAll(controller, "isDefaultTheme", chain -> Boolean.TRUE);
-        } catch (Throwable t) {
-            failed("glass-default-theme-controller", t);
+        Class<?> controller = findClassAny(cl, CLS_DEFAULT_THEME_CONTROLLER);
+        if (controller != null) {
+            try {
+                Xp.hookAll(controller, "isDefaultTheme", chain -> Boolean.TRUE);
+                ok("glass-default-theme-controller");
+            } catch (Throwable t) {
+                failed("glass-default-theme-controller", t);
+            }
+        } else {
+            // OS3 does not ship this class; the keyguard flag in keyguardDefaultTheme covers the
+            // same question there.
+            STATUS.put("glass-default-theme-controller", "not present (OS3)");
         }
     }
 }
