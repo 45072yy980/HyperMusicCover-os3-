@@ -42,11 +42,10 @@ builds its pose from the container's `keyguardClockNotifInteractor` - `clockResu
 anywhere; measured, the pose came out at `top -81913` and the clock disappeared. Reading the y
 off the clock target's translation was not enough, because the floor and the unit were gone too.
 
-So cover mode draws its own clock (`CoverClock`): two TextViews on the keyguard root, the time
-at the module's clock height and the date under it, rewritten every fifteen seconds, shown on
-entry into the cover look and hidden on every exit. The OEM clock - both trees, because the
-date line lives in the foreground one - is hidden by alpha once ours is up, and the values read
-before the first hide are restored on the way out.
+A drawn clock of our own was tried and rejected on device (2026-11-08): two TextViews on the
+keyguard root, the OEM clock hidden by alpha - it read worse than leaving the cover off, so it
+was reverted whole. The cover block therefore stays off by default and is not maintained
+against this SystemUI; the switch remains only for completeness.
 
 It stays off by default: `SettingSpec.COVER_FEATURE` is `false`, so a fresh install gets the
 rest of the module and a clock that behaves. To try it, turn 封面 on in the app and restart the
