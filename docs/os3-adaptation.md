@@ -35,8 +35,18 @@ build cannot do. The packages are the source of the symbol lists below: SystemUI
 
 The cover itself works: the album art is pushed to the lock wallpaper's back layer, and the
 depth wallpaper's cut-out stays in front of it, which is what the wallpaper compositor does.
-What was missing was our own clock taking the lock screen over, and that had one cause - the
-y the pose is built from. It is now read from the clock target (see above).
+
+The clock cannot be posed, and that is structural rather than a missing name. `ClockCollapse`
+builds its pose from the container's `keyguardClockNotifInteractor` - `clockResult.timeHeight`,
+`timeMinHeight`, `adaptTimeHeight`, `clockTranslationY` - and HyperOS 3 has no such object
+anywhere; measured, the pose came out at `top -81913` and the clock disappeared. Reading the y
+off the clock target's translation was not enough, because the floor and the unit were gone too.
+
+So cover mode draws its own clock (`CoverClock`): two TextViews on the keyguard root, the time
+at the module's clock height and the date under it, rewritten every fifteen seconds, shown on
+entry into the cover look and hidden on every exit. The OEM clock - both trees, because the
+date line lives in the foreground one - is hidden by alpha once ours is up, and the values read
+before the first hide are restored on the way out.
 
 It stays off by default: `SettingSpec.COVER_FEATURE` is `false`, so a fresh install gets the
 rest of the module and a clock that behaves. To try it, turn 封面 on in the app and restart the
