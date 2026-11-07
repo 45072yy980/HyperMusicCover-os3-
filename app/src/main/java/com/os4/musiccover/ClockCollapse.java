@@ -464,7 +464,6 @@ public final class ClockCollapse {
             MediaCard.setCardProgressFrom(1f);
             sGlassP = 1f;
             invalidate();
-            CoverClock.show();
             Xp.log(TAG + "clock: cover look on (floor y=" + Main.r1(floor) + ")");
             return;
         }
@@ -499,7 +498,6 @@ public final class ClockCollapse {
         // A wake's glyphs already settle after the size, on the OEM's own animation; a toggle's
         // are given the same tail. See TOGGLE_GLYPH_RESPONSE.
         start(Phase.ENTER, wake ? Float.NaN : TOGGLE_GLYPH_RESPONSE);
-        CoverClock.show();
         // The OEM's own ink box as last measured - the reading that says whether its wake
         // animation had already begun when this entry was taken. LIVE, never a measurement of
         // its own: the entry that matters is taken from inside the pre-draw, where LIVE is this
@@ -559,8 +557,6 @@ public final class ClockCollapse {
      */
     static void toAod() {
         sWaking = false;
-        // The doze draws the OEM's own clock; ours is for the lock screen and goes with it.
-        CoverClock.hide();
         // The doze about to start has drawn nothing yet, so it has no pose to be steady against.
         clearAodPend();
         // The start pose is read BEFORE the OEM's y goes back: the y changes the OEM's box at
@@ -1630,7 +1626,6 @@ public final class ClockCollapse {
      */
     private static void releaseNow(String why) {
         boolean was = sPhase != Phase.OFF || Main.sHoldY != null;
-        CoverClock.hide();
         stopFrame();
         sPhase = Phase.OFF;
         sExitToAod = false;

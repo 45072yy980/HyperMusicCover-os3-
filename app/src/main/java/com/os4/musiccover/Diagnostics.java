@@ -967,7 +967,6 @@ final class Diagnostics {
           .append("\nhold: y=").append(Main.sHoldY)
           .append(" lastSystem=").append(Main.r1(Main.sLastSystemY))
           .append("\nclock: ").append(ClockCollapse.describe()).append('\n')
-          .append(" coverClock: ").append(CoverClock.describe()).append('\n')
           .append(" clockH=").append(Main.r1(Settings.CLOCK_HEIGHT.get())).append("dp")
           .append(" size=").append(Float.isNaN(Settings.CLOCK_SIZE.get()) ? "dp" : Main.r3(Settings.CLOCK_SIZE.get()))
           .append(" offset=").append(Main.r1(Settings.CLOCK_OFFSET.get())).append("dp")
