@@ -917,8 +917,30 @@ public final class ClockCollapse {
     // ------------------------------------------------------------------ the OEM's y
 
     /** What the OEM last asked for on its own. */
+    /** The view whose translation stands in for the system's y where there is no notch hook. */
+    private static java.lang.ref.WeakReference<View> sYSource;
+
+    /**
+     * The y the OEM would have handed us.
+     *
+     * On OS4 that is `KeyguardClockNotifInteractor.setNotifY`'s argument, recorded by Main as
+     * every emission arrives. 16.03.251211.r has neither that class nor
+     * KeyguardClockContainer.notifStateChange: the squeeze is driven per style, by
+     * doAnimationToNotification(boolean, boolean), with no y in the call at all. What the OEM
+     * does write is a translation on the clock target, and that is the same quantity this pose
+     * is built from - the offset the clock was pushed by - so it stands in for the missing
+     * emission. Read from the view rather than hooked: it is this frame's value by the time the
+     * pre-draw runs, and the pose is written from the pre-draw.
+     */
     private static float naturalY() {
-        return Main.sLastSystemY;
+        float y = Main.sLastSystemY;
+        if (!Float.isNaN(y)) return y;
+        View t = sYSource == null ? null : sYSource.get();
+        if (t == null || !t.isAttachedToWindow()) {
+            t = Main.sContainer == null ? null : Main.clockTarget(Main.sContainer);
+            sYSource = t == null ? null : new java.lang.ref.WeakReference<>(t);
+        }
+        return t == null ? Float.NaN : t.getTranslationY();
     }
 
     /**
