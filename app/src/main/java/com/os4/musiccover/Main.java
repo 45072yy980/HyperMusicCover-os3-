@@ -875,6 +875,16 @@ public class Main extends XposedModule {
                         } catch (Throwable t) {
                             Xp.w(TAG + "clock report failed: " + t);
                         }
+                        try {
+                            // The island's material, as the pill was dressed when this was taken:
+                            // which recipe it copied, what the row's own background was, and
+                            // whether the fallback was used because a half was missing.
+                            String material = MiniPlayerRuntime.describe();
+                            String path = Diagnostics.writeProbeFile(c, "mc_mini.txt", material);
+                            Xp.log(TAG + "mini report written: " + (path == null ? "FAILED" : path));
+                        } catch (Throwable t) {
+                            Xp.w(TAG + "mini report failed: " + t);
+                        }
                     }
                 }, 12_000L);
             }
