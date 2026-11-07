@@ -131,6 +131,153 @@ final class Diagnostics {
     }
 
     /** Dumps a class by name so we can find OEM entry points without pulling the dex apart. */
+    /**
+     * PROBE: what the clock and the notification offset can hold on to in the SystemUI that is
+     * actually running, rather than in the one the module was written against.
+     *
+     * The OEM moved both halves. 16.03.251211.r ships no KeyguardClockNotifInteractor and no
+     * allInOne.TimeView at all, KeyguardClockContainer lost notifStateChange and
+     * doAnimationToAod, and the deducted image's animation went from the panel controller's
+     * doDeductedImageScaleAnim to initialisation only - all of which the module still names. A
+     * hook that no longer finds its method installs nothing and says nothing, so the mapping has
+     * to come off the live loader: which of these classes this SystemUI has, what it declares,
+     * and which of those names look like the thing that went missing. The filtered method list is
+     * the point of the report - it is where a replacement gets picked from.
+     */
+    static String clockHookMap() {
+        ClassLoader cl = systemUiLoader();
+        StringBuilder sb = new StringBuilder("hookmap");
+        sb.append(System.lineSeparator()).append("loader=")
+                .append(cl == null ? "none" : cl.getClass().getName());
+        sb.append(System.lineSeparator()).append("--- HyperTweaks")
+                .append(System.lineSeparator()).append(HyperTweaks.describe());
+        for (String[] target : CLOCK_HOOK_TARGETS) {
+            Class<?> c = null;
+            try {
+                c = Xp.findClass(target[0], cl);
+            } catch (Throwable ignored) {
+                // Not in this build; the report says so on the next line.
+            }
+            sb.append(System.lineSeparator()).append("== ").append(target[0]);
+            if (c == null) {
+                sb.append(" NOT FOUND");
+                continue;
+            }
+            sb.append(" found");
+            for (int j = 1; j < target.length; j++) {
+                sb.append(System.lineSeparator()).append("   ").append(target[j])
+                        .append('=').append(hasMethod(c, target[j]) ? "yes" : "no");
+            }
+            sb.append(System.lineSeparator()).append("   -- clock/notif-shaped methods");
+            int shown = 0;
+            for (Method m : c.getDeclaredMethods()) {
+                String n = m.getName().toLowerCase(java.util.Locale.ROOT);
+                if (!n.contains("notif") && !n.contains("clock") && !n.contains("trans")
+                        && !n.contains("scale") && !n.contains("aod") && !n.contains("deduct")) {
+                    continue;
+                }
+                if (shown >= CLOCK_HOOK_METHOD_LIMIT) {
+                    sb.append(System.lineSeparator()).append("   ...");
+                    break;
+                }
+                shown++;
+                sb.append(System.lineSeparator()).append("   ").append(m.getName())
+                        .append('(').append(m.getParameterCount()).append(')');
+            }
+            if (shown == 0) sb.append(System.lineSeparator()).append("   (none)");
+        }
+        return sb.toString();
+    }
+
+    /**
+     * The classes the clock's collapse and the notification offset used to hang off, each with
+     * the members the module asks for today. The last two lines of each block are the point: a
+     * name that is still here but moved is the replacement, and this says which names exist.
+     */
+    private static final String[][] CLOCK_HOOK_TARGETS = {
+            {"com.android.keyguard.clock.KeyguardClockContainer",
+                    "onAttachedToWindow", "onDetachedFromWindow", "notifStateChange",
+                    "doAnimationToAod", "setMHasNotification"},
+            {"com.android.keyguard.interactor.KeyguardClockNotifInteractor",
+                    "setNotifY", "notifStateChange"},
+            {"com.android.keyguard.panel.KeyguardPanelViewController",
+                    "doDeductedImageScaleAnim", "startNotificationWakeAnimation",
+                    "onUpdateNotificationState", "updateDeductedImageView", "initDeductedImageScale"},
+            {"com.miui.clock.allInOne.TimeView",
+                    "onDraw", "setGlassColor", "setTextColor", "setBrightness"},
+            {"com.miui.clock.MiuiTextGlassView", "onDraw", "setClockDarkMode"},
+            {"com.miui.clock.module.ClockBean", "isColonShow"},
+    };
+
+    /** How many method lines one class contributes; the panel controller declares about ninety. */
+    private static final int CLOCK_HOOK_METHOD_LIMIT = 24;
+
+    /** SystemUI's own loader: the container's when it is up, the process context's otherwise. */
+    private static ClassLoader systemUiLoader() {
+        try {
+            if (Main.sContainerCls != null) return Main.sContainerCls.getClassLoader();
+        } catch (Throwable ignored) {
+        }
+        try {
+            if (Main.sAppCtx != null) return Main.sAppCtx.getClassLoader();
+        } catch (Throwable ignored) {
+        }
+        try {
+            Object app = Class.forName("android.app.ActivityThread")
+                    .getMethod("currentApplication").invoke(null);
+            if (app instanceof android.content.Context) {
+                return ((android.content.Context) app).getClassLoader();
+            }
+        } catch (Throwable ignored) {
+        }
+        return Diagnostics.class.getClassLoader();
+    }
+
+    /** Whether the class declares this name at any arity; the arity is what moved too. */
+    private static boolean hasMethod(Class<?> c, String name) {
+        for (Method m : c.getDeclaredMethods()) {
+            if (m.getName().equals(name)) return true;
+        }
+        return false;
+    }
+
+    /**
+     * Writes a probe report where the phone itself can read it back: Download first, because the
+     * module's own files dir is under SystemUI and nothing outside can open it.
+     */
+    static String writeProbeFile(Context c, String name, String text) {
+        String[] dirs = {"/sdcard/Download", "/storage/emulated/0/Download"};
+        for (String dir : dirs) {
+            try {
+                java.io.File f = new java.io.File(dir, name);
+                java.io.FileOutputStream os = new java.io.FileOutputStream(f);
+                try {
+                    os.write(text.getBytes("UTF-8"));
+                } finally {
+                    os.close();
+                }
+                f.setReadable(true, false);
+                return f.getAbsolutePath();
+            } catch (Throwable ignored) {
+                // Scoped storage refusing a system-process write; the next one is tried.
+            }
+        }
+        try {
+            java.io.File f = new java.io.File(c.getFilesDir(), name);
+            java.io.FileOutputStream os = new java.io.FileOutputStream(f);
+            try {
+                os.write(text.getBytes("UTF-8"));
+            } finally {
+                os.close();
+            }
+            f.setReadable(true, false);
+            return f.getAbsolutePath();
+        } catch (Throwable t) {
+            Xp.w(Main.TAG + "probe file write failed: " + t);
+            return null;
+        }
+    }
+
     static void dumpClass(String name, String grep) {
         ClassLoader cl = Main.sContainerCls == null ? null : Main.sContainerCls.getClassLoader();
         Class<?> c;

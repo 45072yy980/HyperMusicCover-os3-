@@ -723,6 +723,15 @@ final class ProbeReceiver extends ProbeGuard.Receiver {
                 }
             });
             setResultData("searching -> " + out.getAbsolutePath());
+        } else if ("hookmap".equals(op)) {
+            // Where the clock's collapse and the notification offset can attach in THIS SystemUI.
+            // Written to Download as well, because the module's INFO lines do not survive to
+            // logcat on this device and the answer is longer than a comfortable paste.
+            String report = Diagnostics.clockHookMap();
+            Xp.log(Main.TAG + "hookmap: " + report.replace('\n', '|'));
+            String file = Diagnostics.writeProbeFile(c, "mc_hookmap.txt", report);
+            setResultData(file == null ? report
+                    : report + System.lineSeparator() + "file=" + file);
         } else if ("tweaks".equals(op)) {
             // Which of the HyperOS restrictions actually came off in this process.
             // Over the probe rather than the log because the module's INFO lines are
