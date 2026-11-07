@@ -862,6 +862,21 @@ public class Main extends XposedModule {
                 } catch (Throwable t) {
                     Xp.w(TAG + "hookmap write failed: " + t);
                 }
+                // The clock report is only worth reading once the keyguard has settled and a
+                // cover has had its chance to enter, so it is written again a little later.
+                // Same reason as the hook map: no adb channel on the phone itself.
+                Gen.handler().postDelayed(new Runnable() {
+                    @Override
+                    public void run() {
+                        try {
+                            String state = Diagnostics.clockReport();
+                            String path = Diagnostics.writeProbeFile(c, "mc_clock.txt", state);
+                            Xp.log(TAG + "clock report written: " + (path == null ? "FAILED" : path));
+                        } catch (Throwable t) {
+                            Xp.w(TAG + "clock report failed: " + t);
+                        }
+                    }
+                }, 12_000L);
             }
         });
     }
