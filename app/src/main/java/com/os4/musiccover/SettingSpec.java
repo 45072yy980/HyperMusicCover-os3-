@@ -62,8 +62,16 @@ public final class SettingSpec {
 
     // ---------------------------------------------------------------- the cover
 
-    /** 启用音乐锁屏封面, the master switch. */
-    public static final SettingSpec COVER_FEATURE = bool("coverfeature", true);
+    /**
+     * 启用音乐锁屏封面, the master switch.
+     *
+     * Off by default on this fork. HyperOS 3 keeps the cover's push and its clock on SystemUI
+     * internals this build no longer has (no KeyguardClockNotifInteractor, no allInOne TimeView,
+     * MiGlassCompat gone), so what came up was the cover over the depth wallpaper's back layer
+     * with nothing replacing the clock - reported and then dropped (2026-11-07). Everything else
+     * here works with it off; it stays as a switch for anyone who wants to try.
+     */
+    public static final SettingSpec COVER_FEATURE = bool("coverfeature", false);
     /** Follow the media card. Not stored: on at every start. */
     public static final SettingSpec AUTO = bool("auto", true);
     /** Where the sharp band of the composed cover sits, 0 top to 1 bottom. */
