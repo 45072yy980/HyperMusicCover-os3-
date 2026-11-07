@@ -517,6 +517,18 @@ object MiniPlayerRuntime {
     private var notificationGlass: FloatArray? = null
     private var notificationBlendMethod: Method? = null
     private var notificationGlassMethod: Method? = null
+
+    /**
+     * Whether this build has MiGlassCompat at all.
+     *
+     * The row's material is two halves - applyElementViewBlend's colours and MiGlassCompat's
+     * glass - and the dressing waits for both. 16.03.251211.r has no MiGlassCompat (the class is
+     * gone from SystemUI entirely; blur goes through MiBlurCompat's per-view calls instead), so
+     * waiting for the glass half is how the islands stayed on the flat fallback scrim. Recorded
+     * once at install: blend plus whatever MiBlurCompat extras the row calls is all this build
+     * has to copy.
+     */
+    private var glassApiPresent = true
     private var notificationBackground: android.graphics.drawable.Drawable.ConstantState? = null
     private var notificationSignature: Any? = null
     private var notificationSource: WeakReference<View>? = null
@@ -630,6 +642,12 @@ object MiniPlayerRuntime {
                 }
             }.onFailure { Xp.w("MCMini: ${cls.simpleName} hook unavailable: $it") }
         }
+        glassApiPresent = runCatching {
+            Xp.findClass("com.miui.systemui.util.MiGlassCompat", classLoader)
+        }.isSuccess
+        if (!glassApiPresent) {
+            Xp.log("MCMini: no MiGlassCompat on this build; the row's material is blend + blur extras")
+        }
         // What the effects call on the card's background: record the outermost of them.
         listOf(
             "com.android.systemui.statusbar.notification.utils.NotificationUtil" to
@@ -733,7 +751,7 @@ object MiniPlayerRuntime {
                 changed = previous != null && now != was
                 if (now != was) matNoteLimited("row extra") { "$now (was ${was ?: "none"}) from ${matTag(source)}" }
             }
-            if (notificationBlend == null || notificationGlass == null) return
+            if (notificationBlend == null || (notificationGlass == null && glassApiPresent)) return
             if (first) {
                 // Type 1 and the size come after the blend and glass that re-dress the islands:
                 // the first of each re-dresses them once more, or they would wait for the next
@@ -2263,7 +2281,9 @@ object MiniPlayerRuntime {
      */
     private fun notificationLook(): Pair<IntArray, FloatArray>? {
         val recordedBlend = notificationBlend ?: return null
-        val recordedGlass = notificationGlass ?: return null
+        // Empty, not absent, where the build has no glass call to copy: the caller still gets a
+        // blend to dress with and skips the glass step (see the replay).
+        val recordedGlass = notificationGlass ?: if (glassApiPresent) return null else FloatArray(0)
         return recordedBlend.copyOf() to recordedGlass.copyOf()
     }
 
@@ -2382,12 +2402,12 @@ object MiniPlayerRuntime {
                     replay("setGlassOutlineEnable")
                     replay("setMiViewBlurModeCompat")
                     blend?.invoke(null, ctx, view, false, colors, false)
-                    setGlass?.invoke(null, view, glass)
+                    if (glass.isNotEmpty()) setGlass?.invoke(null, view, glass)
                     replay("setMiViewMaterialTypeCompat")
                     replay("setMiGlassSdfMaxSizeCompat")
                     dressedExtras = extrasNow()
                     if (blend == null) missed.add("blend")
-                    if (setGlass == null) missed.add("glass")
+                    if (setGlass == null && glass.isNotEmpty()) missed.add("glass")
                 } }.onFailure { missed.add("look"); Xp.log("MCMini: notification glass unavailable: $it") }
             }
             dressedViews.add(view)
