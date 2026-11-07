@@ -1,11 +1,12 @@
 package com.os4.musiccover;
+import com.os4.musiccover.Gen;
 
+import com.os4.musiccover.island.MiniPlayerViewKt;
+import com.os4.musiccover.island.MiniPlayerRuntime;
 import android.content.Context;
 import android.graphics.Bitmap;
 import android.graphics.Canvas;
 import android.graphics.Paint;
-import android.graphics.Path;
-import android.graphics.Rect;
 import android.graphics.RectF;
 import android.os.Looper;
 import android.os.SystemClock;
@@ -15,22 +16,27 @@ import android.view.ViewGroup;
 
 /** Temporary, non-interactive artwork shared between the OEM thumbnail and the cover. */
 final class CoverMorphLayer extends View implements Choreographer.FrameCallback {
-    private static CoverMorphLayer sView;
+    /** Volatile: the hot-reload check reads active() from the framework's thread. */
+    private static volatile CoverMorphLayer sView;
 
     private final CoverMorphMotion motion = new CoverMorphMotion();
     private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.FILTER_BITMAP_FLAG);
     private final RectF drawn = new RectF();
-    private final Path clip = new Path();
     /** Per-frame scratch, kept rather than allocated on every draw. */
     private final int[] tmpLoc = new int[2];
-    private final Rect srcRect = new Rect();
+    private final RectF srcRect = new RectF();
+    private final android.graphics.Matrix artMatrix = new android.graphics.Matrix();
+    /** The shader drawing `art`, made once per flight rather than once per frame. */
+    private android.graphics.BitmapShader artShader;
+    private Bitmap shaderArt;
     private Bitmap art;
     private boolean cardMode;
     private CoverMorphMotion.Box thumb, cover;
     private long lastFrame, startedAt;
     private boolean awaitArtworkPush;
     private float fullAlpha;
-    private boolean running;
+    /** Volatile: written on the main thread, read by the hot-reload check off it. */
+    private volatile boolean running;
     /** The far end is the mini player's artwork slot, not the OEM card's thumbnail. */
     private boolean mini;
 
@@ -139,6 +145,7 @@ final class CoverMorphLayer extends View implements Choreographer.FrameCallback 
             v = new CoverMorphLayer(root.getContext());
             root.addView(v, new ViewGroup.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+            Gen.ownView(root, v);
             sView = v;
         }
         // bringToFront lays the parent out again too: only when something has come above it.
@@ -152,10 +159,15 @@ final class CoverMorphLayer extends View implements Choreographer.FrameCallback 
         v.setRequestedFrameRate(120f);
         Main.refreshMediaCardForMorph();
         CoverCardLayer.refresh();
-        Choreographer.getInstance().postFrameCallback(v);
+        Gen.frame(v);
     }
 
-    static boolean active() { return sView != null && sView.running; }
+    static boolean active() {
+        // One read: the hot-reload check calls this off the main thread, which can end the
+        // morph (sView = null) between a null check and a second read.
+        CoverMorphLayer v = sView;
+        return v != null && v.running;
+    }
 
     /** How quickly an end catches up with where its live box has moved to, in seconds. */
     private static final double ENDPOINT_TAU = 0.06;
@@ -176,6 +188,8 @@ final class CoverMorphLayer extends View implements Choreographer.FrameCallback 
     /** Leaves nothing held and the kept view idle; for a keyguard that is going away. */
     private void release() {
         art = null;
+        artShader = null;
+        shaderArt = null;
         thumb = cover = null;
     }
 
@@ -209,6 +223,29 @@ final class CoverMorphLayer extends View implements Choreographer.FrameCallback 
         else Main.main().post(new Runnable() { @Override public void run() { v.finish(); } });
     }
 
+    /**
+     * Retirement: the copy off the tree and the field cleared. cancel() keeps the view for the
+     * next morph - the sweep in a dry run takes it away instead, and a static still pointing at
+     * a detached view is what the next morph would find.
+     */
+    static void retire() {
+        CoverMorphLayer v = sView;
+        sView = null;
+        if (v == null) return;
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            v.finish();
+            if (v.getParent() instanceof ViewGroup) ((ViewGroup) v.getParent()).removeView(v);
+        } else {
+            Main.main().post(new Runnable() {
+                @Override
+                public void run() {
+                    v.finish();
+                    if (v.getParent() instanceof ViewGroup) ((ViewGroup) v.getParent()).removeView(v);
+                }
+            });
+        }
+    }
+
     @Override public void doFrame(long nowNs) { android.os.Trace.beginSection("MC coverMorphFrame"); try {
         if (!running) return;
         if (!isAttachedToWindow() || !Main.coverMorphStillEligible()
@@ -221,7 +258,7 @@ final class CoverMorphLayer extends View implements Choreographer.FrameCallback 
         float dt = lastFrame == 0L ? 1f / 120f
                 : Math.min(0.05f, Math.max(0f, (nowNs - lastFrame) / 1e9f));
         lastFrame = nowNs;
-        motion.step(dt, Main.sClockResponse);
+        motion.step(dt, Settings.SPRING.get());
         CoverMorphMotion.Box liveThumb = mini
                 ? MiniPlayerRuntime.artworkRestBox() : Main.coverMorphThumbnail();
         // Both ends chase their live boxes rather than taking them: the target is placed between
@@ -259,7 +296,7 @@ final class CoverMorphLayer extends View implements Choreographer.FrameCallback 
                 || SystemClock.uptimeMillis() - startedAt > 2200L)) {
             finish();
         } else {
-            Choreographer.getInstance().postFrameCallback(this);
+            Gen.frame(this);
         }
     } finally { android.os.Trace.endSection(); } }
 
@@ -275,7 +312,7 @@ final class CoverMorphLayer extends View implements Choreographer.FrameCallback 
         float p = Math.max(0f, Math.min(1f, motion.value));
         float startRadius = mini ? MiniPlayerRuntime.artworkRadius()
                 : Math.min(14f * density, Math.min(thumb.w, thumb.h) * 0.20f);
-        CoverCardStyle style = Main.sCoverCardStyle;
+        CoverCardStyle style = Settings.COVER_STYLE.get();
         float endRadius = cardMode ? style.radius(Math.min(cover.w, cover.h)) : 0f;
         float radius = startRadius + (endRadius - startRadius) * p;
         float decoration = cardMode ? CoverMorphMotion.cardDecoration(motion.value) : 0f;
@@ -290,10 +327,6 @@ final class CoverMorphLayer extends View implements Choreographer.FrameCallback 
         float alpha = cardMode ? 1f : fullAlpha;
         paint.setAlpha(Math.round(255f * alpha));
         if (paint.getAlpha() == 0) return;
-        clip.reset();
-        clip.addRoundRect(drawn, radius, radius, Path.Direction.CW);
-        int saved = canvas.save();
-        canvas.clipPath(clip);
         int side = Math.min(art.getWidth(), art.getHeight());
         int cropW = Math.round(side + (art.getWidth() - side) * p);
         int cropH = Math.round(side + (art.getHeight() - side) * p);
@@ -304,11 +337,21 @@ final class CoverMorphLayer extends View implements Choreographer.FrameCallback 
             cropW = Math.min(art.getWidth(), Math.round(art.getHeight() * shape));
             cropH = Math.min(art.getHeight(), Math.round(art.getWidth() / shape));
         }
-        Rect source = srcRect;
+        RectF source = srcRect;
         source.set((art.getWidth() - cropW) / 2, (art.getHeight() - cropH) / 2,
                 (art.getWidth() + cropW) / 2, (art.getHeight() + cropH) / 2);
-        canvas.drawBitmap(art, source, drawn, paint);
-        canvas.restoreToCount(saved);
+        // A rounded rect with the art as its shader, not the art inside a clip to one: the
+        // antialiased path clip had the GPU build a coverage mask every frame of the flight.
+        if (art != shaderArt || artShader == null) {
+            artShader = new android.graphics.BitmapShader(art,
+                    android.graphics.Shader.TileMode.CLAMP, android.graphics.Shader.TileMode.CLAMP);
+            shaderArt = art;
+        }
+        artMatrix.setRectToRect(source, drawn, android.graphics.Matrix.ScaleToFit.FILL);
+        artShader.setLocalMatrix(artMatrix);
+        paint.setShader(artShader);
+        canvas.drawRoundRect(drawn, radius, radius, paint);
+        paint.setShader(null);
         if (decoration > 0f) {
             paint.setStyle(Paint.Style.STROKE);
             paint.setStrokeWidth(density);
@@ -322,7 +365,7 @@ final class CoverMorphLayer extends View implements Choreographer.FrameCallback 
     private void finish() {
         if (!running) return;
         running = false;
-        Choreographer.getInstance().removeFrameCallback(this);
+        Gen.unframe(this);
         setRequestedFrameRate(0f);
         // Kept for the next morph; see the constructor.
         if (getVisibility() != INVISIBLE) setVisibility(INVISIBLE);

@@ -9,17 +9,24 @@
     <string name="about_feedback">反馈与建议</string>
     <string name="about_feedback_summary">https://github.com/zyl6932/HyperMusicCover/issues</string>
     <string name="cover_bias">封面纵向位置</string>
+    <string name="cover_motion">动态封面</string>
+    <string name="cover_motion_on_data">使用流量下载</string>
+    <string name="cover_enabled">启用音乐锁屏封面</string>
     <string name="cover_style">封面展现形式</string>
     <string name="cover_style_full">全屏封面</string>
     <string name="cover_style_card">方形卡片</string>
+    <string name="cover_style_keep">保留壁纸</string>
     <string name="cover_clock_section">封面与时钟</string>
     <string name="lyrics_section">锁屏歌词</string>
     <string name="clock_size">时钟大小</string>
     <string name="clock_force_colon">时钟强制显示冒号</string>
     <string name="clock_force_colon_summary">部分样式不生效</string>
+    <string name="clock_aod_big">息屏时显示大时钟</string>
     <string name="restart_menu">重启</string>
     <string name="restart_systemui">重启系统界面</string>
     <string name="restart_wallpaper">重启壁纸</string>
+    <string name="restart_confirm_summary">确认重启吗？</string>
+    <string name="restart_stale">重启更新的作用域</string>
 
     <string name="tab_home">主页</string>
     <string name="tab_settings">设置</string>
@@ -27,6 +34,8 @@
     <string name="settings_interface">界面</string>
     <string name="settings_theme">主题</string>
     <string name="settings_theme_summary">主题模式、导航栏样式与背景模糊</string>
+    <string name="welcome_show_again">查看欢迎页</string>
+    <string name="welcome_show_again_summary">重新播放首次启动时的开屏动画</string>
     <string name="settings_language">语言</string>
     <string name="settings_data">数据管理</string>
     <string name="theme_mode">主题模式</string>
@@ -51,6 +60,11 @@
     <string name="export_settings_summary">将当前设置保存为 JSON 文件</string>
     <string name="import_settings">导入设置</string>
     <string name="import_settings_summary">从 JSON 文件导入设置</string>
+    <string name="settings_debug">调试</string>
+    <string name="log_level">日志等级</string>
+    <string name="log_level_summary">反馈问题前切到「详细」，再复现一次</string>
+    <string name="log_level_normal">普通</string>
+    <string name="log_level_verbose">详细</string>
     <string name="import_success">导入成功，即将重启应用</string>
     <string name="import_failed">导入失败，文件格式不正确</string>
     <string name="export_success">导出成功</string>
@@ -61,7 +75,6 @@
     <string name="license_agpl">GNU AGPL v3.0</string>
     <string name="third_party_licenses_title">第三方许可证</string>
     <string name="about_credits">致谢</string>
-    <string name="about_credits_summary">参考过的项目与模块</string>
     <string name="credits_intro">这个模块是站在下面这些项目的肩膀上做出来的。</string>
     <string name="credits_group_ui">界面</string>
     <string name="credits_group_lyrics">锁屏</string>
@@ -71,16 +84,23 @@
     <string name="credits_liquid_glass">液态玻璃的透镜、内阴影和鲜艳度</string>
     <string name="credits_markdown_css">更新日志的排版样式</string>
     <string name="credits_cialloum">方形封面卡片、小封面与大封面之间的形变动画，以及锁屏歌词的位置、字号和字重设置</string>
+    <string name="credits_takekazex">锁屏超级岛的通知交互、动画接管与自适应布局，以及之后岛位交换、居中与材质复用的改动</string>
+    <string name="credits_aritxonly">锁屏岛的堆叠样式、AOD 显示优化与自定义</string>
+    <string name="credits_daguduiyuan">锁屏歌词的左中右对齐，以及末词扫光不截断</string>
+    <string name="credits_oyuvaa">歌词来源与歌词解析的修复</string>
     <string name="credits_hyperchanger">锁屏超级岛（由 btm_m 移植），以及解除景深限制、锁屏搭配数量上限、时钟冒号、全局主题下的柔光玻璃</string>
     <string name="credits_leaf">视频壁纸和景深视频壁纸的支持</string>
     <string name="credits_hypertweak">隐藏锁屏指纹图案和指纹动画的做法</string>
     <string name="credits_amll">锁屏歌词的动画手感</string>
     <string name="credits_amll_db">逐字歌词的主要来源</string>
+    <string name="credits_cllb">动态封面的思路：从 Apple Music 页面取视频、在锁屏上播放</string>
     <string name="credits_accompanist">解析 TTML、LRC、YRC、KRC 四种歌词</string>
     <string name="credits_lyricinfo">播放器歌词的来源之一</string>
     <string name="credits_hle">QQ 音乐、酷我、TTML Hub 取词与歌曲匹配规则</string>
     <string name="credits_lsposed">模块赖以运行的框架</string>
     <string name="credits_installerx">把更新交给安装器、隐藏图标和拨号密令的做法</string>
+    <string name="credits_group_pickup">取餐码</string>
+    <string name="credits_autopickupisland">取餐码的整套做法：调用 ColorOS 原版 PCR 插件认码、它云端下发的品牌名单和规则、以及卡片里的品牌素材（卡片布局用的是系统自己那张）</string>
     <string name="rules_cancel">取消</string>
     <string name="tl_compose">Jetpack Compose</string>
     <string name="tl_compose_summary">Apache-2.0</string>
@@ -98,11 +118,13 @@
     <string name="home_status_active">模块已激活</string>
     <string name="home_status_inactive">模块未激活</string>
     <string name="home_status_inactive_hint">请在 LSPosed 中启用并重启系统界面</string>
+    <string name="home_stale_title">模块已更新</string>
+    <string name="home_stale_summary">%1$d 个进程还在运行旧版本</string>
+    <string name="home_stale_action">点击重启更新的作用域</string>
     <string name="home_device_name">设备名称</string>
     <string name="home_device_model">设备型号</string>
     <string name="home_hyperos_version">HyperOS 版本</string>
     <string name="home_android_version">Android 版本</string>
-    <string name="home_module_version">模块版本</string>
     <string name="home_unknown">未知</string>
     <string name="home_loading">加载中…</string>
     <string name="donate_title">捐赠支持</string>
@@ -118,6 +140,9 @@
     <string name="donate_save_failed">保存失败</string>
     <string name="card_section">媒体卡片</string>
     <string name="card_title_tap">点击歌名暂停播放</string>
+    <string name="card_page_button">卡片上显示封面/歌词切换按钮</string>
+    <string name="card_page_button_summary">会挡住下一首右边原来的按钮</string>
+    <string name="media_bar_glow">进度条光效</string>
     <string name="lyrics_two_finger_tap">双指单击封面切换歌词</string>
     <!-- The provider module, in three states rather than two. "Installed" is not the question
          that matters - LyricInfo is an LSPosed module, and one that is installed but not enabled,
@@ -128,7 +153,6 @@
          says there is none; only when neither provider module is on the phone does it warn. -->
     <string name="lyrics_provider_title_missing">未安装歌词模块</string>
     <string name="lyrics_provider_missing">显示歌词可能不准或缺失；如未正确安装 LyricInfo 或Lyricon带来的问题请勿向开发者反馈</string>
-    <string name="lyrics_provider_ready">作用域外的应用仍存在匹配失败可能</string>
     <string name="lyrics_source">取词方式：%1$s</string>
     <string name="lyrics_source_none">无歌词来源</string>
     <string name="lyrics_source_session">播放器提供</string>
@@ -144,12 +168,31 @@
     <string name="lyrics_provider_got_it">知道了</string>
     <string name="lyrics_provider_got_it_wait">知道了 (%1$d)</string>
     <string name="lyrics_trans">显示翻译</string>
+    <string name="lyrics_enabled">启用锁屏歌词</string>
+    <string name="lyrics_roma">显示罗马音</string>
+    <string name="lyrics_style_title">歌词外观</string>
+    <string name="lyrics_style_general">通用</string>
+    <string name="lyrics_style_text">文字</string>
+    <string name="lyrics_size">字号</string>
+    <string name="lyrics_style_main">主歌词</string>
+    <string name="lyrics_style_backing">和声</string>
+    <string name="lyrics_color">颜色</string>
+    <string name="lyrics_color_official">官方</string>
+    <string name="lyrics_color_cover">跟随封面</string>
+    <string name="lyrics_color_custom">自定义</string>
+    <string name="lyrics_color_cover_summary">从当前封面取柔和的颜色，取不到时用白色</string>
+    <string name="lyrics_opacity">不透明度</string>
+    <string name="lyrics_style_reset">恢复默认</string>
+    <string name="lyrics_style_reset_summary">本页所有设置都会回到默认值</string>
+    <string name="lyrics_style_done">完成</string>
+    <string name="lyrics_online">在线歌词补充</string>
     <string name="lyrics_align">歌词对齐方式</string>
     <string name="lyrics_align_left">居左</string>
     <string name="lyrics_align_center">居中</string>
     <string name="lyrics_align_right">居右</string>
     <string name="lyrics_hdr">HDR 高光歌词（实验性功能）</string>
     <string name="lyrics_hdr_summary">可能引起掉帧</string>
+    <string name="lyrics_hdr_unsupported">此屏幕不支持 HDR</string>
     <string name="lyrics_keep_on">播放歌词时屏幕常亮</string>
     <string name="hide_fingerprint">隐藏锁屏指纹图标</string>
     <!-- Sinking is the notification staying where the system put it. The module's own word for
@@ -172,6 +215,7 @@
     <string name="update_failed">更新失败：%1$s</string>
     <string name="update_status_title">更新</string>
     <string name="update_no_installer">没有找到可以安装 APK 的应用，请在文件管理器里手动安装</string>
+    <string name="update_saved_to_downloads">没有应用能直接打开安装包，已保存到「下载/%1$s」，请在文件管理器里安装</string>
     <string name="update_confirm">更新</string>
     <string name="update_not_ours">更新包的签名不是本项目的，已丢弃</string>
     <string name="update_latest">已经是最新版本</string>
@@ -186,11 +230,124 @@
     <string name="features_shade_title">通控中心（实验性功能）</string>
     <string name="features_shade_summary">动态流光</string>
     <string name="features_mini_title">锁屏超级岛</string>
-    <string name="features_mini_summary">媒体控制、手势、尺寸与材质</string>
+    <string name="features_mini_summary">音乐、通知与导航</string>
+    <string name="features_transit_title">主动智能</string>
+    <string name="features_transit_summary">为您提供主动、贴心的智能服务~</string>
+
+    <!-- The bus and subway trip's page, which the features page opens: one switch. -->
+    <string name="transit_enabled">地铁行程上岛</string>
+    <string name="commute_title">地铁通勤</string>
+    <string name="commute_learn">学习通勤路线</string>
+    <string name="commute_learn_summary">存在本机，30天后自动删除</string>
+    <string name="commute_unreached">暂时读不到通勤记录，稍后再进来看看</string>
+    <string name="commute_route_direct">直达 · %1$d 次</string>
+    <string name="commute_route_via">%1$s 换乘 · %2$d 次</string>
+    <string name="commute_forget">清除通勤记录</string>
+    <string name="commute_forget_summary">已记下 %1$d 趟</string>
+    <string name="commute_forget_confirm">清除通勤记录？</string>
+    <string name="commute_forget_confirm_summary">已学的 %1$d 趟会一起删掉，要重新坐过才会再学回来</string>
+    <string name="commute_forget_do">清除</string>
 
     <string name="shade_enabled">启用流光效果</string>
     <string name="shade_section_behaviour">行为</string>
     <string name="shade_mode">生效范围</string>
     <string name="shade_mode_restore">系统默认</string>
     <string name="shade_mode_keep">保持音乐封面</string>
+
+    <!-- Settings for the lockscreen islands page. -->
+    <string name="mini_page_title">锁屏超级岛</string>
+    <string name="mini_enabled">启用锁屏超级岛</string>
+    <string name="mini_section_look">外观</string>
+    <string name="mini_section_notifications">通知</string>
+    <string name="mini_section_other">其他</string>
+    <string name="mini_enabled_update_required">请在首页重启 SystemUI 后再修改设置</string>
+    <string name="mini_style">锁屏岛排列方式</string>
+    <string name="mini_style_row">并排</string>
+    <string name="mini_style_stack">堆叠</string>
+    <string name="mini_group_by_app">按应用合并普通通知</string>
+    <string name="mini_group_by_app_summary">堆叠时，同一应用的普通通知放在同一层；点击展开该应用的通知</string>
+    <string name="mini_media_collapsed">播放音乐时不自动展开封面</string>
+    <string name="mini_media_collapsed_summary">开始播放时先显示锁屏岛，点击后再展开音乐封面</string>
+    <string name="mini_height">锁屏岛高度</string>
+    <string name="mini_height_summary">同时调整两侧锁屏快捷功能的图标大小</string>
+    <string name="mini_widen">锁屏快捷功能关闭时加宽</string>
+    <string name="mini_widen_summary">锁屏快捷功能关闭后，锁屏岛占用空出的位置</string>
+    <string name="mini_normals_in_stack">普通通知不上岛</string>
+    <string name="mini_nav_keep_on">导航时屏幕常亮</string>
+    <string name="mini_status_at_date">状态信息在日期后</string>
+    <string name="mini_status_at_date_summary">关闭后显示在底部</string>
+    <string name="mini_fod_lift">避开屏下指纹</string>
+    <string name="mini_fod_lift_summary">光学短焦指纹位置较低的机型，把胶囊抬到指纹区上方</string>
+    <string name="mini_nav_keep_on_summary">显示高德导航或公交页面时</string>
+
+    <!-- What the two demonstrations are called, page by page. Only the title: the page under it
+         plays what the module does, and the sentence that used to sit below the title said the
+         same thing in words (user, 2026-10-05). A page that is renamed must still describe the
+         behaviour its motion in CoverDemo or IslandDemo shows. -->
+    <string name="demo_cover_takeover_title">封面接管锁屏</string>
+    <string name="demo_cover_lyrics_title">锁屏歌词</string>
+    <string name="demo_cover_aod_title">息屏保持</string>
+    <string name="demo_island_switch_title">切换与打断</string>
+    <string name="demo_island_immersive_title">沉浸页面</string>
+    <string name="demo_island_stack_title">聚合岛</string>
+    <string name="demo_transit_island_title">解锁后的超级岛</string>
+    <string name="demo_transit_ride_title">逐站提醒</string>
+    <string name="demo_transit_alert_title">换乘与到站</string>
+    <string name="pickup_title">取餐码</string>
+    <string name="pickup_cloud_refresh">刷新取餐码云端规则</string>
+    <string name="pickup_cloud_date">更新于 %1$s · %2$d 个小程序</string>
+    <string name="pickup_cloud_never">尚未同步</string>
+    <string name="pickup_cloud_syncing">正在同步…</string>
+    <string name="pickup_enabled">取餐码上岛</string>
+    <!-- 指纹快捷功能 (FpQuickActivity) -->
+    <string name="features_fpquick_title">指纹快捷功能</string>
+    <string name="features_fpquick_summary">指纹解锁后按住不放，弹出常用应用和动作</string>
+    <string name="fpquick_enabled">启用指纹快捷功能自定义</string>
+    <string name="fpquick_unsupported">这台手机上没有找到指纹快捷功能</string>
+    <string name="fpquick_time">弹出时间</string>
+    <string name="fpquick_move">手指一动立刻弹出</string>
+    <string name="fpquick_face">人脸解锁后按住指纹也弹出</string>
+    <string name="fpquick_items">菜单项目</string>
+    <string name="fpquick_add">添加项目</string>
+    <string name="fpquick_reset">恢复默认</string>
+    <string name="fpquick_add_button">添加</string>
+    <string name="fpquick_delete_confirm">确认删除</string>
+    <string name="fpquick_delete_confirm_desc">确定删除「%1$s」吗？</string>
+    <string name="fpquick_full_title">已经满了</string>
+    <string name="fpquick_full_desc">菜单最多放 %1$d 个项目，删掉一个再添加。</string>
+    <string name="fpquick_ok">知道了</string>
+    <string name="fpquick_reset_desc">菜单会回到原生的 5 项，自定义的项目会被清除。</string>
+    <string name="fpquick_reset_do">恢复</string>
+    <string name="fpquick_layout">布局</string>
+    <string name="fpquick_slot_replace">更换</string>
+    <string name="fpquick_slot_remove">移除</string>
+    <string name="fpquick_delete">删除</string>
+    <string name="fpquick_type_native">原生功能</string>
+    <string name="fpquick_type_app">应用</string>
+    <string name="fpquick_type_shortcut">App 快捷方式</string>
+    <string name="fpquick_type_url">链接</string>
+    <string name="fpquick_type_action">系统动作</string>
+    <string name="fpquick_pick_app">选择应用</string>
+    <string name="fpquick_pick_shortcut">选择快捷方式</string>
+    <string name="fpquick_search">搜索</string>
+    <string name="fpquick_loading">正在读取…</string>
+    <string name="fpquick_no_shortcut">这个应用没有快捷方式</string>
+    <string name="fpquick_no_answer">模块没有回答，请确认模块已生效</string>
+    <string name="fpquick_no_native">原生功能都已经添加了</string>
+    <string name="fpquick_url_title">添加链接</string>
+    <string name="fpquick_url">网址或 scheme</string>
+    <string name="fpquick_url_label">显示名（可选）</string>
+    <string name="fpquick_url_add">添加</string>
+    <string name="fpquick_n1001">微信付款码</string>
+    <string name="fpquick_n1002">微信扫一扫</string>
+    <string name="fpquick_n1003">小爱同学</string>
+    <string name="fpquick_n1004">支付宝付款码</string>
+    <string name="fpquick_n1005">支付宝扫一扫</string>
+    <string name="fpquick_n1006">扫一扫</string>
+    <string name="fpquick_n1007">搜索</string>
+    <string name="fpquick_n1008">添加日程</string>
+    <string name="fpquick_a_torch">手电筒</string>
+    <string name="fpquick_a_camera">相机</string>
+    <string name="fpquick_a_screenshot">截屏</string>
+    <string name="fpquick_a_recorder">录音</string>
 </resources>

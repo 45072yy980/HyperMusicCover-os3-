@@ -39,6 +39,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
+import com.os4.musiccover.R
 import com.os4.musiccover.ui.util.isInDarkTheme
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
@@ -60,15 +61,27 @@ import kotlin.math.pow
  * artwork's flight is CoverMorphMotion's bowed path on its spring, and it only flies where the
  * phone flies it - see playTakeOver.
  *
- * Still a preview of this page's settings, the three that change what the phone shows: the
+ * Still a preview of this page's settings, the four that change what the phone shows: the
  * cover's style (the whole screen, or a square between the clock and the card), where a
- * full-screen cover sits, and how small the clock goes. They are read every frame, so a slider
- * moves the picture while it plays.
+ * full-screen cover sits, how small the clock goes, and whether the full-screen doze takes the
+ * big clock instead of keeping that small one. They are read every frame, so a control moves the
+ * picture while it plays.
  */
+/**
+ * The picture's box, the camera fill inside it, and what that leaves empty under the phone. The
+ * pager centres the title under the phone rather than under the box, so it is handed the air.
+ */
+private val PICTURE_H = 200.dp
+private const val PICTURE_FILL = 0.92f
+private val PICTURE_AIR = PICTURE_H * (1f - PICTURE_FILL) / 2f
+
 @Composable
-fun CoverDemo(coverStyle: Int, bias: Float, clockSize: Float, modifier: Modifier = Modifier) {
-    val look by rememberUpdatedState(Look(coverStyle, bias.coerceIn(0f, 1f), clockSize))
-    DemoPager(COVER_PAGES, modifier) { page, playing, done ->
+fun CoverDemo(coverStyle: Int, bias: Float, clockSize: Float, aodBigClock: Boolean,
+              modifier: Modifier = Modifier) {
+    val look by rememberUpdatedState(
+        Look(coverStyle, bias.coerceIn(0f, 1f), clockSize, aodBigClock),
+    )
+    DemoPager(COVER_PAGES, modifier, pictureAir = PICTURE_AIR) { page, playing, done ->
         val pal = skeuoPalette(isInDarkTheme())
         val measurer = rememberTextMeasurer()
         val clockSp = with(LocalDensity.current) { CLOCK_UNITS.toSp() }
@@ -83,28 +96,30 @@ fun CoverDemo(coverStyle: Int, bias: Float, clockSize: Float, modifier: Modifier
             }
             done()
         }
-        Canvas(Modifier.fillMaxWidth().height(200.dp).clipToBounds()) {
+        Canvas(Modifier.fillMaxWidth().height(PICTURE_H).clipToBounds()) {
             drawCover(scene, look, pal, measurer, clockSp)
         }
     }
 }
 
 /*
- * What each page says is what the module does, and no more:
+ * What each page plays is what the module does, and no more - its title names it and the motion
+ * is the rest:
  * - the cover follows the media card, not the play button (Main.onMediaUpdate): the pill tapped
  *   opens into the card and the cover comes with it (Main.miniPlayerEnterCover); the card swiped
  *   down goes back into the pill and the cover goes with it;
  * - the two-finger tap is LockLyrics.toggleByTap - lyrics and cover, swapped;
- * - the AOD keeps the cover's small clock and the lyrics only in the full-screen AOD
- *   (ClockCollapse.aodHeld), which is an OEM setting, so the page says so.
+ * - the full-screen AOD keeps the cover's small clock and its lyrics (ClockCollapse.aodHeld) -
+ *   unless 息屏时显示大时钟 is on, and then the clock is handed back to the OEM's own, which is
+ *   the big one, and the words go with it. The page plays whichever of the two is set.
  */
 private val COVER_PAGES = listOf(
-    DemoText("封面接管锁屏", "点按胶囊展开成媒体卡片，专辑封面随之接管锁屏，时钟缩小让出位置；卡片下滑收回胶囊，封面退出。"),
-    DemoText("锁屏歌词", "有歌词的歌曲在封面上逐字唱出。双指单击锁屏，在歌词和封面之间切换。"),
-    DemoText("息屏保持", "开启全屏息屏显示时，息屏后仍保留封面的小时钟和歌词，亮屏接着唱。"),
+    DemoText(R.string.demo_cover_takeover_title),
+    DemoText(R.string.demo_cover_lyrics_title),
+    DemoText(R.string.demo_cover_aod_title),
 )
 
-private class Look(val style: Int, val bias: Float, val clockSize: Float)
+private class Look(val style: Int, val bias: Float, val clockSize: Float, val aodBigClock: Boolean)
 
 // ---- the phone's lock screen, in SkeuoKit's units
 
@@ -359,12 +374,14 @@ private fun flightBox(small: Rect2, big: Rect2, progress: Float): Rect2 {
 
 private fun DrawScope.drawCover(sc: CoverScene, look: Look, pal: SkeuoPalette, measurer: TextMeasurer,
                                 clockSp: TextUnit) {
-    val (s, o) = sc.cam.view(size.width, size.height, fill = 0.92f)
+    val (s, o) = sc.cam.view(size.width, size.height, fill = PICTURE_FILL)
     val map = { x: Float, y: Float -> Offset(o.x + x * s, o.y + y * s) }
     val c = sc.cover.value.coerceIn(0f, 1.05f)
-    val cc = c.coerceAtMost(1f)
-    val bg = ramp(0f, 0.7f, c)
     val lyr = sc.lyrics.value
+    // 保留壁纸: no artwork anywhere, and the clock goes small for the lyrics alone.
+    val keep = look.style == 2
+    val cc = if (keep) lyr.coerceIn(0f, 1f) else c.coerceAtMost(1f)
+    val bg = if (keep) 0f else ramp(0f, 0.7f, c)
     val dz = sc.aod.value
     val card = look.style == 1
     withTransform({
@@ -384,7 +401,11 @@ private fun DrawScope.drawCover(sc: CoverScene, look: Look, pal: SkeuoPalette, m
                     val veil = if (card) 0.22f else 0.08f + 0.14f * lyr
                     drawRect(Color.Black.copy(alpha = veil * bg), Offset.Zero, Size(PW, PH))
                 }
-                drawFlight(sc, look, card, lyr)
+                // Its veil: the wallpaper a little darker under the words (KeepDim.MAX_ALPHA).
+                if (keep && lyr > 0.003f) {
+                    drawRect(Color.Black.copy(alpha = 0.25f * lyr), Offset.Zero, Size(PW, PH))
+                }
+                if (!keep) drawFlight(sc, look, card, lyr)
                 drawMedia(sc, pal, bg)
                 for (x in floatArrayOf(12.5f, 87.5f)) {
                     drawCircle(lerp(pal.pill, Color.White.copy(alpha = 0.3f), bg), DISC_D / 2f, Offset(x, RY))
@@ -394,18 +415,22 @@ private fun DrawScope.drawCover(sc: CoverScene, look: Look, pal: SkeuoPalette, m
                     drawRect(Color.Black.copy(alpha = 0.8f * dz), Offset(-10f, -10f), Size(PW + 20f, PH + 20f))
                 }
                 val lit = 1f - 0.3f * dz
+                // 息屏时显示大时钟: with the clock handed back the doze grows the cover's small clock
+                // into the OEM's own and the words go with it - handed back, there is nothing
+                // measured for them to sit under (LockLyrics.inHeldAod).
+                val handBack = if (look.aodBigClock) dz else 0f
                 val small = smallClockScale(look.clockSize)
-                val k = lerpF(1f, small, cc)
+                val k = lerpF(lerpF(1f, small, cc), 1f, handBack)
                 val ink = lerp(pal.frame, Color.White, bg.coerceAtLeast(dz)).copy(alpha = lit)
                 val clock = measurer.measure("09:41", TextStyle(color = ink, fontSize = clockSp, fontWeight = FontWeight.Bold))
-                val top = lerpF(CLOCK_TOP, CLOCK_TOP_SMALL, cc)
+                val top = lerpF(lerpF(CLOCK_TOP, CLOCK_TOP_SMALL, cc), CLOCK_TOP, handBack)
                 withTransform({ scale(k, k, Offset(PW / 2f, top)) }) {
                     drawText(clock, topLeft = Offset(PW / 2f - clock.size.width / 2f, top))
                 }
                 val dateY = top + clock.size.height * k + 2.5f
                 drawRoundRect(lerp(pal.pill, Color.White.copy(alpha = 0.55f), bg), Offset(PW / 2f - 12f, dateY),
                     Size(24f, 2.4f), CornerRadius(1.2f), alpha = lit)
-                drawLyrics(sc, lyr * lit)
+                drawLyrics(sc, lyr * lit * (1f - handBack))
             }
             sc.burst.draw(this, CARD.cx, CARD.y + 4f, 44f, 20f, 1.15f)
         }

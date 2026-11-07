@@ -8,6 +8,7 @@
 /captures
 .externalNativeBuild
 .cxx
+.kotlin/
 local.properties
 
 # Release signing - the key and its passwords never go to the repo.
@@ -15,9 +16,6 @@ local.properties
 /keystore.properties
 *.jks
 *.keystore
-
-# The README on GitHub is written by hand; this local copy is not the source of truth.
-/README.md
 
 # The handoff notes are for whoever picks this up next, not for the repo's readers. Kept
 # locally and deliberately untracked - it names the phone, the test device's build, and a
@@ -32,3 +30,12 @@ local.properties
 # was tried, device quirks, and round-by-round debugging history. For whoever (whatever)
 # picks this up next, not for the repo's readers.
 /.workbuddy/
+
+# The maintainer's own rules for agents working on this checkout (CLAUDE.md is the shared one),
+# and Claude Code's per-user settings.
+/CLAUDE.local.md
+/.claude/settings.local.json
+
+# Screenshots and scratch output from on-device checks. Generated locally and only useful
+# while the check runs; the repo's readers have no use for them.
+/scratch/

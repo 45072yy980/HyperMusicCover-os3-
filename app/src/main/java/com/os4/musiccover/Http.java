@@ -18,7 +18,7 @@ import java.net.URL;
  * one cost 48-66ms instead of the ~250ms the first one does. The saving is the DNS lookup, the
  * TCP handshake and the TLS handshake, measured at ~50ms of TLS alone on this device.
  */
-final class Http {
+public final class Http {
 
     private Http() {
     }
@@ -30,18 +30,18 @@ final class Http {
      * never arrived - LrcLib answers 404 for a song it does not have, and a song that is
      * genuinely absent is worth remembering as absent where a network's bad minute is not.
      */
-    static final class Reply {
+    public static final class Reply {
         /** The body, or null when there is none to read - including for a 404. */
-        final String body;
+        public final String body;
         /** The HTTP status, or 0 when the request did not arrive at all. */
-        final int code;
+        public final int code;
 
-        Reply(String body, int code) {
+        public Reply(String body, int code) {
             this.body = body;
             this.code = code;
         }
 
-        boolean ok() {
+        public boolean ok() {
             return body != null;
         }
     }
@@ -50,7 +50,7 @@ final class Http {
     private static final int READ_TIMEOUT_MS = 6000;
 
     /** `tag` is the caller's log prefix, so one account of a failed request says whose it was. */
-    static Reply get(String url, String tag) {
+    public static Reply get(String url, String tag) {
         long started = android.os.SystemClock.uptimeMillis();
         HttpURLConnection conn = null;
         try {
@@ -71,7 +71,7 @@ final class Http {
             }
             return new Reply(read(conn.getInputStream()), 200);
         } catch (Throwable t) {
-            Xp.log("[" + tag + "] request failed after "
+            Xp.w("[" + tag + "] request failed after "
                     + (android.os.SystemClock.uptimeMillis() - started) + "ms: " + t);
             // Only a connection that failed is torn down; a healthy one stays pooled.
             if (conn != null) {
@@ -90,7 +90,7 @@ final class Http {
      * recognises), and the body as bytes (Kuwo's is compressed and not UTF-8). `postBody` null is
      * a GET; `headers` are name, value pairs. Null body and code 0 when nothing arrived.
      */
-    static Raw request(String url, String tag, String postBody, String... headers) {
+    public static Raw request(String url, String tag, String postBody, String... headers) {
         long started = android.os.SystemClock.uptimeMillis();
         HttpURLConnection conn = null;
         try {
@@ -119,7 +119,7 @@ final class Http {
             }
             return new Raw(bytes(conn.getInputStream()), 200);
         } catch (Throwable t) {
-            Xp.log("[" + tag + "] request failed after "
+            Xp.w("[" + tag + "] request failed after "
                     + (android.os.SystemClock.uptimeMillis() - started) + "ms: " + t);
             if (conn != null) {
                 try {
@@ -132,20 +132,20 @@ final class Http {
     }
 
     /** request()'s answer: the bytes as they came, and the status. */
-    static final class Raw {
-        final byte[] body;
-        final int code;
+    public static final class Raw {
+        public final byte[] body;
+        public final int code;
 
         Raw(byte[] body, int code) {
             this.body = body;
             this.code = code;
         }
 
-        boolean ok() {
+        public boolean ok() {
             return body != null;
         }
 
-        String text() {
+        public String text() {
             try {
                 return body == null ? null : new String(body, "UTF-8");
             } catch (Exception e) {

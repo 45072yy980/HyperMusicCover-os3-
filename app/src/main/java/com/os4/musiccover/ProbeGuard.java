@@ -36,7 +36,7 @@ import android.os.Process;
  * sends SystemUI. An anonymous broadcast carrying that token is the open registration's; one
  * without it is still adb's.
  */
-final class ProbeGuard {
+public final class ProbeGuard {
 
     private ProbeGuard() {
     }
@@ -45,14 +45,14 @@ final class ProbeGuard {
     private static final int SHELL_UID = 2000;
 
     /** The options every probe broadcast goes out with: the sender's identity, for the check. */
-    static Bundle options() {
+    public static Bundle options() {
         BroadcastOptions o = BroadcastOptions.makeBasic();
         o.setShareIdentityEnabled(true);
         return o.toBundle();
     }
 
     /** A probe broadcast, sent the way the receivers will take it. */
-    static void send(Context ctx, Intent intent) {
+    public static void send(Context ctx, Intent intent) {
         stamp(intent);
         ctx.sendBroadcast(intent, null, options());
     }
@@ -65,6 +65,44 @@ final class ProbeGuard {
     private static volatile String sToken;
     /** This process minted sToken: the one that checks it, not the one that hands it back. */
     private static volatile boolean sMinted;
+
+    /**
+     * The token as it stands, for a hot-reloaded generation to inherit. Null when this process
+     * has not minted (or been given) one yet.
+     */
+    static synchronized String token() {
+        return sMinted ? sToken : null;
+    }
+
+    /**
+     * The token this process learned from SystemUI, for a hot-reloaded generation to inherit.
+     * Null for the process that mints (it is handed over through {@link #token}).
+     */
+    static synchronized String learnedToken() {
+        return sMinted ? null : sToken;
+    }
+
+    /**
+     * Takes on the token the retiring generation learned from SystemUI. The wallpaper process
+     * does not mint one; a fresh generation that started with nothing would have every message
+     * it sends refused until SystemUI next said hello.
+     */
+    static synchronized void adoptLearnedToken(String token) {
+        if (token == null || token.isEmpty() || sMinted) return;
+        sToken = token;
+        Xp.log("[MCProbe] learned token inherited from the previous generation");
+    }
+
+    /**
+     * Takes on the retiring generation's token instead of minting a new one: the wallpaper
+     * process holds the old token and would refuse every hello until it heard a new one.
+     */
+    static synchronized void adoptToken(String token) {
+        if (token == null || token.isEmpty() || sMinted) return;
+        sToken = token;
+        sMinted = true;
+        Xp.log("[MCProbe] token inherited from the previous generation");
+    }
 
     /** SystemUI's half, once: the token it hands the wallpaper process and takes back from it. */
     static synchronized void mint() {
@@ -92,7 +130,7 @@ final class ProbeGuard {
     }
 
     /** A receiver that knows which of its two registrations it came in through, and whom it trusts. */
-    abstract static class Receiver extends BroadcastReceiver {
+    public abstract static class Receiver extends BroadcastReceiver {
         private boolean viaDump;
         private String[] trusted = new String[0];
         private String tag = "";
@@ -102,17 +140,40 @@ final class ProbeGuard {
      * Registers two receivers from [make] for [filter]. [trusted] are the packages whose
      * broadcasts are answered; [tag] prefixes the log line for a broadcast that is not.
      */
-    static void register(Context ctx, IntentFilter filter, String tag,
+    public static void register(Context ctx, IntentFilter filter, String tag,
                          java.util.function.Supplier<? extends Receiver> make, String... trusted) {
+        register(ctx, filter, tag, make, true, trusted);
+    }
+
+    /**
+     * The same pair, outside the ledger: for an inert generation, whose ledger refuses every
+     * registration and whose receivers have all been swept. Never unregistered - the process
+     * has to restart to leave that state, and the pair goes with it.
+     */
+    static void registerOutsideLedger(Context ctx, IntentFilter filter, String tag,
+                         java.util.function.Supplier<? extends Receiver> make, String... trusted) {
+        register(ctx, filter, tag, make, false, trusted);
+    }
+
+    private static void register(Context ctx, IntentFilter filter, String tag,
+                         java.util.function.Supplier<? extends Receiver> make, boolean ledger,
+                         String... trusted) {
         Receiver open = make.get();
         open.trusted = trusted;
         open.tag = tag;
-        ctx.registerReceiver(open, filter, Context.RECEIVER_EXPORTED);
         Receiver adb = make.get();
         adb.viaDump = true;
         adb.trusted = trusted;
         adb.tag = tag;
-        ctx.registerReceiver(adb, new IntentFilter(filter), DUMP, null, Context.RECEIVER_EXPORTED);
+        if (ledger) {
+            Gen.receiver(ctx, open, filter, Context.RECEIVER_EXPORTED);
+            Gen.receiver(ctx, adb, new IntentFilter(filter), DUMP, null,
+                    Context.RECEIVER_EXPORTED);
+        } else {
+            ctx.registerReceiver(open, filter, Context.RECEIVER_EXPORTED); // gen-ok
+            ctx.registerReceiver(adb, new IntentFilter(filter), DUMP, null, // gen-ok
+                    Context.RECEIVER_EXPORTED);
+        }
     }
 
     /** How often a refused sender is logged: a hostile app could otherwise flood the log. */
@@ -124,7 +185,7 @@ final class ProbeGuard {
      * onReceive; a refused broadcast is left exactly as it arrived, so an ordered one comes back
      * unanswered. An admitted one has the token taken out, so no log line from its extras has it.
      */
-    static boolean admit(Receiver r, Intent i) {
+    public static boolean admit(Receiver r, Intent i) {
         boolean ok = check(r, i);
         // Only from a broadcast already let through: the wallpaper process learns SystemUI's
         // token from what SystemUI sends it, not from whoever claims to have one.

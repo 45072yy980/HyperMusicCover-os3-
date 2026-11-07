@@ -39,6 +39,10 @@ android {
         versionCode = (findProperty("mcVersionCode") as String?)?.toInt() ?: 2
         versionName = ((findProperty("mcVersionName") as String?) ?: "0.0.1") +
                 ((findProperty("mcVersionSuffix") as String?) ?: "")
+        // The hot reload's fault injection (HotReload), for a release-signed test build on the
+        // phone: -PmcHrFaults=true. Off in every build CI makes.
+        buildConfigField("boolean", "HR_FAULTS",
+                ((findProperty("mcHrFaults") as String?) == "true").toString())
     }
 
     signingConfigs {
@@ -77,6 +81,9 @@ android {
     // uncompressed - carries all of them.
     androidResources {
         localeFilters += listOf("zh", "en")
+        // assets/coloros/pcr_plugin.apk is copied back out whole when the pickup recognizer is
+        // loaded. Deflating it would only be undone; storing it keeps that copy a straight read.
+        noCompress += "apk"
     }
 
     // Library licence texts, version markers and Kotlin's reflection metadata: nothing at runtime
@@ -127,6 +134,10 @@ dependencies {
     // Modern Xposed API. compileOnly on purpose: the framework provides it at runtime and
     // packaging it would shadow the real one. Zero bytes in the APK either way.
     compileOnly("io.github.libxposed:api:102.0.0")
+    // The app's side of it: LSPosed binds this to the app, which then writes the remote
+    // preferences every hooked process reads (the log level) and reads which packages the
+    // module is actually enabled in (重启全部作用域). Only the app uses it.
+    implementation("io.github.libxposed:service:102.0.0")
 
     // The lyric parser. Its classes end up in the same dex as Main.java's, so they are also
     // loaded into SystemUI when the module is - see LyricProbe, which is why it has to stay
@@ -159,7 +170,24 @@ dependencies {
     implementation(libs.miuix.preference)
     implementation(libs.miuix.icons)
     implementation(libs.miuix.squircle)
+    implementation(libs.material.color.utilities)
     implementation(libs.material.icons.extended)
 
+    // ColorOS's pickup plugin (assets/coloros/pcr_plugin.apk) is loaded at runtime into a class
+    // loader whose parent is this module's, and it resolves Gson and the Kotlin stdlib by name out
+    // of this dex - its OEM host supplies them, so the plugin bundles neither. Gson is therefore
+    // here for a caller nothing on our own classpath can see; see proguard-rules.pro, which has to
+    // keep it for the same reason.
+    implementation("com.google.code.gson:gson:2.11.0")
+    // One hidden framework method, ViewRootImpl.doTraversal (LyricWindow.drawFirst), which the
+    // hidden-API filter keeps out of reflection in SystemUI. Looked up through this rather than
+    // exempting the process, so nothing else in SystemUI sees a different policy. Apache-2.0.
+    implementation("org.lsposed.hiddenapibypass:hiddenapibypass:6.1")
+
     testImplementation("junit:junit:4.13.2")
+    // HandleStore is tested against the real hook-handle interface; compileOnly keeps it out of
+    // the APK, so the tests need their own copy.
+    testImplementation("io.github.libxposed:api:102.0.0")
+    // The real org.json for the JVM tests: android.jar's is a stub (AmapTransitCardTest).
+    testImplementation("org.json:json:20231013")
 }

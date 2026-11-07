@@ -1,5 +1,7 @@
 package com.os4.musiccover.ui.screen.about
 
+import com.os4.musiccover.ui.util.nextCard
+import com.os4.musiccover.ui.util.firstCard
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -65,6 +67,14 @@ fun CreditsPageContent(
     )
 
     val lyricCredits = listOf(
+        // The people who wrote into this repository, against the projects that were read: their
+        // row opens their own page rather than a repository, because what they gave is the commits
+        // the summary names. Most of it is the island and the lyrics, which is why they sit here.
+        Credit(
+            "@TakeKazeX",
+            stringResource(R.string.credits_takekazex),
+            "https://github.com/TakeKazeX",
+        ),
         Credit(
             "@CialloUM",
             stringResource(R.string.credits_cialloum),
@@ -74,6 +84,11 @@ fun CreditsPageContent(
             "@Leaf-lsgtky",
             stringResource(R.string.credits_leaf),
             "https://github.com/Leaf-lsgtky",
+        ),
+        Credit(
+            "@AritxOnly",
+            stringResource(R.string.credits_aritxonly),
+            "https://github.com/AritxOnly",
         ),
         Credit(
             "HyperChanger",
@@ -110,6 +125,21 @@ fun CreditsPageContent(
             stringResource(R.string.credits_hle),
             "https://github.com/juren233/HyperLyrics-Enhanced",
         ),
+        Credit(
+            "ColorOS Live Lyrics Bridge",
+            stringResource(R.string.credits_cllb),
+            "https://github.com/Andrea-lyz/ColorOS-Live-Lyrics-Bridge",
+        ),
+        Credit(
+            "@DaguDuiyuan",
+            stringResource(R.string.credits_daguduiyuan),
+            "https://github.com/DaguDuiyuan",
+        ),
+        Credit(
+            "@OyUvaa",
+            stringResource(R.string.credits_oyuvaa),
+            "https://github.com/OyUvaa",
+        ),
     )
 
     val toolCredits = listOf(
@@ -126,12 +156,23 @@ fun CreditsPageContent(
         ),
     )
 
+    val pickupCredits = listOf(
+        // A person's handle, as the two @-entries above: what this module took from them is the
+        // project in the summary, and the row opens it.
+        Credit(
+            "@Maga-King",
+            stringResource(R.string.credits_autopickupisland),
+            "https://github.com/Maga-King/AutoPickupIsland",
+        ),
+    )
+
     // This group leads, so the first name on the page is InstallerX Revived.
-    val groups = remember(uiCredits, lyricCredits, toolCredits) {
+    val groups = remember(uiCredits, lyricCredits, toolCredits, pickupCredits) {
         listOf(
             R.string.credits_group_tools to toolCredits,
             R.string.credits_group_ui to uiCredits,
             R.string.credits_group_lyrics to lyricCredits,
+            R.string.credits_group_pickup to pickupCredits,
         )
     }
 
@@ -140,23 +181,16 @@ fun CreditsPageContent(
         isBlurEnabled = isBlurEnabled,
         onBack = onBack,
     ) {
-        item {
-            Card(
-                modifier = Modifier
-                    .padding(horizontal = 12.dp)
-                    .padding(top = 12.dp)
-            ) {
+        item(key = "intro") {
+            Card(modifier = Modifier.firstCard()) {
                 BasicComponent(summary = stringResource(R.string.credits_intro))
             }
         }
 
         groups.forEach { (heading, credits) ->
-            item {
-                SmallTitle(
-                    text = stringResource(heading),
-                    modifier = Modifier.padding(top = 12.dp),
-                )
-                Card(modifier = Modifier.padding(horizontal = 12.dp)) {
+            item(key = heading) {
+                SmallTitle(text = stringResource(heading))
+                Card(modifier = Modifier.nextCard()) {
                     credits.forEach { credit ->
                         ArrowPreference(
                             title = credit.name,
@@ -167,7 +201,5 @@ fun CreditsPageContent(
                 }
             }
         }
-
-        item { Spacer(Modifier.height(12.dp)) }
     }
 }

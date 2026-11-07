@@ -13,6 +13,8 @@ import java.lang.reflect.Constructor;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 
+import io.github.libxposed.api.XposedInterface;
+
 /**
  * HyperOS restrictions this module lifts, none of which have anything to do with the cover.
  *
@@ -34,18 +36,6 @@ final class HyperTweaks {
     }
 
     private static final String TAG = "MCTweak: ";
-
-    /** The one tweak here with a switch, driven from the cover and clock page. */
-    static volatile boolean sForceColon;
-
-    /**
-     * The lock screen media card's progress bar, lit the way the island's is.
-     *
-     * On by default. Switched off it takes effect on the next card the OEM builds, not on the one
-     * on screen: the mode is read in the widget's constructor and the shader it decides on is a
-     * final field, so a bar already running it cannot be talked back out of it.
-     */
-    static volatile boolean sBarGlow = true;
 
     /**
      * What each hook did, in the order they were tried.
@@ -70,8 +60,8 @@ final class HyperTweaks {
 
     /** One line per hook, for `op tweaks`. */
     static String describe() {
-        StringBuilder sb = new StringBuilder("colon=").append(sForceColon ? "on" : "off");
-        sb.append(System.lineSeparator()).append("barglow=").append(sBarGlow ? "on" : "off");
+        StringBuilder sb = new StringBuilder("colon=").append(Settings.COLON.on() ? "on" : "off");
+        sb.append(System.lineSeparator()).append("barglow=").append(Settings.SEEK_GLOW.on() ? "on" : "off");
         synchronized (STATUS) {
             if (STATUS.isEmpty()) {
                 sb.append(System.lineSeparator())
@@ -155,17 +145,66 @@ final class HyperTweaks {
     // ------------------------------------------------------------------ SystemUI
 
     static void systemUi(ClassLoader cl) {
-        openDepthThreshold(cl, "systemui");
+        openDepthThreshold(cl, "systemui", "sysui.depth.threshold");
         keyguardDepth(cl);
         thirdPartyWallpaperDepth(cl);
         advancedMaterial(cl);
         softGlassTheme(cl);
-        softGlassPlugin(cl, "systemui");
+        softGlassPlugin(cl, "systemui", "sysui");
         // Nothing found from SystemUI's own loader, which is the normal case: wait for the
         // plugin's loader to be built.
         if (!sPluginHooked) watchForPlugin();
-        clockColon(cl, "systemui", () -> sForceColon);
-        mediaBarGlow(cl, () -> sBarGlow);
+        clockColon(cl, "systemui", "sysui.clock.colon", () -> Settings.COLON.on());
+        mediaBarGlow(cl, () -> Settings.SEEK_GLOW.on());
+        coverUnlockFade(cl, Main::coverModeOn);
+    }
+
+    /**
+     * The lock wallpaper faded out at an unlock while it holds the cover, rather than cut.
+     *
+     * The wallpaper process writes Settings.Secure miui_wallpaper_content_type: 0 when the lock
+     * and home wallpapers are the same picture, 1 when they differ. The lock screen's copy of the
+     * home wallpaper (CoverPush's repair) makes it 0, and on 0 MiuiKeyguardWallPaperManager hides
+     * the lock wallpaper with anim=false - alpha straight to 0, since the home behind it is the
+     * same picture. With the cover drawn on that wallpaper it is not: unlocking to the desktop,
+     * the dark frosted cover vanished in one frame and the undimmed home wallpaper showed for
+     * the frames before the launcher's own unlock dim took hold - a flash (2026-10-06, measured
+     * off a recording: lock ~100, three frames at ~148, then the launcher's ~110). An app opened
+     * from the lock screen covers the wallpaper, which is why only the desktop flashed.
+     *
+     * For differing wallpapers the OEM has the right animation already: animated, mode 1 is
+     * KeyguardUnlockIAnimationRenderer's alpha 1 -> 0 over 350ms (280 on the fast animation
+     * rate). So a hide asked for without animation becomes that one while cover mode is on.
+     *
+     * Mode 4 included: it is the fingerprint unlock from the always-on display, and the full-screen
+     * one is the cover - the first build left it out as "the screen was off", and every unlock
+     * from it still flashed, the mode 4 hide landing first and the exit's own hide finding the
+     * wallpaper already gone. That call comes from BiometricUnlockControllerInjector with no
+     * finished callback, so fading it holds nothing up.
+     */
+    private static void coverUnlockFade(ClassLoader cl, java.util.function.BooleanSupplier cover) {
+        String what = "cover-unlock-fade";
+        try {
+            Class<?> cls = Xp.findClass(
+                    "com.android.keyguard.wallpaper.MiuiKeyguardWallPaperManager", cl);
+            Method m = cls.getDeclaredMethod("updateKeyguardWallpaperStateAnim", boolean.class,
+                    boolean.class, int.class, boolean.class, boolean.class, Runnable.class);
+            Xp.hook("sysui.wallpaper.unlock_fade", m, chain -> {
+                Object[] args = chain.getArgs().toArray();
+                boolean show = (Boolean) args[0];
+                boolean anim = (Boolean) args[1];
+                int mode = (Integer) args[2];
+                if (!show && !anim && cover.getAsBoolean()) {
+                    args[1] = Boolean.TRUE;
+                    args[2] = 1;
+                    Xp.log(TAG + "lock wallpaper hide faded for the cover (was mode " + mode + ")");
+                }
+                return chain.proceed(args);
+            });
+            ok(what);
+        } catch (Throwable t) {
+            failed(what, t);
+        }
     }
 
     // The lock screen media card's progress bar, miuix's HyperProgressSeekBar. The island's media
@@ -194,9 +233,10 @@ final class HyperTweaks {
         String what = "media-bar-glow";
         try {
             Class<?> cls = Xp.findClass(CLS_MEDIA_BAR, cl);
-            Xp.hookAllConstructors(cls, chain -> {
+            Xp.hookAllConstructors("sysui.media_bar.ctor", cls, chain -> {
                 Object result = chain.proceed();
-                if (wanted.getAsBoolean()) {
+                if (wanted.getAsBoolean()
+                        && materialOn(((android.view.View) chain.getThisObject()).getContext())) {
                     try {
                         applyBarGlow((android.view.View) chain.getThisObject());
                     } catch (Throwable t) {
@@ -217,7 +257,7 @@ final class HyperTweaks {
             // the level 0 path spends on a progress alpha the shader never reads. Restored in a
             // finally, because a touch that throws must not leave the bar drawing the flat way
             // for good.
-            Xp.hookAll(cls, "onTouchEvent", chain -> {
+            Xp.hookAll("sysui.media_bar.touch", cls, "onTouchEvent", chain -> {
                 Object self = chain.getThisObject();
                 if (!sGlowBars.containsKey(self) || hasHeadAnimator(self)) return chain.proceed();
                 Xp.setObjectField(self, "mDeviceLevel", 0);
@@ -230,6 +270,105 @@ final class HyperTweaks {
             ok(what);
         } catch (Throwable t) {
             failed(what, t);
+        }
+        // Its own install: without it the switch still holds for every card built after it was
+        // flipped, only the bar already up waits for the next one.
+        String follow = "media-bar-glow-material";
+        try {
+            Class<?> config = Xp.findClass(CLS_CONFIG_CONTROLLER, cl);
+            Xp.hookAll("sysui.media_bar.material", config, "onConfigurationChanged", chain -> {
+                Object result = chain.proceed();
+                try {
+                    Object arg = chain.getArgs().isEmpty() ? null : chain.getArgs().get(0);
+                    if (arg instanceof android.content.res.Configuration) {
+                        int blur = blurOf((android.content.res.Configuration) arg);
+                        // Configuration changes come for rotation, night mode and the rest;
+                        // only a change of this one value is worth a look at the card.
+                        if (blur != sLastBlur) {
+                            sLastBlur = blur;
+                            followMaterial(wanted.getAsBoolean() && materialOn(blur));
+                        }
+                    }
+                } catch (Throwable t) {
+                    Xp.log(TAG + "media bar did not follow the material switch: " + t);
+                }
+                return result;
+            });
+            ok(follow);
+        } catch (Throwable t) {
+            failed(follow, t);
+        }
+    }
+
+    /** The last Configuration.blur seen by the hook above; MIN_VALUE before the first. */
+    private static volatile int sLastBlur = Integer.MIN_VALUE;
+
+    private static volatile Field sBlurField;
+    private static volatile boolean sBlurFieldTried;
+
+    /**
+     * Configuration.blur, the user's advanced material switch: 1 on, 2 off - not 0, measured on
+     * OS4.0.6 (2026-11-04), and the OEM's own MiBlurCompat likewise asks only "== 1". -1 when
+     * this build has no such field, which is taken as on - the glow as it was before the switch
+     * was heeded.
+     */
+    private static int blurOf(android.content.res.Configuration config) {
+        if (!sBlurFieldTried) {
+            try {
+                Field f = android.content.res.Configuration.class.getDeclaredField("blur");
+                f.setAccessible(true);
+                sBlurField = f;
+            } catch (Throwable ignored) {
+                // Not on this build.
+            }
+            sBlurFieldTried = true;
+        }
+        Field f = sBlurField;
+        int blur;
+        try {
+            blur = f == null ? -1 : f.getInt(config);
+        } catch (Throwable t) {
+            blur = -1;
+        }
+        if (blur != sLoggedBlur) {
+            sLoggedBlur = blur;
+            Xp.log(TAG + "Configuration.blur = " + blur + (f == null ? " (no such field)" : ""));
+        }
+        return blur;
+    }
+
+    /** The last value blurOf logged, so a value is written once per change, not per card. */
+    private static volatile int sLoggedBlur = Integer.MIN_VALUE;
+
+    /**
+     * Whether the card's bar may glow. With advanced material off the card is a flat white one,
+     * and the shader draws a white bar on it: the bar is simply gone (#121). The stock flat bar is
+     * what the OEM made for that card, so it is left alone.
+     */
+    static boolean materialOn(android.content.Context ctx) {
+        return materialOn(blurOf(ctx.getResources().getConfiguration()));
+    }
+
+    private static boolean materialOn(int blur) {
+        return blur == 1 || blur == -1;
+    }
+
+    /**
+     * The material switch flipped with a card up: the bars this lit go back to flat, or the one on
+     * screen is lit. A copy of the set is walked, because clearing a bar takes it out of the set.
+     */
+    private static void followMaterial(boolean glow) {
+        if (glow) {
+            android.view.View bar = Main.findLockScreenView("media_progress_bar");
+            if (bar != null) Xp.log(TAG + "media bar glow back with the material: " + applyBarGlow(bar));
+            return;
+        }
+        java.util.List<android.view.View> lit;
+        synchronized (sGlowBars) {
+            lit = new java.util.ArrayList<>(sGlowBars.keySet());
+        }
+        for (android.view.View bar : lit) {
+            Xp.log(TAG + "media bar glow off with the material: " + clearBarGlow(bar));
         }
     }
 
@@ -256,9 +395,9 @@ final class HyperTweaks {
      * The head animator a bar built at level 1 or 2 is given in its constructor, built here for a
      * bar that was built flat.
      *
-     * ProgressAnimTarget is an inner class of the widget, so it needs the bar to construct, and
-     * Folme hands it the implementation the touch path animates through the FolmeObject interface
-     * - itself the reason this is not simply a field write.
+     * ProgressAnimTarget is the widget's own FolmeObject (see newAnimTarget for how one is had),
+     * and Folme hands it the implementation the touch path animates through that interface -
+     * itself the reason this is not simply a field write.
      *
      * Best effort by design. Its absence costs the press feedback and nothing else, because the
      * touch guard above stands aside only when this is known to have worked, and a failure here
@@ -269,9 +408,7 @@ final class HyperTweaks {
             ClassLoader cl = bar.getClass().getClassLoader();
             Class<?> targetCls = Xp.findClass(
                     "miuix.miuixbasewidget.widget.HyperProgressSeekBar$ProgressAnimTarget", cl);
-            java.lang.reflect.Constructor<?> ctor = targetCls.getDeclaredConstructor(bar.getClass());
-            ctor.setAccessible(true);
-            Object target = ctor.newInstance(bar);
+            Object target = newAnimTarget(targetCls, bar);
             Xp.findMethodExact(
                             Xp.findClass("miuix.animation.Folme", cl), "use",
                             Xp.findClass("miuix.animation.FolmeObject", cl))
@@ -281,18 +418,59 @@ final class HyperTweaks {
                 Xp.log(TAG + "head animator built but Folme gave it no impl");
                 return;
             }
-            Xp.setObjectField(bar, "mHeadAlphaAnimator", target);
-            // The resting value the constructor sets. The field already reads 1.0, so a build
-            // where this resolves to a different overload is not worth failing the whole thing
-            // over - the touch path sets its own values from here.
-            try {
-                Xp.callMethod(impl, "setTo",
-                        Xp.getObjectField(bar, "PROPERTY_HEAD_ALPHA"), Float.valueOf(1.0f));
-            } catch (Throwable ignored) {
+            // The resting value the constructor sets, and not optional: a head alpha Folme has
+            // never been told starts its first spring from nothing, and the shader it feeds
+            // (uHeadGlowAlpha) drew no bar at all from the first tap on - measured 2026-10-23.
+            // setTo is varargs, setTo(Object[]), so it is found and called as that; the old
+            // two-argument callMethod matched no overload and failed without a word. Done before
+            // the field is written, so a build where it cannot be done keeps the level 0 drag.
+            java.lang.reflect.Method setTo = null;
+            for (java.lang.reflect.Method m : impl.getClass().getMethods()) {
+                Class<?>[] p = m.getParameterTypes();
+                if ("setTo".equals(m.getName()) && p.length == 1 && p[0] == Object[].class) {
+                    setTo = m;
+                    break;
+                }
             }
+            if (setTo == null) {
+                Xp.log(TAG + "head animator built but its impl has no setTo(Object...)");
+                return;
+            }
+            setTo.invoke(impl, (Object) new Object[]{
+                    Xp.getObjectField(bar, "PROPERTY_HEAD_ALPHA"), Float.valueOf(1.0f)});
+            Xp.setObjectField(bar, "mHeadAlphaAnimator", target);
         } catch (Throwable t) {
             Xp.log(TAG + "head animator not built, drag falls back to level 0: " + t);
         }
+    }
+
+    /**
+     * A ProgressAnimTarget, however this build declares it. It is a static class with nothing to
+     * construct - one field, set by Folme.use - and never did take the bar, which is why the
+     * lookup for that constructor failed on every build. The control centre plugin's copy
+     * (18.3.2.40.1) has a private no-argument one. SystemUI's (17.03 on OS4.0.18 and OS4.0.24) has
+     * none at all: R8 took the empty one out, and the widget itself does new-instance then
+     * Object.<init>. So the last resort is the same thing done through Unsafe, an instance with no
+     * constructor run, which is all the widget's own code gives it.
+     */
+    private static Object newAnimTarget(Class<?> targetCls, android.view.View bar)
+            throws Exception {
+        for (java.lang.reflect.Constructor<?> c : targetCls.getDeclaredConstructors()) {
+            Class<?>[] p = c.getParameterTypes();
+            if (p.length == 0) {
+                c.setAccessible(true);
+                return c.newInstance();
+            }
+            if (p.length == 1 && p[0].isInstance(bar)) {
+                c.setAccessible(true);
+                return c.newInstance(bar);
+            }
+        }
+        Class<?> unsafeCls = Class.forName("sun.misc.Unsafe");
+        java.lang.reflect.Field f = unsafeCls.getDeclaredField("theUnsafe");
+        f.setAccessible(true);
+        return unsafeCls.getMethod("allocateInstance", Class.class)
+                .invoke(f.get(null), targetCls);
     }
 
     /**
@@ -308,6 +486,10 @@ final class HyperTweaks {
      * hands it back, and "FAILED ..." there is the only way a final-field write that this platform
      * refuses would ever be seen.
      */
+    /** HyperProgressSeekBar's constructor values, in dp, before initShaderConfig converts them. */
+    private static final float[] TRACK_POS_DP = {12f, 19f};
+    private static final float[] TRACK_SIZE_DP = {220f, 6f};
+
     static String applyBarGlow(android.view.View bar) {
         try {
             // The island's copies arrive with the mode unset and already run the device's own
@@ -320,10 +502,35 @@ final class HyperTweaks {
             int id = res.getIdentifier(SHADER_ENTRY, "raw", "com.android.systemui");
             if (id == 0) return "no raw/" + SHADER_ENTRY + " in this build";
             String src = (String) Xp.callMethod(bar, "loadShader", id, res);
-            Xp.setObjectField(bar, "runtimeShader", new android.graphics.RuntimeShader(src));
+            android.graphics.RuntimeShader shader = new android.graphics.RuntimeShader(src);
+            Xp.setObjectField(bar, "runtimeShader", shader);
             Xp.setObjectField(bar, "mDeviceLevel", 2);
+            // initShaderConfig converts the track's place and thickness from dp to px in place,
+            // on arrays the constructor filled - so a second call on one bar converts pixels
+            // again, and a bar lit, cleared and lit again (#49) drew its track three times
+            // too low, off its own canvas: gone. Put back to the constructor's dp first.
+            float[] pos = (float[]) Xp.getObjectField(bar, "uTrackPosition");
+            float[] track = (float[]) Xp.getObjectField(bar, "uTrackSize");
+            pos[0] = TRACK_POS_DP[0];
+            pos[1] = TRACK_POS_DP[1];
+            track[0] = TRACK_SIZE_DP[0];
+            track[1] = TRACK_SIZE_DP[1];
             Xp.callMethod(bar, "initShaderConfig");
+            // What onSizeChanged and onLayout hand the shader at level 2, which a bar already on
+            // screen has long been through at level 0 and will not go through again.
+            if (bar.getWidth() > 0 && bar.getHeight() > 0) {
+                float[] canvas = (float[]) Xp.getObjectField(bar, "uTrackCanvasSize");
+                canvas[0] = bar.getWidth();
+                canvas[1] = bar.getHeight();
+                shader.setFloatUniform("uTrackCanvasSize", canvas);
+                shader.setFloatUniform("uResolution", canvas);
+                track[0] = bar.getWidth() - pos[0] * 2f;
+                shader.setFloatUniform("uTrackSize", track);
+                shader.setIntUniform("uIsRtl",
+                        bar.getLayoutDirection() == android.view.View.LAYOUT_DIRECTION_RTL ? 1 : 0);
+            }
             bar.requestLayout();
+            bar.invalidate();
             buildHeadAnimator(bar);
             // Only now is the bar something the touch guard has to cover: it draws as level 2
             // without having been built as it.
@@ -335,11 +542,32 @@ final class HyperTweaks {
     }
 
     /**
+     * The glow taken off a bar this lit (applyBarGlow), so switching it off does not wait for the
+     * next card (#49).
+     *
+     * A bar built by the OEM at level 2 cannot go back - its shader is what it was built for - but
+     * none of ours is one: every bar lit here was built flat and set up in full for level 0, the
+     * draw and the drag alike, so putting the level back is all it takes. The shader and the head
+     * animator left in its fields are never read at level 0.
+     */
+    static String clearBarGlow(android.view.View bar) {
+        try {
+            if (sGlowBars.remove(bar) == null) return "not lit here";
+            Xp.setObjectField(bar, "mDeviceLevel", 0);
+            bar.requestLayout();
+            bar.invalidate();
+            return "level 0";
+        } catch (Throwable t) {
+            return "FAILED " + t;
+        }
+    }
+
+    /**
      * The editor and the always-on display, which judge a wallpaper's depth all over again with
      * their own copies of the same classes.
      */
     static void aod(ClassLoader cl) {
-        openDepthThreshold(cl, "aod");
+        openDepthThreshold(cl, "aod", "aod.depth.threshold");
         hierarchyBypass(cl);
         aodWallpaperDepth(cl);
         // The always-on display renders the same clock library and asks the same device config
@@ -351,7 +579,7 @@ final class HyperTweaks {
         historyTrimLimit(cl);
         // The always-on clock is drawn in this process, by the same clock library, so the same
         // hook works - it just has to ask a different place what the switch says.
-        clockColon(cl, "aod", HyperTweaks::aodColonWanted);
+        clockColon(cl, "aod", "aod.clock.colon", HyperTweaks::aodColonWanted);
         reportTo("/data/user/0/com.miui.aod/cache/mc_tweaks.txt");
     }
 
@@ -378,7 +606,7 @@ final class HyperTweaks {
 
     /** The control centre, where the soft glass a global theme switched off actually shows. */
     static void plugin(ClassLoader cl) {
-        softGlassPlugin(cl, "plugin");
+        softGlassPlugin(cl, "plugin", "plugin");
     }
 
     // ------------------------------------------------------------------ OS3 / OS4 compatibility
@@ -481,7 +709,7 @@ final class HyperTweaks {
             return;
         }
         try {
-            Xp.hookAllConstructors(cfg, chain -> {
+            Xp.hookAllConstructors("adv-material.ctor", cfg, chain -> {
                 Object result = chain.proceed();
                 forceAdvancedMaterial(cfg);
                 return result;
@@ -524,26 +752,41 @@ final class HyperTweaks {
      * which time the hook is in place. The field is then overwritten as well, for the build whose
      * initialiser has already run.
      */
-    private static void openDepthThreshold(ClassLoader cl, String where) {
+    private static void openDepthThreshold(ClassLoader cl, String where, String id) {
         try {
             Class<?> thresholdCls = Xp.findClass(CLS_DEPTH_THRESHOLD, cl);
             Class<?> evaluatorCls = Xp.findClass(CLS_DEPTH_EVALUATOR, cl);
             Constructor<?> ctor = thresholdCls.getDeclaredConstructor(double.class);
             ctor.setAccessible(true);
-            Xp.hook(ctor, chain -> {
+            Xp.hook(id, ctor, chain -> {
                 Object[] args = chain.getArgs().toArray();
                 if (args.length == 1 && args[0] instanceof Double
                         && (Double) args[0] == DEPTH_THRESHOLD_STOCK) {
                     args[0] = DEPTH_THRESHOLD_OPEN;
+                    sOpenedStock = true;
                 }
                 return chain.proceed(args);
             });
             Field image = evaluatorCls.getDeclaredField("IMAGE_THRESHOLD");
             image.setAccessible(true);
-            Object threshold = image.get(null);
-            Field rate = thresholdCls.getDeclaredField("rate");
+            final Object threshold = image.get(null);
+            final Field rate = thresholdCls.getDeclaredField("rate");
             rate.setAccessible(true);
+            // Given back at retirement: an inert successor writes nothing, and the open threshold
+            // would otherwise outlive the module in this process. Reading the field is what runs
+            // the initialiser, through the hook above - so an OPEN read here is the hook's own
+            // work, and what it replaced was the stock value.
+            double read = rate.getDouble(threshold);
+            final double had = read == DEPTH_THRESHOLD_OPEN && sOpenedStock
+                    ? DEPTH_THRESHOLD_STOCK : read;
             rate.setDouble(threshold, DEPTH_THRESHOLD_OPEN);
+            Gen.swap(threshold, "DepthEvaluator.IMAGE_THRESHOLD.rate", had, () -> {
+                try {
+                    rate.setDouble(threshold, had);
+                } catch (IllegalAccessException e) {
+                    throw new IllegalStateException(e);
+                }
+            });
             ok("depth-threshold:" + where);
         } catch (Throwable t) {
             failed("depth-threshold:" + where, t);
@@ -560,11 +803,11 @@ final class HyperTweaks {
     private static void hierarchyBypass(ClassLoader cl) {
         try {
             Class<?> controller = Xp.findClass(CLS_HIERARCHY_AVOID, cl);
-            Xp.hookAll(controller, "isHierarchyEnable", chain -> {
+            Xp.hookAll("sysui.depth.hierarchy_enable", controller, "isHierarchyEnable", chain -> {
                 Object result = chain.proceed();
                 return userOpenedHierarchy(chain.getThisObject()) ? Boolean.TRUE : result;
             });
-            Xp.hookAll(controller, "onHierarchyEnableChange", chain -> {
+            Xp.hookAll("sysui.depth.hierarchy_change", controller, "onHierarchyEnableChange", chain -> {
                 Object[] args = chain.getArgs().toArray();
                 if (args.length == 2 && userOpenedHierarchy(chain.getThisObject())) {
                     args[0] = Boolean.TRUE;
@@ -598,7 +841,7 @@ final class HyperTweaks {
             return;
         }
         try {
-            Xp.hookAll(interactorCls, "updateAvoidStatus", chain -> {
+            Xp.hookAll("sysui.depth.avoid_status", interactorCls, "updateAvoidStatus", chain -> {
                 clearAvoidState(chain.getThisObject());
                 // Not proceeded with: the OEM's own recomputation is exactly what puts the
                 // avoidance back, so it is replaced rather than followed.
@@ -614,7 +857,7 @@ final class HyperTweaks {
                     continue;
                 }
                 m.setAccessible(true);
-                Xp.hook(m, chain -> {
+                Xp.hook("sysui.depth.alpha", m, chain -> {
                     clearAvoidState(chain.getThisObject());
                     return chain.proceed();
                 });
@@ -637,7 +880,7 @@ final class HyperTweaks {
             Field videoEnable = interactorField.getType().getDeclaredField("depthVideoEnable");
             videoEnable.setAccessible(true);
             Method updateCrop = interactorField.getType().getMethod("updateDeductedImageView");
-            Xp.hookAll(panelCls, "updateShowDepthState", chain -> {
+            Xp.hookAll("sysui.depth.show_state", panelCls, "updateShowDepthState", chain -> {
                 Object panel = chain.getThisObject();
                 sKgPanel = panel;
                 Object interactor = interactorField.get(panel);
@@ -679,17 +922,17 @@ final class HyperTweaks {
             videoEnable.setAccessible(true);
             Field enableInner = interactorCls.getDeclaredField("depthEffectEnableInner");
             enableInner.setAccessible(true);
-            Xp.hookAll(interactorCls, "updateVideoDepthSurface", chain -> {
+            Xp.hookAll("sysui.depth.video_surface", interactorCls, "updateVideoDepthSurface", chain -> {
                 Object result = chain.proceed();
                 Object interactor = chain.getThisObject();
                 Object panel = sKgPanel;
                 if (panel != null && videoEnable.getBoolean(interactor)
                         && enableInner.getBoolean(interactor)) {
-                    new android.os.Handler(android.os.Looper.getMainLooper()).post(() -> {
+                    Gen.post(() -> {
                         try {
                             showDepth.invoke(panel);
                         } catch (Throwable t) {
-                            Xp.log(TAG + "depth video hand-back failed: " + t);
+                            Xp.w(TAG + "depth video hand-back failed: " + t);
                         }
                     });
                 }
@@ -726,7 +969,7 @@ final class HyperTweaks {
     private static void thirdPartyWallpaperDepth(ClassLoader cl) {
         try {
             Class<?> infoCls = Xp.findClass(CLS_WALLPAPER_INFO, cl);
-            Xp.hookAll(infoCls, "getSupportSubject", chain -> Boolean.TRUE);
+            Xp.hookAll("sysui.depth.support_subject", infoCls, "getSupportSubject", chain -> Boolean.TRUE);
             Class<?> hierarchyCls = Xp.findClass(CLS_HIERARCHY_ENABLE, cl);
             // Nine booleans, one per layout, and all of them yes. Built once: the getter is
             // called per frame in places, and a new instance each time would be litter.
@@ -737,7 +980,7 @@ final class HyperTweaks {
             ctor.setAccessible(true);
             final Object all = ctor.newInstance(
                     true, true, true, true, true, true, true, true, true);
-            Xp.hookAll(infoCls, "getLargeScreenHierarchyEnable", chain -> all);
+            Xp.hookAll("sysui.depth.large_screen_hierarchy", infoCls, "getLargeScreenHierarchyEnable", chain -> all);
             ok("depth-wallpaper:systemui");
         } catch (Throwable t) {
             failed("depth-wallpaper:systemui", t);
@@ -748,12 +991,12 @@ final class HyperTweaks {
     private static void aodWallpaperDepth(ClassLoader cl) {
         try {
             Class<?> infoCls = Xp.findClass(CLS_AOD_WALLPAPER_INFO, cl);
-            Xp.hookAll(infoCls, "getSupportSubject", chain -> Boolean.TRUE);
+            Xp.hookAll("aod.depth.support_subject", infoCls, "getSupportSubject", chain -> Boolean.TRUE);
             Class<?> hierarchyCls = Xp.findClass(CLS_AOD_HIERARCHY_ENABLE, cl);
             Constructor<?> ctor = hierarchyCls.getDeclaredConstructor();
             ctor.setAccessible(true);
             final Object all = ctor.newInstance();
-            Xp.hookAll(infoCls, "getLargeScreenHierarchyEnable", chain -> all);
+            Xp.hookAll("aod.depth.large_screen_hierarchy", infoCls, "getLargeScreenHierarchyEnable", chain -> all);
             ok("depth-wallpaper:aod");
         } catch (Throwable t) {
             failed("depth-wallpaper:aod", t);
@@ -771,7 +1014,7 @@ final class HyperTweaks {
             Class<?> modelCls = Xp.findClass(CLS_CROSS_LIST_MODEL, cl);
             Field max = modelCls.getDeclaredField("_maxTemplateCount");
             max.setAccessible(true);
-            Xp.hookAllConstructors(modelCls, chain -> {
+            Xp.hookAllConstructors("aod.editor.template_limit", modelCls, chain -> {
                 Object result = chain.proceed();
                 try {
                     max.setInt(chain.getThisObject(), TEMPLATE_LIMIT);
@@ -808,7 +1051,7 @@ final class HyperTweaks {
         try {
             Class<?> daoCls = Xp.findClass(CLS_TEMPLATE_HISTORY_DAO, cl);
             final int shift = TEMPLATE_LIMIT - TEMPLATE_LIMIT_STOCK;
-            Xp.hookAll(daoCls, "getHistoryCount", chain -> {
+            Xp.hookAll("aod.editor.history_count", daoCls, "getHistoryCount", chain -> {
                 Object real = chain.proceed();
                 if (!(real instanceof Integer)) return real;
                 int shifted = (Integer) real - shift;
@@ -823,11 +1066,11 @@ final class HyperTweaks {
     // ------------------------------------------------------------------ clock colon
 
     /** The big clock's colon, which some styles drop. Off unless the user asked for it. */
-    private static void clockColon(ClassLoader cl, String where,
+    private static void clockColon(ClassLoader cl, String where, String id,
                                    java.util.function.BooleanSupplier wanted) {
         try {
             Class<?> beanCls = Xp.findClass(CLS_CLOCK_BEAN, cl);
-            Xp.hookAll(beanCls, "isColonShow",
+            Xp.hookAll(id, beanCls, "isColonShow",
                     chain -> wanted.getAsBoolean() ? Boolean.TRUE : chain.proceed());
             ok("clock-colon:" + where);
         } catch (Throwable t) {
@@ -853,7 +1096,7 @@ final class HyperTweaks {
         if (ctx == null) return;
         try {
             android.provider.Settings.Global.putInt(
-                    ctx.getContentResolver(), GLOBAL_COLON, sForceColon ? 1 : 0);
+                    ctx.getContentResolver(), GLOBAL_COLON, Settings.COLON.on() ? 1 : 0);
         } catch (Throwable t) {
             // No permission, or a build that refuses the write: the always-on clock keeps the
             // colon it had. The lock screen's own colon does not go through here.
@@ -884,11 +1127,10 @@ final class HyperTweaks {
             final android.content.ContentResolver cr = ctx.getContentResolver();
             boolean on = android.provider.Settings.Global.getInt(cr, GLOBAL_COLON, 0) != 0;
             sAodColon = on;
-            cr.registerContentObserver(
+            Gen.observer(cr, 
                     android.provider.Settings.Global.getUriFor(GLOBAL_COLON),
                     false,
-                    new android.database.ContentObserver(
-                            new android.os.Handler(android.os.Looper.getMainLooper())) {
+                    new android.database.ContentObserver(Gen.handler()) {
                         @Override
                         public void onChange(boolean selfChange) {
                             sAodColon = android.provider.Settings.Global
@@ -915,7 +1157,7 @@ final class HyperTweaks {
         Class<?> materialUtils = findClassAny(cl, CLS_MATERIAL_UTILS);
         if (materialUtils != null) {
             try {
-                Xp.hookAll(materialUtils, "onDefaultThemeChanged", chain -> {
+                Xp.hookAll("sysui.glass.theme_changed", materialUtils, "onDefaultThemeChanged", chain -> {
                     Object[] args = chain.getArgs().toArray();
                     if (args.length == 1) args[0] = Boolean.TRUE;
                     return chain.proceed(args);
@@ -934,9 +1176,9 @@ final class HyperTweaks {
             Class<?> themeUtils = Xp.findClass(CLS_SYSUI_THEME_UTILS, cl);
             Field flag = themeUtils.getDeclaredField("sDefaultSysUiTheme");
             flag.setAccessible(true);
-            flag.setBoolean(null, true);
+            forceStatic(flag, "ThemeUtils.sDefaultSysUiTheme", false);
             Class<?> config = Xp.findClass(CLS_CONFIG_CONTROLLER, cl);
-            Xp.hookAll(config, "onConfigurationChanged", chain -> {
+            Xp.hookAll("sysui.glass.config_changed", config, "onConfigurationChanged", chain -> {
                 Object result = chain.proceed();
                 try {
                     flag.setBoolean(null, true);
@@ -985,7 +1227,7 @@ final class HyperTweaks {
             final Field f = flag;
             // Written at construction for the instance already up, so a theme change mid-session
             // cannot leave it false.
-            Xp.hookAllConstructors(injector, chain -> {
+            Xp.hookAllConstructors("glass-keyguard-theme.ctor", injector, chain -> {
                 Object result = chain.proceed();
                 if (f != null) {
                     try {
@@ -1001,7 +1243,8 @@ final class HyperTweaks {
                 for (String name : new String[] {
                         "isLockscreenDefaultTheme", "getLockscreenIsDefaultTheme"}) {
                     try {
-                        Xp.hookAll(injector, name, chain -> Boolean.TRUE);
+                        Xp.hookAll("glass-keyguard-theme.get." + Xp.slug(name), injector,
+                                name, chain -> Boolean.TRUE);
                     } catch (Throwable ignored) {
                         // Not on this build; the field write above still holds.
                     }
@@ -1040,12 +1283,14 @@ final class HyperTweaks {
             Class<?> base = Class.forName("dalvik.system.BaseDexClassLoader");
             for (Constructor<?> ctor : base.getDeclaredConstructors()) {
                 ctor.setAccessible(true);
-                Xp.hook(ctor, chain -> {
+                Xp.hook("sysui.glass.loader_watch", ctor, chain -> {
                     Object result = chain.proceed();
                     if (!sPluginHooked) {
                         Object loader = chain.getThisObject();
                         if (loader instanceof ClassLoader) {
-                            softGlassPlugin((ClassLoader) loader, "plugin");
+                            // The plugin's loader, but still SystemUI's process: the id
+                            // prefix is the process, not where the loader came from.
+                            softGlassPlugin((ClassLoader) loader, "plugin", "sysui");
                         }
                     }
                     return result;
@@ -1057,7 +1302,16 @@ final class HyperTweaks {
         }
     }
 
-    private static void softGlassPlugin(ClassLoader cl, String where) {
+    /**
+     * A hot-reloaded generation's half of {@link #watchForPlugin()}: the plugin's loader exists
+     * already, so the constructor watch will not fire again. Re-running the soft install with
+     * that loader replaces the old hooks by id.
+     */
+    static void adoptPlugin(ClassLoader cl) {
+        softGlassPlugin(cl, "adopt", "sysui");
+    }
+
+    private static void softGlassPlugin(ClassLoader cl, String where, String idPrefix) {
         if (sPluginHooked) return;
         Class<?> themeUtils;
         try {
@@ -1076,24 +1330,28 @@ final class HyperTweaks {
                     "getDefaultPluginTheme", "getDefaultSysUiTheme",
                     "isDefaultPluginTheme", "isDefaultSysUiTheme"}) {
                 try {
-                    Xp.hookAll(themeUtils, name, chain -> Boolean.TRUE);
+                    Xp.hookAll(idPrefix + ".glass.default_get." + Xp.slug(name), themeUtils, name,
+                            chain -> Boolean.TRUE);
                 } catch (Throwable ignored) {
                     // Not on this build; the other answers still stand.
                 }
             }
             for (String name : new String[] {"updateDefaultPluginTheme", "updateDefaultSysUiTheme"}) {
                 try {
-                    Xp.hookAll(themeUtils, name, chain -> {
-                        Object result = chain.proceed();
-                        forceThemeFlags(themeUtils);
-                        return result;
-                    });
+                    Xp.hookAll(idPrefix + ".glass.default_update." + Xp.slug(name), themeUtils, name,
+                            chain -> {
+                                Object result = chain.proceed();
+                                forceThemeFlags(themeUtils);
+                                return result;
+                            });
                 } catch (Throwable ignored) {
                     // As above.
                 }
             }
             forceThemeFlags(themeUtils);
-            pluginMaterialGuards(themeUtils.getClassLoader() == null ? cl : themeUtils.getClassLoader());
+            pluginMaterialGuards(
+                    themeUtils.getClassLoader() == null ? cl : themeUtils.getClassLoader(),
+                    idPrefix);
             sPluginHooked = true;
             ok("glass-plugin:" + where);
         } catch (Throwable t) {
@@ -1106,11 +1364,43 @@ final class HyperTweaks {
             try {
                 Field f = themeUtils.getDeclaredField(name);
                 f.setAccessible(true);
-                f.setBoolean(null, true);
+                // Written from the plugin's watch and its update hooks, after install: a dry run
+                // does not come back through here, so it must not give these back either.
+                forceStatic(f, "plugin ThemeUtils." + name, true);
             } catch (Throwable ignored) {
                 // One of the two is missing on some builds; the other still holds.
             }
         }
+    }
+
+    /** Set when the threshold hook turned a stock value open; see openDepthThreshold. */
+    private static volatile boolean sOpenedStock;
+
+    /**
+     * The static booleans written so far, each recorded with its value from before the first.
+     * By equality, not identity: getDeclaredField hands out a new Field every call, and the
+     * plugin's update hooks look theirs up each time.
+     */
+    private static final java.util.Set<Field> FORCED =
+            java.util.Collections.synchronizedSet(new java.util.HashSet<>());
+
+    /**
+     * Sets a static boolean to true, recording the first time what it held so the retirement
+     * gives it back. The hooks that write it again later find it recorded already.
+     */
+    private static void forceStatic(final Field f, String what, boolean outlivesDryRun)
+            throws IllegalAccessException {
+        if (FORCED.add(f)) {
+            final boolean had = f.getBoolean(null);
+            Gen.swap(f.getDeclaringClass(), what, had, () -> {
+                try {
+                    f.setBoolean(null, had);
+                } catch (IllegalAccessException e) {
+                    throw new IllegalStateException(e);
+                }
+            }, outlivesDryRun);
+        }
+        f.setBoolean(null, true);
     }
 
     /**
@@ -1119,24 +1409,34 @@ final class HyperTweaks {
      * The method names moved between builds: OS4 asks
      * {@code getBackgroundMaterialOpenedInDefaultTheme}, HyperOS 3 asks
      * {@code getBackgroundBlurOpenedInDefaultTheme} - same call site, same arguments, one word
-     * changed. Both spellings are hooked on whichever MiBlurCompat the loader can see, and on OS3
+     * changed. Every spelling is hooked on whichever MiBlurCompat the loader can see, and on OS3
      * the class also lives in a second package ({@code com.miui.systemui.util} inside SystemUI,
      * beside the plugin's own), so both are looked up through findClassAny.
      */
-    private static void pluginMaterialGuards(ClassLoader cl) {
+    private static void pluginMaterialGuards(ClassLoader cl, String idPrefix) {
         Class<?> blurCompat = findClassAny(cl, CLS_MI_BLUR_COMPAT, CLS_MI_BLUR_COMPAT_OS3);
-        if (blurCompat != null) {
+        if (blurCompat == null) {
+            STATUS.put("glass-blur-compat", "not present");
+        } else {
+            // The stock answer is "material supported AND the user's advanced material switch is
+            // on (getBlurCompat == 1) AND the default theme". Only the theme half is ours to lift.
+            // Answering true outright also overrode the switch: with advanced material off, the
+            // control centre took the material path anyway, skipped its plain card backgrounds,
+            // and drew no blur either - a media card with no backdrop at all (#121). Only the
+            // switch's own reader can lift the theme half, so it is looked up once here.
+            final Method blurOf = blurReader(blurCompat);
             boolean any = false;
             for (String name : new String[] {
                     "getBackgroundMaterialOpenedInDefaultTheme",   // OS4
                     "getBackgroundBlurOpenedInDefaultTheme",        // OS3
                     "getBackgroundBlurOpened"}) {                   // SystemUI-side spelling
-                if (!hasMethod(blurCompat, name, 0)) continue;
+                if (!hasMethod(blurCompat, name, 0) && !hasMethod(blurCompat, name, 1)) continue;
                 try {
-                    Xp.hookAll(blurCompat, name, chain -> Boolean.TRUE);
+                    Xp.hookAll(idPrefix + ".glass.blur_compat." + Xp.slug(name), blurCompat, name,
+                            chain -> materialAnswer(blurOf, chain));
                     any = true;
                 } catch (Throwable t) {
-                    failed("glass-blur-compat:" + name, t);
+                    failed("glass-blur-compat:" + Xp.slug(name), t);
                 }
             }
             if (any) {
@@ -1144,21 +1444,58 @@ final class HyperTweaks {
             } else {
                 STATUS.put("glass-blur-compat", "no material getter on " + blurCompat.getName());
             }
-        } else {
-            STATUS.put("glass-blur-compat", "not present");
         }
         Class<?> controller = findClassAny(cl, CLS_DEFAULT_THEME_CONTROLLER);
-        if (controller != null) {
-            try {
-                Xp.hookAll(controller, "isDefaultTheme", chain -> Boolean.TRUE);
-                ok("glass-default-theme-controller");
-            } catch (Throwable t) {
-                failed("glass-default-theme-controller", t);
-            }
-        } else {
+        if (controller == null) {
             // OS3 does not ship this class; the keyguard flag in keyguardDefaultTheme covers the
             // same question there.
             STATUS.put("glass-default-theme-controller", "not present (OS3)");
+            return;
+        }
+        try {
+            Xp.hookAll(idPrefix + ".glass.default_theme_controller",
+                    controller, "isDefaultTheme", chain -> Boolean.TRUE);
+            ok("glass-default-theme-controller");
+        } catch (Throwable t) {
+            failed("glass-default-theme-controller", t);
+        }
+    }
+
+    /** The advanced-material switch's reader on MiBlurCompat, or null when this build has none. */
+    private static Method blurReader(Class<?> blurCompat) {
+        try {
+            Method m = blurCompat.getDeclaredMethod("getBlurCompat",
+                    android.content.res.Configuration.class);
+            m.setAccessible(true);
+            return m;
+        } catch (Throwable ignored) {
+            // A build without the reader: materialAnswer then leaves the stock answer alone.
+            return null;
+        }
+    }
+
+    /**
+     * The theme half of the material answer, and only where the switch already says the material
+     * is on.
+     *
+     * OS3's own spelling takes no argument, so there is no configuration to ask the switch with;
+     * the system one stands in. With no reader on the class at all the stock answer is kept as
+     * it is - a true the user's switch never allowed is the media card with no backdrop (#121).
+     */
+    private static Object materialAnswer(Method blurOf, XposedInterface.Chain chain)
+            throws Throwable {
+        Object stock = chain.proceed();
+        if (Boolean.TRUE.equals(stock) || blurOf == null) return stock;
+        Object arg = chain.getArgs().isEmpty() ? null : chain.getArgs().get(0);
+        android.content.res.Configuration config = arg instanceof android.content.Context
+                ? ((android.content.Context) arg).getResources().getConfiguration()
+                : android.content.res.Resources.getSystem().getConfiguration();
+        try {
+            Object blur = blurOf.invoke(null, config);
+            return blur instanceof Integer && (Integer) blur == 1 ? Boolean.TRUE : stock;
+        } catch (Throwable t) {
+            // Unreadable switch: the stock answer, not glass the user turned off.
+            return stock;
         }
     }
 }

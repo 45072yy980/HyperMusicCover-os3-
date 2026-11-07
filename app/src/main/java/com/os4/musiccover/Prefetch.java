@@ -1,5 +1,8 @@
 package com.os4.musiccover;
+import com.os4.musiccover.Gen;
 
+import com.os4.musiccover.lyrics.LyricSource;
+import com.os4.musiccover.lyrics.NcmLyrics;
 import android.content.Context;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
@@ -135,9 +138,8 @@ final class Prefetch {
 
     private static synchronized Handler work() {
         if (sWork == null) {
-            HandlerThread t = new HandlerThread("mc-prefetch",
+            HandlerThread t = Gen.handlerThread("mc-prefetch",
                     android.os.Process.THREAD_PRIORITY_BACKGROUND);
-            t.start();
             sWork = new Handler(t.getLooper());
         }
         return sWork;
@@ -149,6 +151,13 @@ final class Prefetch {
      * The player reported something: re-read its queue and fetch what sits either side of the
      * current track. Cheap when nothing moved - the fetches are keyed on the artwork URI and a
      * cached one does not go out again.
+     *
+     * The queue is read at once, so a press straight after this one still knows where it lands.
+     * The fetches and the lyric warm-up wait FETCH_AFTER_MS, counted again from each track
+     * change: on a weak phone the decodes - up to four pictures of ~1MB - landed in the card's
+     * spring and the wallpaper's fade, and what they allocate is the garbage a collection then
+     * stops the whole process for, priority or not. A second press inside the wait is still
+     * answered from the pictures the last round left in the cache.
      */
     static void onTrack(final MediaController c) {
         if (c == null) {
@@ -156,18 +165,47 @@ final class Prefetch {
             sIndex = -1;
             return;
         }
-        work().post(new Runnable() {
+        final Handler h = work();
+        h.post(new Runnable() {
             @Override
             public void run() {
                 try {
                     readQueue(c);
-                    fetchAround();
-                    warmLyricAhead();
                 } catch (Throwable t) {
-                    Xp.log(TAG + "queue read failed: " + t);
+                    Xp.w(TAG + "queue read failed: " + t);
                 }
             }
         });
+        h.removeCallbacks(FETCH);
+        h.postDelayed(FETCH, FETCH_AFTER_MS);
+    }
+
+    /** How long after a track change the pictures either side of it are fetched. */
+    private static final long FETCH_AFTER_MS = 1500L;
+
+    private static final Runnable FETCH = new Runnable() {
+        @Override
+        public void run() {
+            try {
+                fetchAround();
+                warmLyricAhead();
+            } catch (Throwable t) {
+                Xp.w(TAG + "prefetch failed: " + t);
+            }
+        }
+    };
+
+    /**
+     * The artwork already decoded for one URI, or null. Read by ArtUri: the cover asks for the
+     * same URLs the queue holds - the track playing is in the queue too - and taking this copy is
+     * what stops one picture being downloaded twice for the same track change.
+     */
+    static Bitmap cached(String uri) {
+        if (uri == null) return null;
+        synchronized (CACHE) {
+            Bitmap b = CACHE.get(uri);
+            return b != null && !b.isRecycled() ? b : null;
+        }
     }
 
     /**
@@ -401,7 +439,7 @@ final class Prefetch {
                     LyricSource.warm(it.mediaId, dir, byName ? it.title : null,
                             byName ? it.artist : null);
                 } catch (Throwable t) {
-                    Xp.log(TAG + "reading ahead failed: " + t);
+                    Xp.w(TAG + "reading ahead failed: " + t);
                 }
             }
         });
@@ -418,9 +456,8 @@ final class Prefetch {
 
     private static synchronized Handler lyricWork() {
         if (sLyricWork == null) {
-            HandlerThread t = new HandlerThread("mc-lyricahead",
+            HandlerThread t = Gen.handlerThread("mc-lyricahead",
                     android.os.Process.THREAD_PRIORITY_BACKGROUND);
-            t.start();
             sLyricWork = new Handler(t.getLooper());
         }
         return sLyricWork;
@@ -479,30 +516,21 @@ final class Prefetch {
     }
 
     /**
-     * The artwork behind one URI. http(s) goes over the network - SystemUI holds INTERNET, and
-     * this runs on the prefetch thread - and anything else goes through the resolver, so a player
-     * that publishes content:// artwork is served the same way.
+     * The artwork behind one URI. http(s) goes through ArtUri - SystemUI holds INTERNET, and this
+     * runs on the prefetch thread - and anything else goes through the resolver, so a player that
+     * publishes content:// artwork is served the same way.
+     *
+     * It goes through ArtUri rather than one more connection of its own because SystemUI cannot
+     * read a cleartext URL at all: every http artwork URL a player publishes (MeiloX's NetEase
+     * covers, measured 2026-10-08) failed here with "Cleartext HTTP traffic ... not permitted",
+     * 207 times in a day and no arrival. ArtUri rewrites the scheme and reads the size, so the
+     * queue art arrives and the press prediction has something to answer with.
      */
     private static Bitmap load(Uri uri) {
         String scheme = uri.getScheme();
         try {
             if ("http".equals(scheme) || "https".equals(scheme)) {
-                java.net.HttpURLConnection conn =
-                        (java.net.HttpURLConnection) new java.net.URL(uri.toString())
-                                .openConnection();
-                try {
-                    conn.setConnectTimeout(3000);
-                    conn.setReadTimeout(5000);
-                    conn.setInstanceFollowRedirects(true);
-                    InputStream in = conn.getInputStream();
-                    try {
-                        return BitmapFactory.decodeStream(in);
-                    } finally {
-                        in.close();
-                    }
-                } finally {
-                    conn.disconnect();
-                }
+                return ArtUri.fetch(uri.toString());
             }
             Context ctx = Main.appContext();
             if (ctx == null) return null;

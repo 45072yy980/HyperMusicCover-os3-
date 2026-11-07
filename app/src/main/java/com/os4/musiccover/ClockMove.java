@@ -1,5 +1,7 @@
 package com.os4.musiccover;
+import com.os4.musiccover.Gen;
 
+import com.os4.musiccover.island.MiniPlayerRuntime;
 import android.os.SystemClock;
 import android.view.View;
 import android.view.ViewTreeObserver;
@@ -101,13 +103,13 @@ final class ClockMove {
             Xp.log(TAG + "clockmove: " + sFooter);
             return;
         }
-        v.post(new Runnable() {
+        Gen.postOn(v, new Runnable() {
             @Override
             public void run() {
                 detach();
                 try {
                     resolve();
-                    v.getViewTreeObserver().addOnPreDrawListener(F);
+                    Gen.preDraw(v, F);
                     sTraced = v;
                 } catch (Throwable t) {
                     sFooter = "listener not installed: " + t;
@@ -116,13 +118,13 @@ final class ClockMove {
         });
     }
 
-    /** Off the view it was installed on, whichever view that was. */
-    private static void detach() {
+    /** Off the view it was installed on, whichever view that was. Also the hot-reload teardown. */
+    static void detach() {
         View v = sTraced;
         sTraced = null;
         if (v == null) return;
         try {
-            v.getViewTreeObserver().removeOnPreDrawListener(F);
+            Gen.unpreDraw(v, F);
         } catch (Throwable ignored) {
         }
     }
@@ -262,11 +264,11 @@ final class ClockMove {
               .append(" top=").append(Main.r1(lastTop))
               .append(" src=").append(src);
         }
-        sb.append(" ease=").append(Main.easeRunning() ? 1 : 0)
-          .append(" shown=").append(Main.r1(Main.easeShown()))
+        sb.append(" ease=").append(ClockRoom.easeRunning() ? 1 : 0)
+          .append(" shown=").append(Main.r1(ClockRoom.easeShown()))
           .append(" raw=").append(Main.r1(Main.easeRaw()))
           .append(" jump=").append(lastJump ? 1 : 0);
-        if (Main.easeSoft() > 0f) sb.append(" soft=").append(Main.r1(Main.easeSoft()));
+        if (ClockRoom.easeSoft() > 0f) sb.append(" soft=").append(Main.r1(ClockRoom.easeSoft()));
         if (nSize > 0) sb.append(" sz=").append(Main.r2(lastSize));
         if (nWeight > 0) sb.append(" wt=").append(Main.r2(lastWeight));
         if (nReassert > 0) {
@@ -322,7 +324,7 @@ final class ClockMove {
             // The ink box: what the eye is tracking, and the only reading that can show a glyph
             // size change, because the clock's view bounds do not move with the variable font.
             try {
-                sb.append(" box=").append(Main.boxOf(Main.measureLiveBox()));
+                sb.append(" box=").append(ClockViews.boxOf(Diagnostics.measureLiveBox()));
             } catch (Throwable t) {
                 sb.append(" box=?");
             }
@@ -421,7 +423,7 @@ final class ClockMove {
             sChain[i] = up;
             up = up != null && up.getParent() instanceof View ? (View) up.getParent() : null;
         }
-        sDate = Main.visibleDate();
+        sDate = ClockViews.visibleDate();
         // `clock_animation_container` is the date's parent and the clock's, and it is the view
         // the OEM translates - the one thing here that cannot be read off `sContainer`, whose
         // own translation is always 0. Asked of the date first, of the clock tree if the date

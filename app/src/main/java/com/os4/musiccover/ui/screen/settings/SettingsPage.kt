@@ -1,5 +1,7 @@
 package com.os4.musiccover.ui.screen.settings
 
+import com.os4.musiccover.ui.util.nextCard
+import com.os4.musiccover.ui.util.firstCard
 import android.app.Activity
 import android.content.Intent
 import android.net.Uri
@@ -20,10 +22,12 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.os4.musiccover.LauncherIcon
-import com.os4.musiccover.LocaleHelper
+import com.os4.musiccover.app.LocaleHelper
+import com.os4.musiccover.LogLevel
+import com.os4.musiccover.app.LsposedService
 import com.os4.musiccover.R
-import com.os4.musiccover.SettingsBackup
-import com.os4.musiccover.ThemeActivity
+import com.os4.musiccover.app.SettingsBackup
+import com.os4.musiccover.app.ThemeActivity
 import kotlinx.coroutines.launch
 import com.os4.musiccover.ui.util.PageScaffold
 import top.yukonga.miuix.kmp.basic.Card
@@ -38,6 +42,7 @@ import java.io.InputStreamReader
 fun SettingsPageView(
     isBlurEnabled: Boolean,
     extraBottomPadding: Dp = 0.dp,
+    onShowWelcome: () -> Unit = {},
 ) {
     val context = LocalContext.current
     val activity = context as? Activity
@@ -88,11 +93,11 @@ fun SettingsPageView(
         isBlurEnabled = isBlurEnabled,
         extraBottomPadding = extraBottomPadding,
     ) {
-        item {
+        item(key = "settings") {
             Column {
                 SmallTitle(text = stringResource(R.string.settings_interface))
                 Card(
-                    modifier = Modifier.padding(horizontal = 12.dp).padding(bottom = 12.dp)
+                    modifier = Modifier.nextCard()
                 ) {
                     // Everything that repaints the app - theme mode, the floating bar, its glass,
                     // the blur - is on the screen this opens. What is left here is the one
@@ -110,6 +115,15 @@ fun SettingsPageView(
                         }
                     )
 
+                    // The welcome page is shown by itself only on a first launch; this is how it
+                    // is seen again. It does not touch welcomeShown, so it never becomes a
+                    // second first launch.
+                    ArrowPreference(
+                        title = stringResource(R.string.welcome_show_again),
+                        summary = stringResource(R.string.welcome_show_again_summary),
+                        onClick = onShowWelcome,
+                    )
+
                     var iconHidden by remember { mutableStateOf(LauncherIcon.isHidden(context)) }
                     SwitchPreference(
                         title = stringResource(R.string.hide_launcher_icon),
@@ -124,7 +138,7 @@ fun SettingsPageView(
 
                 SmallTitle(text = stringResource(R.string.settings_language))
                 Card(
-                    modifier = Modifier.padding(horizontal = 12.dp).padding(bottom = 12.dp)
+                    modifier = Modifier.nextCard()
                 ) {
                     val languageNames = listOf(
                         stringResource(R.string.language_default),
@@ -154,9 +168,34 @@ fun SettingsPageView(
                     )
                 }
 
+                // For the user filing a report rather than for everyday use, so it comes after
+                // everything that changes the app and before the data rows only for grouping's
+                // sake. Every process the module is in follows it at once (LsposedService).
+                SmallTitle(text = stringResource(R.string.settings_debug))
+                Card(
+                    modifier = Modifier.nextCard()
+                ) {
+                    val levelNames = listOf(
+                        stringResource(R.string.log_level_normal),
+                        stringResource(R.string.log_level_verbose),
+                    )
+                    val levelValues = listOf(LogLevel.NORMAL, LogLevel.VERBOSE)
+                    var level by remember { mutableStateOf(LsposedService.logLevel(context)) }
+                    WindowDropdownPreference(
+                        title = stringResource(R.string.log_level),
+                        summary = stringResource(R.string.log_level_summary),
+                        items = levelNames,
+                        selectedIndex = levelValues.indexOf(level).coerceAtLeast(0),
+                        onSelectedIndexChange = {
+                            level = levelValues[it]
+                            LsposedService.setLogLevel(context, level)
+                        },
+                    )
+                }
+
                 SmallTitle(text = stringResource(R.string.settings_data))
                 Card(
-                    modifier = Modifier.padding(horizontal = 12.dp).padding(bottom = 12.dp)
+                    modifier = Modifier.nextCard()
                 ) {
                     Column {
                         ArrowPreference(

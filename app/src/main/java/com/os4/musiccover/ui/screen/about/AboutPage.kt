@@ -7,6 +7,8 @@
  */
 package com.os4.musiccover.ui.screen.about
 
+import com.os4.musiccover.ui.util.nextCard
+import com.os4.musiccover.ui.util.firstCard
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -76,6 +78,7 @@ import top.yukonga.miuix.kmp.blur.layerBackdrop
 import top.yukonga.miuix.kmp.blur.textureBlur
 import top.yukonga.miuix.kmp.preference.ArrowPreference
 import top.yukonga.miuix.kmp.squircle.squircleClip
+import top.yukonga.miuix.kmp.theme.MiuixTheme
 import top.yukonga.miuix.kmp.theme.MiuixTheme.colorScheme
 import kotlin.math.abs
 import androidx.compose.ui.graphics.BlendMode as ComposeBlendMode
@@ -274,7 +277,7 @@ private fun AboutContent(
                 ) {
                     Card(
                         modifier = Modifier
-                            .padding(horizontal = 12.dp)
+                            .nextCard()
                             .then(
                                 if (contentBackdrop != null) {
                                     Modifier.textureBlur(
@@ -305,10 +308,43 @@ private fun AboutContent(
                             onDirectUpdate = { update.directUpdate(ctx) },
                         )
                     }
+                    // Credits has a card of its own, right under the update rows: it is the one
+                    // page here that names people instead of licences, and inside the licence card
+                    // it read as one more licence.
                     Card(
                         modifier = Modifier
-                            .padding(horizontal = 12.dp)
-                            .padding(top = 12.dp)
+                            .nextCard()
+                            .then(
+                                if (contentBackdrop != null) {
+                                    Modifier.textureBlur(
+                                        backdrop = contentBackdrop,
+                                        shape = RoundedCornerShape(16.dp),
+                                        blurRadius = blurRadius,
+                                        noiseCoefficient = noiseCoefficient,
+                                        colors = BlurDefaults.blurColors(
+                                            blendColors = cardBlend,
+                                            brightness = brightness,
+                                            contrast = contrast,
+                                            saturation = saturation,
+                                        ),
+                                    )
+                                } else {
+                                    Modifier
+                                },
+                            ),
+                        colors = CardDefaults.defaultColors(
+                            if (contentBackdrop != null) Color.Transparent else colorScheme.surfaceContainer,
+                            Color.Transparent,
+                        ),
+                    ) {
+                        ArrowPreference(
+                            title = stringResource(R.string.about_credits),
+                            onClick = openCreditsPage,
+                        )
+                    }
+                    Card(
+                        modifier = Modifier
+                            .nextCard()
                             .then(
                                 if (contentBackdrop != null) {
                                     Modifier.textureBlur(
@@ -366,8 +402,7 @@ private fun AboutContent(
                     }
                     Card(
                         modifier = Modifier
-                            .padding(horizontal = 12.dp)
-                            .padding(top = 12.dp)
+                            .nextCard()
                             .then(
                                 if (contentBackdrop != null) {
                                     Modifier.textureBlur(
@@ -399,16 +434,7 @@ private fun AboutContent(
                             title = stringResource(R.string.about_dependencies),
                             onClick = openLicensePage,
                         )
-                        // Under the licence list, because it answers the question that one
-                        // raises: the licences say what this build is legally made of, the
-                        // credits say whose work it was learnt from.
-                        ArrowPreference(
-                            title = stringResource(R.string.about_credits),
-                            summary = stringResource(R.string.about_credits_summary),
-                            onClick = openCreditsPage,
-                        )
                     }
-                    Spacer(modifier = Modifier.height(12.dp))
                 }
             }
         }
@@ -506,7 +532,7 @@ private fun AboutContent(
                         .padding(vertical = 4.dp),
                     color = colorScheme.onSurfaceVariantSummary,
                     text = versionName,
-                    fontSize = 14.sp,
+                    style = MiuixTheme.textStyles.body2,
                     textAlign = TextAlign.Center,
                 )
                 UpdateHint(

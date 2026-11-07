@@ -1,11 +1,12 @@
 package com.os4.musiccover;
+import com.os4.musiccover.Gen;
 
+import com.os4.musiccover.lyrics.LockLyrics;
 import android.content.Context;
 import android.graphics.Bitmap;
 import android.graphics.BlurMaskFilter;
 import android.graphics.Canvas;
 import android.graphics.Paint;
-import android.graphics.Path;
 import android.graphics.Rect;
 import android.graphics.RectF;
 import android.os.Looper;
@@ -16,8 +17,9 @@ import android.view.ViewGroup;
 import android.view.ViewTreeObserver;
 
 /** The module's own square artwork. The OEM clock and media card remain above this layer. */
-final class CoverCardLayer extends View implements Choreographer.FrameCallback {
-    private static CoverCardLayer sView;
+public final class CoverCardLayer extends View implements Choreographer.FrameCallback {
+    /** Volatile: the hot-reload check reads animating() from the framework's thread. */
+    private static volatile CoverCardLayer sView;
     private static volatile Prepared sPending;
     private static volatile int sGeneration;
     private static volatile CoverCardStyle sStyle = CoverCardStyle.defaults();
@@ -41,7 +43,8 @@ final class CoverCardLayer extends View implements Choreographer.FrameCallback {
     private Prepared current, previous;
     private long changedAt;
     private long lastFrame;
-    private boolean ticking;
+    /** Volatile: written on the main thread, read by the hot-reload check off it. */
+    private volatile boolean ticking;
     private float opacity;
     private final CardSpring scale = new CardSpring();
     private boolean playing = sPlayingState;
@@ -50,7 +53,6 @@ final class CoverCardLayer extends View implements Choreographer.FrameCallback {
     private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.FILTER_BITMAP_FLAG);
     private final RectF square = new RectF();
     /** Per-frame scratch, kept rather than allocated on every draw. */
-    private final Path clipPath = new Path();
     private final int[] tmpLoc = new int[2];
     private ViewTreeObserver geometryObserver;
     private ViewTreeObserver.OnPreDrawListener geometryListener;
@@ -124,6 +126,7 @@ final class CoverCardLayer extends View implements Choreographer.FrameCallback {
             if (v.getParent() instanceof ViewGroup) ((ViewGroup) v.getParent()).removeView(v);
             layer.addView(v, new ViewGroup.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+            Gen.ownView(layer, v);
         }
         // Called on every entry; bringToFront lays the layer out again, so only when needed.
         if (layer.getChildAt(layer.getChildCount() - 1) != v) v.bringToFront();
@@ -144,6 +147,7 @@ final class CoverCardLayer extends View implements Choreographer.FrameCallback {
             }
             host.addView(v.wash, host.indexOfChild(below), new ViewGroup.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+            Gen.ownView(host, v.wash);
         }
         v.style = sStyle;
         v.playing = sPlayingState;
@@ -214,13 +218,13 @@ final class CoverCardLayer extends View implements Choreographer.FrameCallback {
                 return true;
             } finally { android.os.Trace.endSection(); } }
         };
-        geometryObserver.addOnPreDrawListener(geometryListener);
+        Gen.preDraw(geometryObserver, geometryListener);
     }
 
     private void unwatchGeometry() {
         if (geometryObserver != null && geometryListener != null
                 && geometryObserver.isAlive()) {
-            geometryObserver.removeOnPreDrawListener(geometryListener);
+            Gen.unpreDraw(geometryObserver, geometryListener);
         }
         geometryObserver = null;
         geometryListener = null;
@@ -276,7 +280,7 @@ final class CoverCardLayer extends View implements Choreographer.FrameCallback {
                                 / (float) Main.screenWidth())));
                 aodBackdrop = CoverCompose.cardBackground(readable, backdropW, backdropH);
             } catch (Throwable t) {
-                Xp.log("[MCCard] AOD backdrop preparation failed: " + t);
+                Xp.w("[MCCard] AOD backdrop preparation failed: " + t);
             }
             final Prepared p = new Prepared(art, aodBackdrop, generation);
             art = null;
@@ -301,7 +305,7 @@ final class CoverCardLayer extends View implements Choreographer.FrameCallback {
                 }
             });
         } catch (Throwable t) {
-            Xp.log("[MCCard] artwork preparation failed: " + t);
+            Xp.w("[MCCard] artwork preparation failed: " + t);
         } finally {
             if (readable != null && readable != source) readable.recycle();
             if (art != null) art.recycle();
@@ -346,7 +350,41 @@ final class CoverCardLayer extends View implements Choreographer.FrameCallback {
         });
     }
 
-    static void refresh() {
+    /**
+     * Retirement: the layer and its wash out of the tree, the frames stopped, the bitmaps
+     * released. clear() is the track-change path - it animates the square away and expects the
+     * view to come back; here the view's class is the one going away.
+     *
+     * <p>sPending is kept: it is the artwork already prepared for the square, and a dry run
+     * puts the square straight back up. A real retirement (Step 7) clears it with the cache.
+     */
+    /** Whether the square is being drawn frame by frame (an entrance, a track change, a swipe). */
+    static boolean animating() {
+        CoverCardLayer v = sView;
+        return v != null && v.ticking;
+    }
+
+    static void retire() {
+        // NOT ++sGeneration: the kept sPending is stamped with the current one, and adoptPending
+        // is what puts the square straight back up on the rebuild. The queued adopts the bump
+        // used to invalidate are gone with Main's messages, which the sweep clears.
+        CoverCardLayer v = sView;
+        sView = null;
+        if (v == null) return;
+        v.stop();
+        v.unwatchGeometry();
+        if (v.getParent() instanceof ViewGroup) ((ViewGroup) v.getParent()).removeView(v);
+        if (v.wash.getParent() instanceof ViewGroup) {
+            ((ViewGroup) v.wash.getParent()).removeView(v.wash);
+        }
+        Prepared hold = sPending;
+        if (v.previous != null && v.previous != hold) v.previous.recycle();
+        if (v.current != null && v.current != hold) v.current.recycle();
+        v.previous = null;
+        v.current = null;
+    }
+
+    public static void refresh() {
         CoverCardLayer v = sView;
         if (v != null) {
             v.start();
@@ -396,10 +434,18 @@ final class CoverCardLayer extends View implements Choreographer.FrameCallback {
         bouncerP += (want - bouncerP) * k;
         if (Math.abs(want - bouncerP) < 0.01f) bouncerP = want;
         float r = bouncerP * BOUNCER_BLUR_DP * getResources().getDisplayMetrics().density;
-        setRenderEffect(r < 0.5f ? null : android.graphics.RenderEffect.createBlurEffect(
-                r, r, android.graphics.Shader.TileMode.DECAL));
+        if (r < 0.5f) r = 0f;
+        // A new effect is a new blur node for the render thread; only when the radius moved.
+        if (r != blurSet) {
+            blurSet = r;
+            setRenderEffect(r == 0f ? null : android.graphics.RenderEffect.createBlurEffect(
+                    r, r, android.graphics.Shader.TileMode.DECAL));
+        }
         return bouncerP != want;
     }
+
+    /** The radius the view's blur was last set to; 0 is none. */
+    private float blurSet = -1f;
 
     /**
      * The swipe's fade, taken from the media card's.
@@ -438,6 +484,8 @@ final class CoverCardLayer extends View implements Choreographer.FrameCallback {
     private void hideImmediately() {
         stop();
         opacity = 0f;
+        videoAlpha = 0f;
+        CardVideo.want(false);
         exitWithCard = false;
         if (getVisibility() != GONE) setVisibility(GONE);
         wash.hideNow();
@@ -544,11 +592,11 @@ final class CoverCardLayer extends View implements Choreographer.FrameCallback {
         // A temporary vote for panels that honour it. The spring is sampled on every VSYNC,
         // and the vote is removed as soon as it settles; some SystemUI windows still cap at 60Hz.
         setRequestedFrameRate(120f);
-        Choreographer.getInstance().postFrameCallback(this);
+        Gen.frame(this);
     }
 
     private void stop() {
-        if (ticking) Choreographer.getInstance().removeFrameCallback(this);
+        if (ticking) Gen.unframe(this);
         if (ticking) setRequestedFrameRate(0f);
         ticking = false;
         lastFrame = 0L;
@@ -789,8 +837,8 @@ final class CoverCardLayer extends View implements Choreographer.FrameCallback {
         boolean underBig = bigWake || bigFall;
         float target = visible && current != null && (!afterBigClock || underBig)
                 && (phase == ClockCollapse.Phase.EXIT && !bigFall ? exitWithCard : !lyrics)
-                ? (inAod ? 1f : underBig ? reveal() : Main.cardProgress()) : 0f;
-        float response = Math.max(0.18f, Main.sClockResponse);
+                ? (inAod ? 1f : underBig ? reveal() : MediaCard.cardProgress()) : 0f;
+        float response = Math.max(0.18f, Settings.SPRING.get());
         // Tied to the clock's own flight on the lit screen, and to the big clock's edge on the way
         // into and out of its doze. Otherwise falling asleep it eases.
         if (!bigFall) fallAt = 0L;
@@ -831,27 +879,28 @@ final class CoverCardLayer extends View implements Choreographer.FrameCallback {
         if (phase == ClockCollapse.Phase.AOD) scale.snap(scaleTarget);
         // At the response the app's 缩放动画阻尼 sets, so the card keeps time with the clock,
         // the wallpaper and the morph instead of running on a clock of its own.
-        else scale.step(scaleTarget, dt, Main.sClockResponse);
+        else scale.step(scaleTarget, dt, Settings.SPRING.get());
         boolean placing = followPlace(phase, dt, response, target);
         if (previous != null && (phase == ClockCollapse.Phase.AOD
                 || SystemClock.uptimeMillis() - changedAt > TRACK_FADE_MS)) {
             previous.recycle();
             previous = null;
         }
+        boolean videoMoving = followVideo(visible, phase, inAod, dt);
         boolean backdrop = Main.coverCardBackdropInAod() && current != null
                 && current.aodBackdrop != null;
         wash.show(backdrop);
         int visibility = opacity > 0f || target > 0f ? VISIBLE : GONE;
         if (getVisibility() != visibility) setVisibility(visibility);
         if (visibility == VISIBLE) invalidate();
-        boolean settling = blurring || Math.abs(target - opacity) > 0.001f
+        boolean settling = blurring || videoMoving || Math.abs(target - opacity) > 0.001f
                 || (phase != ClockCollapse.Phase.AOD && !scale.atRest(scaleTarget))
                 || previous != null || placing || (rise < 1f && opacity > 0f)
                 || (aodSince != 0L && nowNs - aodSince < AOD_SETTLE_NS)
                 // Still waking from the big clock: keep looking until the clock has landed.
                 || (afterBigClock && phase != ClockCollapse.Phase.AOD);
         if (settling) {
-            Choreographer.getInstance().postFrameCallback(this);
+            Gen.frame(this);
         } else {
             stop();
         }
@@ -878,13 +927,19 @@ final class CoverCardLayer extends View implements Choreographer.FrameCallback {
         // The shadow is keyed on the corner at the RESTING side, not the moving one - see
         // CoverCardStyle.cornerShare, and the note on shadowTile below.
         drawShadow(canvas, square, style.cornerShare(drawSide), opacity, paint);
-        int save = canvas.save();
-        clipPath.reset();
-        clipPath.addRoundRect(square, radius, radius, Path.Direction.CW);
-        canvas.clipPath(clipPath);
+        // Each picture is its own rounded rect, not drawn inside a clip to one: an antialiased
+        // path clip has the GPU build a coverage mask for the card every frame it draws, and
+        // this one draws every frame of the morph and of a motion cover. A rounded rect is
+        // drawn with its edge worked out in the shader.
+        artRadius = radius;
         drawArt(canvas, previous, 1f);
         drawArt(canvas, current, fadeFraction());
-        canvas.restoreToCount(save);
+        Bitmap frame = CardVideo.frame();
+        // The last frame stays for the fade out: an unloaded video has no frame of its own any
+        // more, and the still under it would otherwise cut in.
+        if (frame != null) lastVideo = frame;
+        else if (videoAlpha <= 0f) lastVideo = null;
+        if (videoAlpha > 0f && lastVideo != null) drawBitmap(canvas, lastVideo, videoAlpha);
         paint.setStyle(Paint.Style.STROKE);
         paint.setStrokeWidth(density);
         paint.setColor(0x40FFFFFF);
@@ -1115,21 +1170,94 @@ final class CoverCardLayer extends View implements Choreographer.FrameCallback {
         return from + (to - from) * fadeFraction();
     }
 
-    private final Rect artSrc = new Rect();
+    private final RectF artSrc = new RectF();
 
     private void drawArt(Canvas canvas, Prepared p, float fraction) {
         if (p == null || fraction <= 0f) return;
-        paint.setShader(null);
+        drawBitmap(canvas, p.art, fraction);
+    }
+
+    private void drawBitmap(Canvas canvas, Bitmap art, float fraction) {
         paint.setColor(0xFFFFFFFF);
         paint.setAlpha(Math.round(255f * opacity * fraction));
         // Centre-cropped to the card's shape, which is only ever off this art's own through a
         // crossfade between two shapes - drawn into it as it is, one of the two would stretch.
-        int w = p.art.getWidth(), h = p.art.getHeight();
+        int w = art.getWidth(), h = art.getHeight();
         float box = square.width() / Math.max(1f, square.height());
         int cw = Math.min(w, Math.round(h * box));
         int ch = Math.min(h, Math.round(w / box));
         artSrc.set((w - cw) / 2, (h - ch) / 2, (w + cw) / 2, (h + ch) / 2);
-        canvas.drawBitmap(p.art, artSrc, square, paint);
+        artMatrix.setRectToRect(artSrc, square, android.graphics.Matrix.ScaleToFit.FILL);
+        android.graphics.BitmapShader shader = shaderFor(art);
+        shader.setLocalMatrix(artMatrix);
+        paint.setShader(shader);
+        canvas.drawRoundRect(square, artRadius, artRadius, paint);
+        paint.setShader(null);
+    }
+
+    /** The corner the pictures are drawn with this frame; see onDraw. */
+    private float artRadius;
+    private final android.graphics.Matrix artMatrix = new android.graphics.Matrix();
+    /**
+     * Shaders for the last two stills - the one fading in and the one under it - so a still
+     * drawn every frame does not make a new one every frame. A video frame is a new Bitmap each
+     * time and gets a new shader each time anyway.
+     */
+    private Bitmap shaderArtA, shaderArtB;
+    private android.graphics.BitmapShader shaderA, shaderB;
+
+    private android.graphics.BitmapShader shaderFor(Bitmap art) {
+        if (art == shaderArtA && shaderA != null) return shaderA;
+        if (art == shaderArtB && shaderB != null) return shaderB;
+        android.graphics.BitmapShader s = new android.graphics.BitmapShader(art,
+                android.graphics.Shader.TileMode.CLAMP, android.graphics.Shader.TileMode.CLAMP);
+        if (art == lastVideo) return s;
+        shaderArtB = shaderArtA;
+        shaderB = shaderA;
+        shaderArtA = art;
+        shaderA = s;
+        return s;
+    }
+
+    // ---------------------------------------------------------------- the motion cover
+
+    /** 0..1, how far the video is drawn over the still. See CardVideo. */
+    private float videoAlpha;
+    /** What the video last drew, kept for its fade out. A wrapped HardwareBuffer: no copy. */
+    private Bitmap lastVideo;
+    private static final float VIDEO_FADE_S = 0.25f;
+
+    /**
+     * The video only plays on the settled, lit square: the morph, the big clock's fall and wake,
+     * the doze and a track's crossfade all show the still, which every one of them was tuned
+     * around. It fades in over the still once it has a frame and fades out the same way; the
+     * morph is the exception and cuts it, because the morph flies the still and the square has
+     * to be the still the moment the morph hands it over.
+     *
+     * @return whether the fade is still moving
+     */
+    private boolean followVideo(boolean visible, ClockCollapse.Phase phase, boolean inAod,
+                                float dt) {
+        boolean suppressed = CoverMorphLayer.cardSuppressed();
+        boolean settled = CardVideo.loaded() && visible && phase == ClockCollapse.Phase.ON
+                && !afterBigClock && !inAod && !suppressed && opacity > 0f && current != null;
+        CardVideo.want(settled);
+        if (suppressed) videoAlpha = 0f;
+        float want = settled && previous == null && CardVideo.frame() != null ? 1f : 0f;
+        if (videoAlpha == want) return false;
+        float step = dt <= 0f ? 1f / 60f / VIDEO_FADE_S : dt / VIDEO_FADE_S;
+        videoAlpha = want > videoAlpha ? Math.min(want, videoAlpha + step)
+                : Math.max(want, videoAlpha - step);
+        return videoAlpha != want;
+    }
+
+    /** Main thread: CardVideo has a new frame. */
+    static void videoFrame() {
+        CoverCardLayer v = sView;
+        if (v == null || v.getVisibility() != VISIBLE) return;
+        v.invalidate();
+        // The first frame is what lets the fade start; nothing else would ask for its frames.
+        if (v.videoAlpha < 1f) v.start();
     }
 
 }

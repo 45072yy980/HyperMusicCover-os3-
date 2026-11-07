@@ -1,4 +1,5 @@
 package com.os4.musiccover;
+import com.os4.musiccover.Gen;
 
 import android.graphics.RectF;
 import android.view.Choreographer;
@@ -34,13 +35,13 @@ import android.view.ViewTreeObserver;
  *     AOD    cover mode is on but the screen is asleep: the OEM's clock as it is, watched, so the
  *            wake can start from exactly what the AOD was showing
  */
-final class ClockCollapse {
+public final class ClockCollapse {
     private ClockCollapse() {
     }
 
     private static final String TAG = Main.TAG;
 
-    enum Phase { OFF, ENTER, ON, EXIT, AOD }
+    public enum Phase { OFF, ENTER, ON, EXIT, AOD }
 
     private static volatile Phase sPhase = Phase.OFF;
     /** This EXIT is the fall into the AOD, and lands in AOD rather than OFF. */
@@ -55,7 +56,7 @@ final class ClockCollapse {
      *
      * Off, sleeping hands the clock back - toAod() springs it to whatever the doze lays out and
      * land() clears our transforms. On, and only under the full-screen AOD (the mode the setting
-     * is about; see Main.sAodSmall), the pose on screen at the moment of sleep is remembered and
+     * is about; see Settings.AOD_SMALL), the pose on screen at the moment of sleep is remembered and
      * re-applied every frame of the doze, so nothing moves at all.
      *
      * The OEM is trying to do the same thing - AllInOneClockAnimation.updateFullAodAnimState()
@@ -74,7 +75,7 @@ final class ClockCollapse {
      * the setting off is asking for the system's clock there, colour included; a colour of ours on
      * it is invented out of nothing and reads as a grey slab (reported 2026-09-21). Every other
      * doze is held at a neutral, which is what stopped the plain AOD turning gold - see
-     * Main.holdAodColour(). Latched rather than read live: `Main.fullAodOn()` reflects into the
+     * AodColour.holdAodColour(). Latched rather than read live: `Main.fullAodOn()` reflects into the
      * interfaces manager and is not something to ask on a per-frame path.
      */
     private static boolean sAodFullScreen;
@@ -101,7 +102,7 @@ final class ClockCollapse {
         // An immersive page as well as the cover: the full-screen doze keeps the page under the
         // clock (ImmersiveHost), and only that doze - the plain one is the OEM's, page and clock
         // alike.
-        return Main.sAodSmall && Main.fullAodOn();
+        return Settings.AOD_SMALL.on() && Main.fullAodOn();
     }
 
     /**
@@ -123,6 +124,24 @@ final class ClockCollapse {
     private static float sFromTop = Float.NaN, sFromUnit = Float.NaN, sFromDate = Float.NaN;
     /** The last pose the AOD drew, for the wake to start from. NaN top = none yet. */
     private static float sAodTop = Float.NaN, sAodUnit = Float.NaN, sAodDate = Float.NaN;
+
+    /**
+     * The pose our own pre-draw last put on the clock while the lock screen was up.
+     *
+     * A held doze keeps "the pose on screen when the screen fell asleep", and that pose is a
+     * number this class wrote itself - not one to measure again at the moment of sleep. The
+     * keyguard need not be drawing then: the phone can be unlocked when the power button is
+     * pressed, and the lock screen is re-shown behind the sleep. A fresh measurement of that
+     * moment asks for ink that is actually drawn (ClockViews.collectTimeViews, drawnUnder and
+     * usableDate all ignore a faded face), comes back empty, leaves sFromTop NaN, and the doze
+     * hands the clock back to the OEM - the full-size clock (reported 2026-10-14, issue #88).
+     *
+     * Our own last write has none of those preconditions. Written by every ENTER/ON frame that
+     * places the clock; read by toAod(). NaN = nothing placed this session.
+     */
+    private static float sDrawnTop = Float.NaN, sDrawnUnit = Float.NaN, sDrawnDate = Float.NaN;
+    /** One warning per sleep when a held doze has no pose at all. See the AOD branch of frame(). */
+    private static boolean sAodPoseWarned;
 
     /**
      * The doze pose as the frame before last reported it, waiting for a frame that agrees.
@@ -224,7 +243,7 @@ final class ClockCollapse {
      * is on the lock screen. What used to keep the lyrics out of the AOD - "the AOD's full clock
      * is the OEM's, and nothing may sit under it" - is exactly what the setting turns off.
      */
-    static float inkBottomOnScreen() {
+    public static float inkBottomOnScreen() {
         Phase p = sPhase;
         if (p == Phase.AOD) return sAodHeld ? sInkBottom : Float.NaN;
         return p == Phase.OFF ? Float.NaN : sInkBottom;
@@ -239,7 +258,7 @@ final class ClockCollapse {
      *
      * NaN wherever the ink bottom is: nothing measured, nothing to sit under.
      */
-    static float contentBottomOnScreen() {
+    public static float contentBottomOnScreen() {
         float ink = inkBottomOnScreen();
         if (Float.isNaN(ink)) return Float.NaN;
         float bottom = ink;
@@ -250,6 +269,29 @@ final class ClockCollapse {
             float b = ink + s.gap + s.v.getHeight();
             if (b > bottom) bottom = b;
         }
+        float cb = sCompBottom;
+        if (!Float.isNaN(cb) && cb > bottom) bottom = cb;
+        return bottom;
+    }
+
+    /**
+     * contentBottomOnScreen(), counting only the signature bars that are showing: one a style
+     * carries but has hidden still has its height, and taken whole it put the bottom some 150px
+     * below a small clock with nothing under it. For laying out against the clock as it looks.
+     */
+    public static float contentBottomShown() {
+        float ink = inkBottomOnScreen();
+        if (Float.isNaN(ink)) return Float.NaN;
+        float bottom = ink;
+        Live m = LIVE;
+        for (int i = 0; i < m.sigN; i++) {
+            Sig s = m.sig[i];
+            if (s.v == null || !s.v.isShown() || s.v.getAlpha() <= 0.01f) continue;
+            float b = ink + s.gap + s.v.getHeight();
+            if (b > bottom) bottom = b;
+        }
+        float cb = sCompBottom;
+        if (!Float.isNaN(cb) && cb > bottom) bottom = cb;
         return bottom;
     }
 
@@ -263,7 +305,7 @@ final class ClockCollapse {
      */
     static float contentBottomDrawn() {
         View g = firstTarget();
-        RectF box = Main.glyphBox(true);
+        RectF box = ClockViews.glyphBox(true);
         if (g == null || box == null || box.height() <= 0f) return Float.NaN;
         float bottom = drawnY(g, box.centerX(), box.bottom);
         Live m = LIVE;
@@ -271,6 +313,12 @@ final class ClockCollapse {
             Sig s = m.sig[i];
             if (s.v == null || !s.v.isShown()) continue;
             float b = drawnY(s.v, s.v.getWidth() / 2f, s.v.getHeight());
+            if (b > bottom) bottom = b;
+        }
+        for (int i = 0; i < m.compN; i++) {
+            Comp c = m.comp[i];
+            if (c.v == null || !c.v.isShown()) continue;
+            float b = drawnY(c.v, c.v.getWidth() / 2f, c.v.getHeight());
             if (b > bottom) bottom = b;
         }
         return bottom;
@@ -288,7 +336,7 @@ final class ClockCollapse {
      * clock's ANCESTORS, which are the OEM's and already this frame's, rather than read off the
      * clock's own transform, which this frame's pre-draw may not have written yet.
      */
-    static float contentBottomFor(View v) {
+    public static float contentBottomFor(View v) {
         float pose = contentBottomOnScreen();
         if (Float.isNaN(pose)) return Float.NaN;
         View g = firstTarget();
@@ -299,7 +347,7 @@ final class ClockCollapse {
     }
 
     /** A drawn screen y taken into v's unzoomed frame; see contentBottomFor. */
-    static float unzoomY(View v, float screenY) {
+    public static float unzoomY(View v, float screenY) {
         if (v == null || Float.isNaN(screenY)) return screenY;
         float k = chainScaleY(v);
         if (k <= 0f) return screenY;
@@ -327,19 +375,40 @@ final class ClockCollapse {
         return pt[1] + LOC[1];
     }
 
-    static Phase phase() {
+    public static Phase phase() {
         return sPhase;
     }
 
-    /** Whether this doze is keeping the cover's clock - for Main.holdAodColour(). */
-    static boolean aodHeld() {
+    /** Whether this doze is keeping the cover's clock - for AodColour.holdAodColour(). */
+    public static boolean aodHeld() {
         return sAodHeld;
     }
 
-    /** Whether this doze is the full-screen one - for Main.holdAodColour(). */
+    /** Whether this doze is the full-screen one - for AodColour.holdAodColour(). */
     static boolean aodFullScreen() {
         return sAodFullScreen;
     }
+
+    /**
+     * The glyphs redrawn when the scale has moved far enough that their glass edge would show it.
+     *
+     * The edge's width reaches the shader from TimeView.onDraw, scaled there to what the glyph is
+     * drawn at (ClockGlass.armMiGlassGuard, #39) - but a scale set on the time_group is a RenderNode
+     * property and redraws nothing under it, so a clock that settled without one more draw kept
+     * the edge it last drew with. A few percent of scale is not visible in the edge; per frame it
+     * would be three glyph paths rebuilt for nothing.
+     */
+    private static void glassFollowsScale(View g, float scale) {
+        Float last = sGlassScale.get(g);
+        float was = last == null ? 1f : last;
+        if (Math.abs(scale - was) <= 0.03f * Math.max(scale, was)) return;
+        sGlassScale.put(g, scale);
+        ClockGlass.invalidateGlass(g);
+    }
+
+    /** The scale each time_group's glyphs last redrew their glass at. A tag key would be this
+     * module's resource id inside SystemUI's tree, where it could be one of SystemUI's own. */
+    private static final java.util.Map<View, Float> sGlassScale = new java.util.WeakHashMap<>();
 
     /** Anything of ours on the clock that belongs to the lock screen being up. */
     static boolean active() {
@@ -392,7 +461,7 @@ final class ClockCollapse {
             sT = 1f;
             sTv = 0f;
             hold(targetY(floor, natural));
-            Main.setCardProgressFrom(1f);
+            MediaCard.setCardProgressFrom(1f);
             sGlassP = 1f;
             invalidate();
             Xp.log(TAG + "clock: cover look on (floor y=" + Main.r1(floor) + ")");
@@ -413,7 +482,13 @@ final class ClockCollapse {
                 sDateAnchorView = LIVE.date;
             }
         }
-        sCardFrom = wake ? 1f : Main.cardProgress();
+        // Where the face stands across: a doze that held the cover's pose was showing it centred
+        // already, and a re-entry mid-flight starts from wherever the last one left it. Starting
+        // every entry from the OEM's own x put the clock back at the side for one frame and flew
+        // it to the middle on every wake.
+        sCenterFrom = fromAod ? (sAodHeld ? 1f : 0f) : was == Phase.OFF ? 0f : sCenterK;
+        sCenterTo = 1f;
+        sCardFrom = wake ? 1f : MediaCard.cardProgress();
         sCardTo = 1f;
         sGlassFrom = sGlassP;
         sGlassTo = 1f;
@@ -445,7 +520,9 @@ final class ClockCollapse {
             return;
         }
         captureFrom();
-        sCardFrom = Main.cardProgress();
+        sCenterFrom = sCenterK;
+        sCenterTo = 0f;
+        sCardFrom = MediaCard.cardProgress();
         sCardTo = 0f;
         sGlassFrom = sGlassP;
         sGlassTo = 0f;
@@ -486,7 +563,22 @@ final class ClockCollapse {
         // once, and the transforms on the views still describe the old one - reading after would
         // start the spring from a clock several times the size of the one on screen.
         boolean flying = (sPhase == Phase.ENTER || sPhase == Phase.ON) && Main.sContainer != null;
-        if (flying) captureFrom();
+        boolean fromDrawn = false;
+        if (flying) {
+            // What our own last pre-draw put on the clock IS the pose on screen; measuring it
+            // again here can come back empty when the keyguard is not drawing (unlocked, being
+            // re-shown) - it did, and the doze showed the OEM's full clock. See sDrawnTop.
+            // The measurement stays as the fallback for a process that has not placed a frame.
+            if (!Float.isNaN(sDrawnTop)) {
+                sFromTop = sDrawnTop;
+                sFromUnit = sDrawnUnit;
+                sFromDate = sDrawnDate;
+                fromDrawn = true;
+            } else {
+                captureFrom();
+            }
+            sAodPoseWarned = false;
+        }
         Float held = Main.sHoldY;
         // Kept for a held doze to put back on, one frame later - see sAodHoldY. ONLY when there
         // is one: the screen falling asleep calls this twice (KeyguardService's sleep hook, then
@@ -549,7 +641,7 @@ final class ClockCollapse {
             // The colour too: a held doze is showing the lock screen's clock, so it holds the
             // lock screen's glass instead of the doze's neutral. Read here because this is the
             // last moment it is still the lock screen's - the doze inks its own over it.
-            Main.captureAodGlass();
+            ClockGlass.captureAodGlass();
             stopFrame();
             sT = 1f;
             sTv = 0f;
@@ -559,12 +651,15 @@ final class ClockCollapse {
             install();
             Xp.log(TAG + "clock: into the AOD holding the cover pose (top="
                     + Main.r1(sFromTop) + " unit=" + Main.r1(sFromUnit)
-                    + " date=" + Main.r1(sFromDate) + ")");
+                    + " date=" + Main.r1(sFromDate)
+                    + " from=" + (fromDrawn ? "drawn" : "measured") + ")");
             return;
         }
         sAodHeld = false;
         sDozeSettleUnit = Float.NaN;
-        sCardFrom = Main.cardProgress();
+        sCenterFrom = sCenterK;
+        sCenterTo = 0f;
+        sCardFrom = MediaCard.cardProgress();
         sCardTo = sCardFrom;
         sGlassFrom = sGlassP;
         sGlassTo = 0f;
@@ -580,7 +675,7 @@ final class ClockCollapse {
         Xp.log(TAG + "clock: into the AOD");
         final Choreographer.FrameCallback flight = sFrame;
         View c = Main.sContainer;
-        c.postDelayed(new Runnable() {
+        Gen.postDelayedOn(c, new Runnable() {
             @Override
             public void run() {
                 if (sPhase == Phase.EXIT && sExitToAod && sFrame == flight) {
@@ -828,13 +923,21 @@ final class ClockCollapse {
 
     /**
      * Where the clock goes out of the cover: the OEM's y, given the room the rows really leave
-     * (Main.roomForRows). The OEM's own figure keeps room for one big notification whatever is
+     * (ClockRoom.roomForRows). The OEM's own figure keeps room for one big notification whatever is
      * there, so the exit landed on a squeezed clock and it grew again once let go - out of the
      * music card into a focus notification, the clock shrank and came back (2026-09-26).
      */
     private static float exitY(float natural) {
         // At once: the exit eases toward it on its own (0.25 of the way a frame).
-        return Float.isNaN(natural) ? natural : Main.roomForRowsNow(natural);
+        if (Float.isNaN(natural)) return natural;
+        float y = ClockRoom.roomForRowsNow(natural);
+        // "No notifications" is MAX_VALUE, which is not a y to walk to: aim at the clear boundary
+        // the walk can reach, and the hand-back's next emission gives the OEM the real thing.
+        if (y >= Float.MAX_VALUE / 2f) {
+            float clear = ClockRoom.unobstructedClockY();
+            return Float.isNaN(clear) ? natural : clear;
+        }
+        return y;
     }
 
     /** The share of the way to a moved exit end taken each frame. */
@@ -870,7 +973,7 @@ final class ClockCollapse {
      * is always right for it.
      */
     private static float wantedOemHeight(float max) {
-        float s = Main.sClockSize;
+        float s = Settings.CLOCK_SIZE.get();
         return Float.isNaN(s) || !(max > 0f) ? Float.NaN : s * max;
     }
 
@@ -1168,6 +1271,12 @@ final class ClockCollapse {
     private static void noteNaturalUnit(float unit) {
         String style = styleKey();
         if (style == null || !(unit > 0f)) return;
+        // The reference the other styles are sized against, by the same largest-seen rule.
+        if (LIVE.anchored && (!style.equals(sRefStyle) || !(unit < sRefNatural + 0.5f))) {
+            sRefStyle = style;
+            sRefNatural = unit;
+            ModuleState.saveState();
+        }
         // The largest seen: an entry can catch the OEM's clock still giving way to a notification,
         // and that is a smaller clock, never a larger one.
         if (style.equals(sFullStyle) && unit < sFullNatural + 0.5f) return;
@@ -1175,7 +1284,7 @@ final class ClockCollapse {
                 + " (was " + Main.r1(sFullNatural) + " for " + sFullStyle + ")");
         sFullStyle = style;
         sFullNatural = unit;
-        Main.saveState();
+        ModuleState.saveState();
     }
 
     /** For the state file: "style|unit", or null. */
@@ -1202,6 +1311,49 @@ final class ClockCollapse {
             return sFullNatural / unitNow;
         }
         return oemGrowth();
+    }
+
+    /**
+     * The full clock of the anchored styles (all_in_one), which the size setting is read against
+     * on every OTHER style.
+     *
+     * A fraction of each style's own full clock is a different clock on each: magazine C's whole
+     * clock is 339px where all_in_one's is ~750, so the same 9% came out at 30px - a clock too
+     * small to read - and the oriental styles were smaller still. The setting is "how big the
+     * small clock is", and that should not change with the face. Kept apart from sFullNatural,
+     * which is per style and is overwritten the moment another style is entered.
+     */
+    private static volatile float sRefNatural = Float.NaN;
+    private static volatile String sRefStyle;
+
+    /** Until all_in_one has been measured once: its full clock as a share of the screen height
+     * (~750px of 2608 on the phone this was measured on). */
+    private static final float REF_SCREEN_SHARE = 0.287f;
+
+    static float refUnitState() {
+        return sRefNatural;
+    }
+
+    static void restoreRefUnit(float v) {
+        if (v > 0f) sRefNatural = v;
+    }
+
+    private static float refUnit() {
+        if (sRefNatural > 0f) return sRefNatural;
+        View c = Main.sContainer;
+        return c == null ? Float.NaN
+                : REF_SCREEN_SHARE * c.getResources().getDisplayMetrics().heightPixels;
+    }
+
+    /**
+     * The unit the size setting is a fraction of. The style's own full clock on the anchored
+     * styles; the anchored styles' on every other, so the small clock comes out the same size
+     * whatever the face - never larger than the style's own full clock, though.
+     */
+    private static float sizeBase(Live m, float full) {
+        if (m.anchored) return full;
+        float ref = refUnit();
+        return ref > 0f ? ref : full;
     }
 
     private static float fullUnitFor(Phase phase, Live m) {
@@ -1298,7 +1450,7 @@ final class ClockCollapse {
         final float gk = gw0 * gw0;
         final float gDamp = 2f * gw0;
         final float zeta = Main.EASE_COVER[0];
-        final float response = Main.sClockResponse;
+        final float response = Settings.SPRING.get();
         final float w0 = (float) (2 * Math.PI / response);
         final float k = w0 * w0;
         final float damp = 2f * zeta * w0;
@@ -1401,21 +1553,21 @@ final class ClockCollapse {
                 }
                 invalidate();
                 if (!done) {
-                    Choreographer.getInstance().postFrameCallback(this);
+                    Gen.frame(this);
                     return;
                 }
                 sFrame = null;
                 land();
             } finally { android.os.Trace.endSection(); } }
         };
-        Choreographer.getInstance().postFrameCallback(sFrame);
+        Gen.frame(sFrame);
         invalidate();
     }
 
     private static void stopFrame() {
         Choreographer.FrameCallback f = sFrame;
         sFrame = null;
-        if (f != null) Choreographer.getInstance().removeFrameCallback(f);
+        if (f != null) Gen.unframe(f);
     }
 
     private static void land() {
@@ -1436,7 +1588,7 @@ final class ClockCollapse {
                 sPhase = Phase.AOD;
                 clearAodPend();
                 clearTransforms();
-                Main.restoreGlass();
+                ClockGlass.restoreGlass();
                 Xp.log(TAG + "clock: in the AOD");
             } else {
                 releaseNow("exit landed");
@@ -1462,6 +1614,10 @@ final class ClockCollapse {
         sTv = 0f;
         sFromTop = Float.NaN;
         sAodTop = Float.NaN;
+        // The pose an old session put on the clock is not this session's: a cover that comes
+        // back must record its own before toAod() may hold it.
+        sDrawnTop = sDrawnUnit = sDrawnDate = Float.NaN;
+        sAodPoseWarned = false;
         clearAodPend();
         sGlassP = 0f;
         uninstall();
@@ -1472,10 +1628,24 @@ final class ClockCollapse {
         // roomForRows, and the raw figure squeezed the clock the exit had just landed full.
         float natural = exitY(naturalY());
         if (held != null && !Float.isNaN(natural)) Main.applyY(natural);
-        Main.restoreGlass();
+        // The cover no longer asks for the notification layout; the rows decide again.
+        NotifPresence.recheck(true);
+        ClockGlass.restoreGlass();
+        // The unlock path lands here without an exit frame, so the wallpaper dim has to be
+        // let go explicitly - it is a value in the wallpaper process, not a view that goes
+        // away with the keyguard. Its own call: a failure here must not cost the release.
+        try {
+            KeepDim.apply(0f);
+        } catch (Throwable t) {
+            Xp.w(TAG + "keep-dim release failed: " + t);
+        }
         Main.onClockReleased();
         if (was) Xp.log(TAG + "clock: released (" + why + ")");
     }
+
+    /** The dates placeClock has moved since the clock was last given back. Weak: views go. */
+    private static final java.util.Set<View> MOVED_DATES =
+            java.util.Collections.newSetFromMap(new java.util.WeakHashMap<>());
 
     private static void clearTransforms() {
         for (View root : Main.clockRoots()) {
@@ -1483,13 +1653,27 @@ final class ClockCollapse {
             if (g == null) continue;
             if (g.getScaleX() != 1f) g.setScaleX(1f);
             if (g.getScaleY() != 1f) g.setScaleY(1f);
+            // The scale is a RenderNode property: without a redraw the full-size clock kept the
+            // narrow glass edge it last drew while collapsed, and sGlassScale still holding that
+            // scale let the next collapse skip the redraw it needed.
+            glassFollowsScale(g, 1f);
             if (g.getTranslationY() != 0f) g.setTranslationY(0f);
+            if (g.getTranslationX() != 0f) g.setTranslationX(0f);
         }
-        View date = Main.sDateView;
+        View date = ClockViews.sDateView;
         if (date != null && date.getTranslationY() != 0f) date.setTranslationY(0f);
-        for (View v : Main.signatureViews()) {
+        if (date != null && date.getTranslationX() != 0f) date.setTranslationX(0f);
+        // Every date this moved, not only the one looked up now: the lookup can come back with
+        // nothing by the end of the way out - 保留壁纸, its lyrics gone with the player - and
+        // the date it had moved stayed 213px up over the big clock (2026-10-14).
+        for (View d : MOVED_DATES) {
+            if (d.getTranslationY() != 0f) d.setTranslationY(0f);
+        }
+        MOVED_DATES.clear();
+        for (View v : ClockViews.signatureViews()) {
             if (v.getTranslationY() != 0f) v.setTranslationY(0f);
         }
+        clearCompanions();
     }
 
     // ------------------------------------------------------------------ per frame
@@ -1499,7 +1683,7 @@ final class ClockCollapse {
         if (v == null || sGuarded == v) return;
         uninstall();
         try {
-            v.getViewTreeObserver().addOnPreDrawListener(PRE_DRAW);
+            Gen.preDraw(v, PRE_DRAW);
             sGuarded = v;
         } catch (Throwable t) {
             Xp.log(TAG + "clock: pre-draw not installed: " + t);
@@ -1511,7 +1695,7 @@ final class ClockCollapse {
         sGuarded = null;
         if (v == null) return;
         try {
-            v.getViewTreeObserver().removeOnPreDrawListener(PRE_DRAW);
+            Gen.unpreDraw(v, PRE_DRAW);
         } catch (Throwable ignored) {
         }
     }
@@ -1522,7 +1706,7 @@ final class ClockCollapse {
     }
 
     private static void prepareGlass() {
-        Main.armGlassMorph();
+        ClockGlass.armGlassMorph();
     }
 
     private static final ViewTreeObserver.OnPreDrawListener PRE_DRAW =
@@ -1533,7 +1717,7 @@ final class ClockCollapse {
             try {
                 frame();
             } catch (Throwable t) {
-                Xp.log(TAG + "clock: frame failed: " + t);
+                Xp.w(TAG + "clock: frame failed: " + t);
             }
             if (sFrame != null) {
                 long d = System.nanoTime() - t0;
@@ -1589,7 +1773,7 @@ final class ClockCollapse {
         try {
             frame();
         } catch (Throwable t) {
-            Xp.log(TAG + "clock: re-place failed: " + t);
+            Xp.w(TAG + "clock: re-place failed: " + t);
         } finally {
             sRedoing = false;
         }
@@ -1606,7 +1790,46 @@ final class ClockCollapse {
         boolean anchored;
         Sig[] sig;
         int sigN;
+        /** What else the clock face shows, on a style that is not anchored. See companions(). */
+        Comp[] comp;
+        int compN;
+        /** Some companion shares the clock's row: the row moves as one scaled piece. */
+        boolean row;
     }
+
+    /**
+     * One piece of a clock face that is not the time - a date, a weekday - on a style that is not
+     * anchored, as the OEM laid it out this frame (screen pixels, its own transform excluded).
+     */
+    private static final class Comp {
+        View v;
+        float left, top, w, h;
+        /** Its ink inside the view: top, bottom, horizontal middle, in the view's own pixels. */
+        float inkT, inkB, inkCx;
+        /** BESIDE the time on its row, or under or over it. */
+        int kind;
+        /** This frame's placement: the scale and the screen y of the ink top. */
+        float s, y;
+    }
+
+    private static final int BESIDE = 0, BELOW = 1, ABOVE = 2;
+
+    private static final Comp[] COMPS = {new Comp(), new Comp(), new Comp(), new Comp(),
+            new Comp(), new Comp()};
+
+    /** Every view a companion transform was written to, so a release can take them all back. */
+    private static final java.util.WeakHashMap<View, Boolean> sCompTouched =
+            new java.util.WeakHashMap<>();
+
+    /**
+     * ViewGroups whose clipping was turned off for a moved piece, with what it was: bit 0 for
+     * clipChildren, bit 1 for clipToPadding.
+     */
+    private static final java.util.WeakHashMap<android.view.ViewGroup, Integer> sUnclipped =
+            new java.util.WeakHashMap<>();
+
+    /** The bottom of the lowest companion as placed, in screen pixels, or NaN. */
+    private static volatile float sCompBottom = Float.NaN;
 
     /**
      * The signature bar under the clock, as the OEM laid it out this frame.
@@ -1622,10 +1845,43 @@ final class ClockCollapse {
         float gap;
     }
 
-    /** Two clock trees, so at most two bars. Reused, never reallocated per frame. */
-    private static final Sig[] SIGS = {new Sig(), new Sig()};
+    /** Two clock trees, so at most two bars, and a carried date. Reused, never reallocated. */
+    private static final Sig[] SIGS = {new Sig(), new Sig(), new Sig()};
 
     private static final Live LIVE = new Live();
+
+    /** How far a not-anchored style is taken to the middle of the screen, 0..1. */
+    private static float sCenterK = 1f;
+    /** Where the transition running now takes sCenterK from and to. */
+    private static float sCenterFrom = 0f, sCenterTo = 1f;
+
+    /** parentTop's twin across: v's parent's origin x, our own transforms above it excluded. */
+    private static float parentLeft(View v) {
+        if (!(v.getParent() instanceof View)) return 0f;
+        float x = 0f;
+        View p = (View) v.getParent();
+        while (p.getParent() instanceof View) {
+            View pp = (View) p.getParent();
+            x += p.getLeft() + p.getTranslationX() - pp.getScrollX();
+            p = pp;
+        }
+        p.getLocationOnScreen(LOC);
+        return x + LOC[0];
+    }
+
+    private static float screenMidX() {
+        View c = Main.sContainer;
+        return c == null ? Float.NaN : c.getResources().getDisplayMetrics().widthPixels / 2f;
+    }
+
+    /** The middle of what a date view inks, in its own x: the text's, not the view's box. */
+    private static float inkMidX(View v) {
+        if (v instanceof android.widget.TextView) {
+            RectF r = ClockViews.textInkBox((android.widget.TextView) v);
+            if (r != null) return r.centerX();
+        }
+        return v.getWidth() / 2f;
+    }
 
     /**
      * Where v's parent's origin would be on screen with every scale above it at 1 - translations
@@ -1694,13 +1950,13 @@ final class ClockCollapse {
     private static boolean measure(Live m) {
         View g = firstTarget();
         if (g == null) return false;
-        RectF box = Main.glyphBox(true);
+        RectF box = ClockViews.glyphBox(true);
         if (box == null || box.height() <= 0f) return false;
         m.box = box;
-        m.unit = Main.glyphUnit(box);
+        m.unit = ClockViews.glyphUnit(box);
         m.inkTop = parentTop(g) + g.getTop() + box.top;
-        m.anchored = Main.anchoredStyle();
-        View date = Main.visibleDate();
+        m.anchored = ClockViews.anchoredStyle();
+        View date = ClockViews.visibleDate();
         Main.noteDateView(date);
         m.date = date;
         if (date != null) {
@@ -1710,6 +1966,7 @@ final class ClockCollapse {
             m.dateTop = Float.NaN;
             m.dateH = 0f;
         }
+        companions(m, g);
         // The signature bar, on the styles that have one. Its distance below the clock's ink is
         // read off where the OEM put it, so it is the OEM's own measure whatever we have done to
         // the clock in the meantime. An empty bar is not carried: it is invisible, and the lock
@@ -1717,15 +1974,257 @@ final class ClockCollapse {
         m.sig = SIGS;
         m.sigN = 0;
         for (Sig s : SIGS) s.v = null;
-        for (View v : Main.signatureViews()) {
+        for (View v : ClockViews.signatureViews()) {
             if (m.sigN >= SIGS.length) break;
-            if (!Main.signatureShows(v)) continue;
+            if (!ClockViews.signatureShows(v)) continue;
             Sig s = SIGS[m.sigN++];
             s.v = v;
             s.top = parentTop(v) + v.getTop();
             s.gap = s.top - (m.inkTop + box.height());
         }
         return !(m.anchored && date == null);
+    }
+
+    /**
+     * The rest of the clock face on a style that is not anchored: every visible leaf of the clock
+     * trees outside the time itself - its date, its weekday - and where each sits against the time.
+     *
+     * Not just the date. Magazine B draws "16:46  10/14  WED" as three TextViews on one row, and
+     * moving the time and the date left the weekday standing on its own at the right of the
+     * screen. ColorOS treats the face the same way: its magazine clock's immersed scene moves the
+     * time zone, the local time and the date together.
+     *
+     * Read off the OEM's layout every frame, so a style that swaps its layout under us (magazine
+     * C moves its date from under the digits to beside them as the media card changes) is simply
+     * read again. Pieces the OEM has faded out - magazine C's big weekday and date, alpha 0 in its
+     * notification layout - are left alone.
+     */
+    private static void companions(Live m, View g) {
+        m.comp = COMPS;
+        m.compN = 0;
+        m.row = false;
+        for (Comp c : COMPS) c.v = null;
+        if (m.anchored) return;
+        float inkT = m.inkTop, inkB = m.inkTop + m.box.height();
+        for (View root : Main.clockRoots()) collectComps(m, root, g, inkT, inkB);
+        for (int i = 0; i < m.compN; i++) if (COMPS[i].kind == BESIDE) m.row = true;
+    }
+
+    private static void collectComps(Live m, View v, View target, float inkT, float inkB) {
+        if (m.compN >= COMPS.length || v == null || v == target) return;
+        if (v.getVisibility() != View.VISIBLE || v.getAlpha() <= 0.01f) return;
+        if (v instanceof android.view.ViewGroup) {
+            android.view.ViewGroup vg = (android.view.ViewGroup) v;
+            // The target's own ancestors are walked through; nothing inside the target is a
+            // companion, it is the time.
+            for (int i = 0; i < vg.getChildCount(); i++) {
+                collectComps(m, vg.getChildAt(i), target, inkT, inkB);
+            }
+            return;
+        }
+        if (v.getWidth() <= 0 || v.getHeight() <= 0) return;
+        boolean draws = v instanceof android.widget.TextView
+                ? ((android.widget.TextView) v).length() > 0
+                : v instanceof android.widget.ImageView
+                        && ((android.widget.ImageView) v).getDrawable() != null;
+        if (!draws) return;
+        Comp c = COMPS[m.compN++];
+        c.v = v;
+        c.left = parentLeft(v) + v.getLeft();
+        c.top = parentTop(v) + v.getTop();
+        c.w = v.getWidth();
+        c.h = v.getHeight();
+        // Its ink, for a text: a 117px line box around 80px digits would otherwise read as
+        // reaching above and below the time on the same row.
+        c.inkT = 0f;
+        c.inkB = c.h;
+        c.inkCx = c.w / 2f;
+        if (v instanceof android.widget.TextView) {
+            RectF r = ClockViews.textInkBox((android.widget.TextView) v);
+            if (r != null) {
+                c.inkT = r.top;
+                c.inkB = r.bottom;
+                c.inkCx = r.centerX();
+            }
+        }
+        float t = c.top + c.inkT, b = c.top + c.inkB;
+        // On the row when its middle is in the middle half of the time's ink. Not "overlaps it
+        // by half": the rhombus face sets its date line so close over its digits that the two
+        // boxes overlap that much, and it read as one row.
+        float mid = (t + b) / 2f, quarter = (inkB - inkT) / 4f;
+        if (mid >= inkT + quarter && mid <= inkB - quarter) c.kind = BESIDE;
+        else c.kind = mid >= (inkT + inkB) / 2f ? BELOW : ABOVE;
+    }
+
+    /**
+     * Turns off clipping between a moved piece and its clock tree, remembering what it was.
+     *
+     * Both kinds. Magazine B's row moved up to the date line came out with the top half of every
+     * glyph missing, along one straight line, with clipChildren already off everywhere above it:
+     * a ViewGroup also clips to its PADDING, on its own flag, and the clock roots keep a top
+     * padding to hold the face below the status bar.
+     */
+    private static void unclip(View v) {
+        for (android.view.ViewParent p = v.getParent(); p instanceof android.view.ViewGroup;
+             p = p.getParent()) {
+            android.view.ViewGroup vg = (android.view.ViewGroup) p;
+            if (!sUnclipped.containsKey(vg)) {
+                sUnclipped.put(vg, (vg.getClipChildren() ? 1 : 0) | (vg.getClipToPadding() ? 2 : 0));
+                if (vg.getClipChildren()) vg.setClipChildren(false);
+                if (vg.getClipToPadding()) vg.setClipToPadding(false);
+            }
+            if (vg == Main.sContainer) break;
+        }
+    }
+
+    /** The smallest a companion's ink is shrunk to, in dp: a date has to stay readable. */
+    private static final float MIN_COMP_INK_DP = 12f;
+
+    private static final Comp[] ORDER = new Comp[COMPS.length];
+
+    /**
+     * Lays the face out around the time's ink, placed with its top at inkTop and drawn at scale:
+     * fills each companion's s and y.
+     *
+     * The OEM's arrangement, scaled with the clock. A piece on the time's row scales exactly with
+     * it, so the row stays a row. A piece above or below scales too - magazine A's 128px date over
+     * a clock taken down to 0.56 was larger than the time itself - but its ink is not taken under
+     * MIN_COMP_INK_DP, and the pieces are stacked outward from the time in the OEM's order, each
+     * gap scaled, so one held at its floor does not run into the next.
+     */
+    private static void layoutCompanions(Live m, float inkTop, float scale) {
+        float d = Main.density();
+        float inkTopOem = m.inkTop, inkBotOem = m.inkTop + m.box.height();
+        float inkBot = inkTop + m.box.height() * scale;
+        for (int pass = 0; pass < 2; pass++) {
+            int want = pass == 0 ? BELOW : ABOVE;
+            int n = 0;
+            for (int i = 0; i < m.compN; i++) if (m.comp[i].kind == want) ORDER[n++] = m.comp[i];
+            // Outward from the time: nearest first.
+            for (int i = 1; i < n; i++) {
+                Comp c = ORDER[i];
+                int j = i - 1;
+                while (j >= 0 && (want == BELOW ? ORDER[j].top > c.top : ORDER[j].top < c.top)) {
+                    ORDER[j + 1] = ORDER[j];
+                    j--;
+                }
+                ORDER[j + 1] = c;
+            }
+            float edgeOem = want == BELOW ? inkBotOem : inkTopOem;
+            float edge = want == BELOW ? inkBot : inkTop;
+            for (int i = 0; i < n; i++) {
+                Comp c = ORDER[i];
+                float ink = c.inkB - c.inkT;
+                float floor = Math.min(1f, ink > 0f ? MIN_COMP_INK_DP * d / ink : 1f);
+                c.s = Math.max(scale, floor);
+                if (want == BELOW) {
+                    float gap = gapFor((c.top + c.inkT) - edgeOem, scale, d);
+                    c.y = edge + gap;
+                    edge = c.y + ink * c.s;
+                    edgeOem = c.top + c.inkB;
+                } else {
+                    float gap = gapFor(edgeOem - (c.top + c.inkB), scale, d);
+                    c.y = edge - gap - ink * c.s;
+                    edge = c.y;
+                    edgeOem = c.top + c.inkT;
+                }
+            }
+        }
+        for (int i = 0; i < m.compN; i++) {
+            Comp c = m.comp[i];
+            if (c.kind != BESIDE) continue;
+            c.s = scale;
+            c.y = inkTop - (inkTopOem - (c.top + c.inkT)) * scale;
+        }
+    }
+
+    /** The most air left between two stacked pieces of a small face, in dp. */
+    private static final float MAX_COMP_GAP_DP = 12f;
+
+    /**
+     * An OEM gap between two stacked pieces, at the face's scale - but never more than
+     * MAX_COMP_GAP_DP once the face is small. Oriental B leaves 340px between its date and its
+     * digits, art direction for a full-screen face; scaled with a clock taken to half it still
+     * hung the time 170px under the date. Faded in with the scale, so at full size the OEM's gap
+     * is the OEM's gap and the hand-back lands where it should.
+     */
+    private static float gapFor(float gapOem, float scale, float d) {
+        // Never closer than touching once small: a negative OEM gap is a line box reaching over
+        // the digits (rhombus), not ink meant to overlap, and pieces held at their floor would
+        // collide. Both limits fade in with the shrink, so at full size the gap is the OEM's own.
+        float g = gapOem * scale;
+        float want = Math.max(0f, Math.min(g, MAX_COMP_GAP_DP * d));
+        float shrink = Math.max(0f, Math.min(1f, (1f - scale) / 0.25f));
+        return g + (want - g) * shrink;
+    }
+
+    /** How far above the time's ink the face reaches once placed at scale s. */
+    private static float leadAbove(Live m, float s) {
+        layoutCompanions(m, 0f, s);
+        float lead = 0f;
+        for (int i = 0; i < m.compN; i++) lead = Math.max(lead, -m.comp[i].y);
+        return lead;
+    }
+
+    /** The row's placed left edge and its OEM left edge, from writePose's clock pass. */
+    private static float sRowX, sRowL;
+
+    /**
+     * Puts the face's other pieces where the clock now is - see layoutCompanions - each scaled
+     * about its own top-left. A piece on the time's row moves with the row; one above or below is
+     * centred on its own ink.
+     */
+    private static void placeCompanions(Live m, float top, float scale, float k, float midX) {
+        layoutCompanions(m, top, scale);
+        float bottom = Float.NaN;
+        for (int i = 0; i < m.compN; i++) {
+            Comp c = m.comp[i];
+            View v = c.v;
+            if (v == null) continue;
+            sCompTouched.put(v, Boolean.TRUE);
+            unclip(v);
+            float s = c.s;
+            float x;
+            if (c.kind == BESIDE && m.row) {
+                x = sRowX + (c.left - sRowL) * scale;
+            } else {
+                x = c.left;
+                float centred = midX - c.inkCx * s;
+                if (k > 0f && !Float.isNaN(midX)) x += (centred - c.left) * k;
+            }
+            float y = c.y - c.inkT * s;
+            if (v.getPivotX() != 0f) v.setPivotX(0f);
+            if (v.getPivotY() != 0f) v.setPivotY(0f);
+            if (v.getScaleX() != s) v.setScaleX(s);
+            if (v.getScaleY() != s) v.setScaleY(s);
+            float tx = x - c.left, ty = y - c.top;
+            if (Math.abs(v.getTranslationX() - tx) >= 0.25f) v.setTranslationX(tx);
+            if (Math.abs(v.getTranslationY() - ty) >= 0.25f) v.setTranslationY(ty);
+            float b = c.y + (c.inkB - c.inkT) * s;
+            if (Float.isNaN(bottom) || b > bottom) bottom = b;
+        }
+        sCompBottom = bottom;
+    }
+
+    /** Puts back everything companions and unclip() changed. */
+    private static void clearCompanions() {
+        for (View v : sCompTouched.keySet()) {
+            if (v == null) continue;
+            v.setTranslationX(0f);
+            v.setTranslationY(0f);
+            v.setScaleX(1f);
+            v.setScaleY(1f);
+            v.resetPivot();
+        }
+        sCompTouched.clear();
+        for (java.util.Map.Entry<android.view.ViewGroup, Integer> e : sUnclipped.entrySet()) {
+            android.view.ViewGroup vg = e.getKey();
+            if (vg == null) continue;
+            if ((e.getValue() & 1) != 0) vg.setClipChildren(true);
+            if ((e.getValue() & 2) != 0) vg.setClipToPadding(true);
+        }
+        sUnclipped.clear();
+        sCompBottom = Float.NaN;
     }
 
     /** For MotionTrace: the last frame's glyphs and the two springs, as drawn on screen. */
@@ -1744,7 +2243,9 @@ final class ClockCollapse {
     private static void captureFrom() {
         Live m = LIVE;
         if (!measure(m)) {
-            sFromTop = Float.NaN;
+            // All three, not just the top: a failed capture used to leave the previous unit and
+            // date in place, and "top=NaN unit=75.0 date=238.4" is neither one pose nor none.
+            sFromTop = sFromUnit = sFromDate = Float.NaN;
             return;
         }
         View g = firstTarget();
@@ -1760,6 +2261,9 @@ final class ClockCollapse {
     private static void frame() {
         Phase phase = sPhase;
         if (phase == Phase.OFF) return;
+        // The cover holds the y, so the room is not asked while it is up: the yes/no the faces
+        // are told is checked from here instead (NotifPresence).
+        NotifPresence.recheck();
         Live m = LIVE;
         boolean measured;
         android.os.Trace.beginSection("MC c.measure");
@@ -1784,7 +2288,8 @@ final class ClockCollapse {
                 // lock screen's timeWidth/timeHeight, AnimationHelper re-runs the whole AOD
                 // animation once a minute, and both move the box this maps from. The transforms
                 // themselves survive all of it - nothing in the full-AOD path writes time_group.
-                Main.holdAodColour();
+                AodColour.holdAodColour();
+                sCenterK = 1f;
                 // Back on the lock screen's squeeze, so the OEM draws its glyphs in the face the
                 // lock screen was showing rather than the doze's own - see sAodHoldY. Cheap: hold()
                 // only reaches the OEM when the value is news, so this is one notifStateChange.
@@ -1796,6 +2301,25 @@ final class ClockCollapse {
                 sAodTop = sFromTop;
                 sAodUnit = sFromUnit;
                 sAodDate = sFromDate;
+                return;
+            } else if (sAodHeld) {
+                // A held doze whose pose went missing. Do NOT fall through to the hand-back
+                // below: clearTransforms() is exactly what gives the OEM its full-size clock
+                // back, which is the bug this branch exists to prevent. The transforms survived
+                // the hand-over and still describe the cover's clock, so they are kept; the y
+                // they were written against goes back on the OEM so its own relayout does not
+                // move them. sAodTop is cleared so the wake captures a fresh pose instead of
+                // starting from a doze pose that was never recorded.
+                AodColour.holdAodColour();
+                sCenterK = 1f;
+                if (!Float.isNaN(sAodHoldY)) hold(sAodHoldY);
+                sAodTop = Float.NaN;
+                sAodUnit = Float.NaN;
+                sAodDate = Float.NaN;
+                if (!sAodPoseWarned) {
+                    sAodPoseWarned = true;
+                    Xp.w(TAG + "clock: held doze has no pose, keeping the cover's transforms");
+                }
                 return;
             } else {
                 // The OEM's clock as it is. What it looks like here is the wake's start.
@@ -1835,7 +2359,7 @@ final class ClockCollapse {
                 }
                 sAodPendTop = m.inkTop;
                 sAodPendUnit = m.unit;
-                Main.holdAodColour();
+                AodColour.holdAodColour();
                 return;
             }
         }
@@ -1861,19 +2385,26 @@ final class ClockCollapse {
         float full;
         android.os.Trace.beginSection("MC c.full");
         try { full = fullUnitFor(phase, m); } finally { android.os.Trace.endSection(); }
-        float size = Main.sClockSize;
-        float coverUnit = Float.isNaN(size) ? Main.sClockHeightDp * d : size * full;
+        float size = Settings.CLOCK_SIZE.get();
+        float base = sizeBase(m, full);
+        float coverUnit = Float.isNaN(size) ? Settings.CLOCK_HEIGHT.get() * d : size * base;
         if (coverUnit > full) coverUnit = full;
-        if (coverUnit < Main.MIN_CLOCK_K * full) coverUnit = Main.MIN_CLOCK_K * full;
+        if (coverUnit < Main.MIN_CLOCK_K * base) coverUnit = Main.MIN_CLOCK_K * base;
         // The date and the clock move as one block.
-        float offset = Main.sClockOffsetDp * d;
+        float offset = Settings.CLOCK_OFFSET.get() * d;
         float coverDate, coverTop;
         if (m.anchored) {
             coverDate = coverDateY(m.date) + offset;
             coverTop = coverDate + m.dateH + Main.CLOCK_GAP_DP * d;
         } else {
-            coverDate = m.dateTop + offset;
-            coverTop = m.inkTop + offset;
+            // The whole face - the time and its companions, in the OEM's own arrangement - starts
+            // on the line the anchored styles put their date on. NOT where the OEM has the ink:
+            // these styles answer the held y with a plain translation of the whole clock - 716px
+            // up on magazine C - and taking that as the pose put the clock off the top of the
+            // screen. The companions are placed from the clock in writePose; here only how far
+            // the topmost of them reaches above the time's ink.
+            coverTop = coverDateY(null) + offset + leadAbove(m, coverUnit / m.unit);
+            coverDate = Float.NaN;
         }
 
         // Notifications. The OEM squeezes its full clock out of their way - down to its minimum
@@ -1955,8 +2486,20 @@ final class ClockCollapse {
             card = sCardFrom + (sCardTo - sCardFrom) * tCard;
             glass = sGlassFrom + (sGlassTo - sGlassFrom) * tc;
         }
+        // How far a style that is not anchored is taken to the middle - see writePose.
+        sCenterK = phase == Phase.ON ? 1f
+                : sCenterFrom + (sCenterTo - sCenterFrom) * Math.max(0f, Math.min(1f, sT));
 
         android.os.Trace.beginSection("MC c.write"); try { writePose(m, top, unit, date, phase == Phase.ENTER && sGlyphTail); } finally { android.os.Trace.endSection(); }
+        // The pose the lock screen is showing, for a sleep taken while it is not drawing. See
+        // sDrawnTop. Kept through a hidden keyguard on purpose: the transforms stay on the views
+        // and are still what the lock screen comes back to. An EXIT is on its way to the OEM's
+        // pose, so it is not "the cover's pose" and is not kept.
+        if (phase == Phase.ENTER || phase == Phase.ON) {
+            sDrawnTop = top;
+            sDrawnUnit = unit;
+            sDrawnDate = date;
+        }
         if (phase == Phase.ON) { android.os.Trace.beginSection("MC c.note"); try { notePose(m, top, unit, date, full, room); } finally { android.os.Trace.endSection(); } }
         // Once per drawn frame: onGlyphDrawn re-places from inside the draw, so this runs
         // three times a frame on this style and a trace that kept them all covered a third of
@@ -1972,9 +2515,9 @@ final class ClockCollapse {
             View gt = firstTarget();
             noteFall(m.unit, sLastToUnit, unit, gt == null ? 1f : aboveScaleY(gt));
         }
-        android.os.Trace.beginSection("MC c.card"); try { Main.setCardProgressFrom(card); } finally { android.os.Trace.endSection(); }
+        android.os.Trace.beginSection("MC c.card"); try { MediaCard.setCardProgressFrom(card); } finally { android.os.Trace.endSection(); }
         sGlassP = glass;
-        android.os.Trace.beginSection("MC c.glass"); try { Main.applyGlassMorph(glass); } finally { android.os.Trace.endSection(); }
+        android.os.Trace.beginSection("MC c.glass"); try { ClockGlass.applyGlassMorph(glass); } finally { android.os.Trace.endSection(); }
         // The colour band describes the lock screen; the AOD's layout is not that.
         if (!(phase == Phase.EXIT && sExitToAod)) { android.os.Trace.beginSection("MC c.band"); try { Main.updateColorBand(); } finally { android.os.Trace.endSection(); } }
     }
@@ -2021,6 +2564,13 @@ final class ClockCollapse {
                 sMinDrawnW = w;
             }
         }
+        // The styles that are not anchored lay their clock out to one side - magazine C hard
+        // left - and ColorOS takes exactly those to the middle when its music page is up: its
+        // magazine clock's IMMERSED scene centres the time and the date and drops the rest
+        // (Scene.KeyguardImmersed, c(.., 0.46f, centred = true, ..)). The same here, faded in and
+        // out with the pose so the hand-back lands on the OEM's own x.
+        float k = m.anchored ? 0f : sCenterK;
+        float midX = k > 0f ? screenMidX() : Float.NaN;
         for (View root : Main.clockRoots()) {
             View g = Main.clockTarget(root);
             if (g == null) continue;
@@ -2029,15 +2579,50 @@ final class ClockCollapse {
             if (g.getPivotY() != m.box.top) g.setPivotY(m.box.top);
             if (g.getScaleX() != scaleX) g.setScaleX(scaleX);
             if (g.getScaleY() != scale) g.setScaleY(scale);
+            glassFollowsScale(g, scale);
             float ty = top - (parentTop(g) + g.getTop() + m.box.top);
             if (Math.abs(g.getTranslationY() - ty) >= 0.25f) g.setTranslationY(ty);
+            // Never touched on the anchored styles: their x is the OEM's and DateStatus's.
+            if (m.anchored) continue;
+            // Remembered for the release: a style that swaps faces under us (oriental A) leaves
+            // the old target hidden with our transform on it, and it would come back scaled.
+            sCompTouched.put(g, Boolean.TRUE);
+            unclip(g);
+            // Where the ink's left edge lands with no x of ours, and where it is wanted.
+            float inkL0 = parentLeft(g) + g.getLeft() + px + (m.box.left - px) * scaleX;
+            float inkL = inkL0;
+            if (m.row) {
+                // The row as one piece: the time and what sits beside it, scaled together about
+                // the row's own top-left and centred as a whole.
+                float rl = parentLeft(g) + g.getLeft() + m.box.left, rr = rl + m.box.width();
+                for (int i = 0; i < m.compN; i++) {
+                    Comp c = m.comp[i];
+                    if (c.kind != BESIDE) continue;
+                    rl = Math.min(rl, c.left);
+                    rr = Math.max(rr, c.left + c.w);
+                }
+                float oemInkL = parentLeft(g) + g.getLeft() + m.box.left;
+                float row0 = inkL0 - (oemInkL - rl) * scale;
+                float rowX = Float.isNaN(midX) ? row0
+                        : row0 + (midX - (rr - rl) * scale / 2f - row0) * k;
+                inkL = rowX + (oemInkL - rl) * scale;
+                sRowX = rowX;
+                sRowL = rl;
+            } else if (k > 0f && !Float.isNaN(midX)) {
+                inkL = inkL0 + (midX - (inkL0 + m.box.width() * scaleX / 2f)) * k;
+            }
+            float tx = inkL - inkL0;
+            if (Math.abs(g.getTranslationX() - tx) >= 0.25f) g.setTranslationX(tx);
         }
+        if (!m.anchored) placeCompanions(m, top, scale, k, midX);
         // The other styles lay their own date out, and it is only moved to follow the offset -
         // unless it sits inside the clock, which carries it already.
-        if (m.date != null && !Float.isNaN(date)
-                && (m.anchored || !inside(m.date, firstTarget()))) {
+        if (m.anchored && m.date != null && !Float.isNaN(date)) {
             float dty = date - m.dateTop;
-            if (Math.abs(m.date.getTranslationY() - dty) >= 0.25f) m.date.setTranslationY(dty);
+            if (Math.abs(m.date.getTranslationY() - dty) >= 0.25f) {
+                m.date.setTranslationY(dty);
+                MOVED_DATES.add(m.date);
+            }
         }
         // The signature bar, the same problem one rung down. all_in_one derives its topMargin from
         // the clock's own rect - clockRect.bottom plus the gap between time and signature - and

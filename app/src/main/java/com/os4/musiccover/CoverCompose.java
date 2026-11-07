@@ -10,7 +10,7 @@ import android.graphics.Bitmap;
  * either process, which is what lets SystemUI hand over the small source instead of the
  * composed picture - see CoverPush.pushArtToWallpaper().
  */
-final class CoverCompose {
+public final class CoverCompose {
 
     private CoverCompose() {
     }
@@ -144,27 +144,29 @@ final class CoverCompose {
      * centred, 1 flush with the bottom. Centred is what the media card covers, so the default
      * sits above that.
      */
-    static Bitmap composeWallpaper(Bitmap src, int w, int h, float bias) {
-        Bitmap out = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
-        android.graphics.Canvas cv = new android.graphics.Canvas(out);
-        android.graphics.Paint p = new android.graphics.Paint(
-                android.graphics.Paint.FILTER_BITMAP_FLAG);
-
-        float coverH = src.getHeight() * (w / (float) src.getWidth());
+    static Bitmap composeWallpaper(final Bitmap src, final int w, int h, float bias) {
+        final float coverH = src.getHeight() * (w / (float) src.getWidth());
         if (bias < 0f) bias = 0f;
         if (bias > 1f) bias = 1f;
-        float top = (h - coverH) * bias;
+        final float top = (h - coverH) * bias;
 
         Bitmap bg = mirroredBackground(src, w, h, bias);
-        Bitmap blurred = blur(bg, 48, 4, 3);
-        cv.drawBitmap(blurred, null, new android.graphics.RectF(0, 0, w, h), p);
-        cv.drawColor(0x14000000);
-        // The sharp band, feathered in its own pixels and then drawn in one go. See feathered().
-        Bitmap band = feathered(src, w, Math.round(coverH),
-                Math.min(240, Math.round(coverH / 4f)));
-        cv.drawBitmap(band, null, new android.graphics.RectF(0, top, w, top + coverH), p);
-        band.recycle();
-        return out;
+        final Bitmap blurred = blur(bg, 48, 4, 3);
+        if (blurred != bg) bg.recycle();
+        try {
+            return full(w, h, cv -> {
+                android.graphics.Paint p = new android.graphics.Paint(
+                        android.graphics.Paint.FILTER_BITMAP_FLAG);
+                // The 8% wash rides on the stretch rather than being a full-screen pass of its own.
+                p.setColorFilter(WASH);
+                cv.drawBitmap(blurred, null, new android.graphics.RectF(0, 0, w, h), p);
+                p.setColorFilter(null);
+                drawBand(cv, src, w, Math.round(coverH), Math.round(top),
+                        Math.min(240, Math.round(coverH / 4f)), p);
+            });
+        } finally {
+            blurred.recycle();
+        }
     }
 
     /** Card mode uses the same mirrored, softened artwork as the full-cover backdrop. */
@@ -172,17 +174,30 @@ final class CoverCompose {
         Bitmap backdrop = mirroredBackground(src, w, h, 0.5f);
         Bitmap soft = blur(backdrop, 48, 4, 3);
         try {
-            Bitmap out = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
-            android.graphics.Canvas cv = new android.graphics.Canvas(out);
-            android.graphics.Paint p = new android.graphics.Paint(
-                    android.graphics.Paint.FILTER_BITMAP_FLAG);
-            cv.drawBitmap(soft, null, new android.graphics.RectF(0, 0, w, h), p);
-            cv.drawColor(0x14000000);
-            return out;
+            return full(w, h, cv -> {
+                android.graphics.Paint p = new android.graphics.Paint(
+                        android.graphics.Paint.FILTER_BITMAP_FLAG);
+                p.setColorFilter(WASH);
+                cv.drawBitmap(soft, null, new android.graphics.RectF(0, 0, w, h), p);
+            });
         } finally {
             if (soft != backdrop) soft.recycle();
             backdrop.recycle();
         }
+    }
+
+    /**
+     * drawColor(0x14000000) over an opaque picture, as a colour filter: source-over black at
+     * 0x14 is every channel times (255 - 0x14) / 255. Put on the paint that stretches the small
+     * blur, it costs nothing, where the drawColor was one more pass over all 3.1M pixels.
+     */
+    private static final android.graphics.ColorMatrixColorFilter WASH;
+
+    static {
+        float k = (255 - 0x14) / 255f;
+        android.graphics.ColorMatrix m = new android.graphics.ColorMatrix();
+        m.setScale(k, k, k, 1f);
+        WASH = new android.graphics.ColorMatrixColorFilter(m);
     }
 
     /**
@@ -252,37 +267,38 @@ final class CoverCompose {
     }
 
     /**
-     * The artwork at full width and its own aspect, with the top and bottom `feather` rows faded
-     * to transparent - in the pixels, not by masking a layer.
+     * The artwork at full width and its own aspect, `bandH` rows from row `top`, with the top
+     * and bottom `feather` rows faded out - drawn straight onto the composition in one pass.
      *
-     * Masking is what this replaces, and it put a one-pixel line along the band's top edge. The
-     * band was drawn into a saveLayer whose bounds begin at a fractional `top`, and the mask
-     * rect over it was snapped to whole pixels by a different rule than the layer was, so the
-     * band's first row could fall outside the mask and land on the blurred background at full
-     * strength - a line that follows the artwork's own brightness, bright where the row below is
-     * bright and dark where it is dark, which is exactly what it looked like on the phone.
-     *
-     * Here the ramp is part of the picture, so that first row has nothing to show whatever the
-     * rounding does. The mask rects are on a bitmap whose edges are 0 and bandH - both whole
-     * pixels - so there is no fractional bound left for anything to disagree about.
+     * Masking a layer is what this replaced first, and it put a one-pixel line along the band's
+     * top edge: the layer began at a fractional `top`, the mask rect over it was snapped to whole
+     * pixels by a different rule, and the band's first row landed on the background at full
+     * strength. Then the band was its own 1200x1200 bitmap with the ramp in its pixels - right,
+     * but a 5.7MB allocation and two more passes on every cover. Here the ramp is the alpha of
+     * the shader that draws the artwork, and the band starts on a whole row, so its first row
+     * still has nothing to show and there is no fractional bound for anything to disagree about.
      */
-    private static Bitmap feathered(Bitmap src, int w, int bandH, int feather) {
-        Bitmap band = Bitmap.createBitmap(w, bandH, Bitmap.Config.ARGB_8888);
-        android.graphics.Canvas bc = new android.graphics.Canvas(band);
-        bc.drawBitmap(src, null, new android.graphics.RectF(0, 0, w, bandH),
-                new android.graphics.Paint(android.graphics.Paint.FILTER_BITMAP_FLAG));
+    private static void drawBand(android.graphics.Canvas cv, Bitmap src, int w, int bandH,
+                                 int top, int feather, android.graphics.Paint p) {
+        android.graphics.BitmapShader art = new android.graphics.BitmapShader(src,
+                android.graphics.Shader.TileMode.CLAMP, android.graphics.Shader.TileMode.CLAMP);
+        android.graphics.Matrix m = new android.graphics.Matrix();
+        m.setScale(w / (float) src.getWidth(), bandH / (float) src.getHeight());
+        m.postTranslate(0f, top);
+        art.setLocalMatrix(m);
+        android.graphics.Shader shader = art;
         if (feather > 0 && feather * 2 <= bandH) {
-            android.graphics.Paint mask = new android.graphics.Paint();
-            mask.setXfermode(new android.graphics.PorterDuffXfermode(
-                    android.graphics.PorterDuff.Mode.DST_IN));
-            mask.setShader(new android.graphics.LinearGradient(0, 0, 0, feather,
-                    0x00000000, 0xFF000000, android.graphics.Shader.TileMode.CLAMP));
-            bc.drawRect(0, 0, w, feather, mask);
-            mask.setShader(new android.graphics.LinearGradient(0, bandH - feather, 0, bandH,
-                    0xFF000000, 0x00000000, android.graphics.Shader.TileMode.CLAMP));
-            bc.drawRect(0, bandH - feather, w, bandH, mask);
+            float f = feather / (float) bandH;
+            android.graphics.LinearGradient ramp = new android.graphics.LinearGradient(
+                    0f, top, 0f, top + bandH,
+                    new int[]{0x00000000, 0xFF000000, 0xFF000000, 0x00000000},
+                    new float[]{0f, f, 1f - f, 1f}, android.graphics.Shader.TileMode.CLAMP);
+            shader = new android.graphics.ComposeShader(art, ramp,
+                    android.graphics.PorterDuff.Mode.DST_IN);
         }
-        return band;
+        p.setShader(shader);
+        cv.drawRect(0f, top, w, top + bandH, p);
+        p.setShader(null);
     }
 
     /**
@@ -309,10 +325,73 @@ final class CoverCompose {
      * over the backdrop, which is applied here so the two paths agree.
      */
     static Bitmap frostedFor(Bitmap src, int w, int h, float bias) {
+        Bitmap small = frostedSmallFor(src, w, h, bias);
+        Bitmap out = stretchFrosted(small, w, h);
+        small.recycle();
+        return out;
+    }
+
+    /**
+     * frostedFor() before its stretch: every colour it will have, at the blur's own size (a few
+     * hundred pixels wide, ~0.3MB). Small enough to keep around, which is the point - kept, the
+     * frosted cover is one stretch away (stretchFrosted) instead of a blur.
+     */
+    static Bitmap frostedSmallFor(Bitmap src, int w, int h, float bias) {
         Bitmap bg = mirroredBackground(src, w, h, bias);
         Bitmap soft = blur(bg, 36, 3, 3);
         if (soft != bg) bg.recycle();
-        Bitmap out = frostedOf(soft, null, w, h);
+        return colouredFrost(soft, null);
+    }
+
+    /** A frostedSmallFor() picture at the texture's size. The small one is the caller's. */
+    static Bitmap stretchFrosted(final Bitmap small, final int w, final int h) {
+        return full(w, h, cv -> cv.drawBitmap(small, null,
+                new android.graphics.RectF(0, 0, w, h),
+                new android.graphics.Paint(android.graphics.Paint.FILTER_BITMAP_FLAG)));
+    }
+
+    /**
+     * Whether full-screen draws go to the GPU (full). The wallpaper process's switch alone: in
+     * SystemUI the GPU's renderer is the lock screen's own, and a cover drawn there would queue
+     * in front of its frames.
+     */
+    static volatile boolean sGpu;
+    private static volatile boolean sGpuBroken;
+
+    /** One full-screen picture's draws. */
+    interface Draw {
+        void into(android.graphics.Canvas c);
+    }
+
+    /**
+     * A w x h software bitmap with [draw] in it, drawn by the GPU where sGpu says so.
+     *
+     * Rasterising these on the CPU was the cost of a new cover: the stretch of the blur over all
+     * 3.1M pixels, the colour filter on it, the band and the frosting's stretch - 736ms of CPU on
+     * a phone at 1.1GHz with four cores up, the most of any thread on it while a track changed,
+     * and SystemUI's own frames went 73-112ms waiting for those cores (trace 2026-10-20). Recorded
+     * as a Picture and rendered as a HARDWARE bitmap, the same draws are a GPU pass, and what is
+     * left on the CPU is reading the pixels back - which the texture upload needs anyway. The
+     * bitmaps drawn from must stay alive until this returns; it is synchronous.
+     */
+    static Bitmap full(int w, int h, Draw draw) {
+        if (sGpu && !sGpuBroken) {
+            try {
+                android.graphics.Picture pic = new android.graphics.Picture();
+                draw.into(pic.beginRecording(w, h));
+                pic.endRecording();
+                Bitmap hw = Bitmap.createBitmap(pic, w, h, Bitmap.Config.HARDWARE);
+                Bitmap out = hw.copy(Bitmap.Config.ARGB_8888, true);
+                hw.recycle();
+                if (out != null) return out;
+                throw new IllegalStateException("no read back");
+            } catch (Throwable t) {
+                sGpuBroken = true;
+                Xp.w("[MCCompose] GPU drawing unavailable, back on the CPU: " + t);
+            }
+        }
+        Bitmap out = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
+        draw.into(new android.graphics.Canvas(out));
         return out;
     }
 
@@ -322,6 +401,13 @@ final class CoverCompose {
      * over any of it. `keep` is the caller's own bitmap, never recycled here.
      */
     private static Bitmap frostedOf(Bitmap soft, Bitmap keep, int w, int h) {
+        Bitmap small = colouredFrost(soft, keep);
+        Bitmap out = stretchFrosted(small, w, h);
+        small.recycle();
+        return out;
+    }
+
+    private static Bitmap colouredFrost(Bitmap soft, Bitmap keep) {
         // Coloured at the blur's own size, then stretched once.
         //
         // Saturating and darkening are per-pixel linear operations and so is the stretch, so the
@@ -342,13 +428,31 @@ final class CoverCompose {
         if (keep == null) sc.drawColor(0x14000000);
         sc.drawColor(0x61000000);
         if (soft != keep) soft.recycle();
+        return small;
+    }
 
-        Bitmap out = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
-        new android.graphics.Canvas(out).drawBitmap(small, null,
-                new android.graphics.RectF(0, 0, w, h),
-                new android.graphics.Paint(android.graphics.Paint.FILTER_BITMAP_FLAG));
-        small.recycle();
-        return out;
+    /**
+     * What a composition depends on, as one number: the source's pixels (a 64x64 grid of them),
+     * its size and colour space, the screen, the bias and the mode. Equal keys compose to the
+     * same picture, so a composition can be kept and handed out again under its key.
+     */
+    static long sourceKey(Source s, boolean cardMode) {
+        Bitmap b = s.src;
+        int bw = b.getWidth(), bh = b.getHeight();
+        int sx = Math.max(1, bw / 64), sy = Math.max(1, bh / 64);
+        int[] row = new int[bw];
+        long k = 1125899906842597L;
+        for (int y = 0; y < bh; y += sy) {
+            b.getPixels(row, 0, bw, 0, y, bw, 1);
+            for (int x = 0; x < bw; x += sx) k = 31 * k + row[x];
+        }
+        k = 31 * k + bw;
+        k = 31 * k + bh;
+        k = 31 * k + colorSpaceIndex(b);
+        k = 31 * k + s.w;
+        k = 31 * k + s.h;
+        k = 31 * k + Float.floatToIntBits(s.bias);
+        return 31 * k + (cardMode ? 1 : 0);
     }
 
     /**
@@ -357,7 +461,7 @@ final class CoverCompose {
      * halving is a box average), run a real separable box blur at the small size where it costs
      * almost nothing, then double back up, so nothing is ever interpolated across a big jump.
      */
-    static Bitmap blur(Bitmap src, int smallW, int radius, int passes) {
+    public static Bitmap blur(Bitmap src, int smallW, int radius, int passes) {
         Bitmap cur = src;
         while (cur.getWidth() / 2 > smallW) {
             Bitmap next = Bitmap.createScaledBitmap(cur,

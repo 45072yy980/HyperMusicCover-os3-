@@ -1,0 +1,1145 @@
+package com.os4.musiccover.app
+import com.os4.musiccover.SettingSpec
+import com.os4.musiccover.transit.MetroCodeIsland
+import com.os4.musiccover.island.MiniPlayerConfig
+import com.os4.musiccover.HotReloadPolicy
+import com.os4.musiccover.ProbeGuard
+import com.os4.musiccover.R
+import android.content.BroadcastReceiver
+import android.content.Context
+import android.content.Intent
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
+import android.os.SystemClock
+import kotlin.coroutines.resume
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.suspendCancellableCoroutine
+
+/**
+ * The app's only channel to the hook, which lives inside SystemUI's process.
+ *
+ * There is no shared storage between the two - the module writes its state into SystemUI's own
+ * files dir - so the app does not try to read settings from disk. It asks. The same broadcast
+ * protocol the adb probe uses carries the commands, and a query goes out as an *ordered*
+ * broadcast so the module can answer in the result extras.
+ *
+ * A reply arriving at all is also how the app knows the module is loaded: no reply within the
+ * timeout means LSPosed has not injected it (or SystemUI has not been restarted since).
+ */
+object ModuleBridge {
+
+    private const val ACTION = "com.os4.musiccover.PROBE"
+    private const val TARGET = "com.android.systemui"
+    private const val QUERY_TIMEOUT_MS = 1500L
+    /** The cloud fetch is a network round trip on SystemUI's side; the module answers it late. */
+    private const val REFRESH_TIMEOUT_MS = 25_000L
+
+    data class State(
+        val alive: Boolean = false,
+        /**
+         * SystemUI took a hot reload and could not adopt it: hooks pass through until it
+         * restarts. Not [alive] - none of the other values were answered.
+         */
+        val inert: Boolean = false,
+        val cover: Boolean = false,
+        val auto: Boolean = false,
+        /** 启用音乐锁屏封面. On for a module too old to report it: it had no way to turn off. */
+        val coverFeature: Boolean = SettingSpec.COVER_FEATURE.defBool,
+        val bias: Float = SettingSpec.BIAS.defFloat,
+        val coverStyle: Int = SettingSpec.COVER_STYLE.defInt,
+        /**
+         * The square's side as a share of the room between the clock and the media card, and
+         * where it sits in the height that leaves. Both fixed on the module side and neither
+         * adjustable from here; they are still read because the preview draws the square with
+         * them, and the two defaults are the module's own.
+         *
+         * The corners are not here: they are the media card's own radius now, which the preview
+         * already has in [Preview.cardRadius].
+         */
+        val coverCardFill: Float = SettingSpec.COVER_CARD_FILL.defFloat,
+        val coverCardPos: Float = SettingSpec.COVER_CARD_POS.defFloat,
+        /**
+         * How tall the collapsed clock's digits are, in dp.
+         *
+         * A height rather than the coefficient this used to be. The coefficient multiplied each
+         * clock style's own glyph box and those differ by more than ten times over, so one
+         * number was a different clock on every style - and a different one again on a
+         * different screen. A height is the same clock everywhere: the module divides it by the
+         * glyphs it measures and scales by what comes out.
+         */
+        val clockHeightDp: Float = SettingSpec.CLOCK_HEIGHT.defFloat,
+        /**
+         * The collapsed clock's size as a fraction of the style's full clock, 1 = unchanged.
+         * The module reports what the clock is at whether or not anything has set it; 0 = the
+         * module has not measured yet - the app's preview draws 0.09 until it does, which is the
+         * size the module starts at (Main.DEFAULT_CLOCK_SIZE).
+         */
+        val clockSize: Float = 0f,
+        /** How far the date and clock are moved together, in dp. Positive is down. */
+        val clockOffsetDp: Float = SettingSpec.CLOCK_OFFSET.defFloat,
+        /**
+         * The cover transition's spring response, in seconds - how long the clock takes to
+         * travel. Larger is slower.
+         *
+         * miuix's own unit for a spring: the module derives stiffness and damping from it, so
+         * the number means the same thing on every style and screen, and the card and wallpaper
+         * fades are derived from it too. 0.38 is the OEM's own preset for this transition.
+         */
+        val clockResponse: Float = SettingSpec.SPRING.defFloat,
+        /** The glass clock's end in the OEM's own terms; 0 is fully transparent glass. */
+        val glassEnd: Float = SettingSpec.GLASS_END.defFloat,
+        val cardShowing: Boolean = false,
+        val lockWallpaperOk: Boolean = false,
+        /**
+         * Whether the clock style loaded right now has a glass channel at all.
+         *
+         * The liquid-glass morph is AllInOneBase.updateGlassValue(float) and it exists exactly
+         * where the glass shader does: the all_in_one family. The rhombus, doodle, oriental and
+         * magazine clocks draw vector digits, bitmaps and plain text, and there is nothing on
+         * them for the slider to drive. Reported by the module rather than guessed here,
+         * because which views carry the channel is the module's business.
+         */
+        val clockHasGlass: Boolean = false,
+        val track: String = "",
+        val player: String = "",
+        /**
+         * Whether the media card's thumbnail is hidden. On, and not a setting on either side any
+         * more - see Settings.MC_HIDE_ART. Reported because the preview draws the card with the OEM's
+         * own picture of it, and what that picture contains depends on this.
+         */
+        val mcHideArt: Boolean = SettingSpec.MC_HIDE_ART.defBool,
+        /** With [mcHideArt] on, show the thumbnail anyway while the lyrics are up. Also fixed on. */
+        val mcArtInLyrics: Boolean = SettingSpec.MC_ART_IN_LYRICS.defBool,
+        val mcTitleTap: Boolean = SettingSpec.MC_TITLE_TAP.defBool,
+        /** The card's cover/lyrics page button. Off by default. */
+        val mcPageButton: Boolean = SettingSpec.MC_PAGE_BUTTON.defBool,
+        val hideFingerprint: Boolean = SettingSpec.HIDE_FP.defBool,
+        /** Apple Music motion artwork in place of the still cover. Off by default. */
+        val motionCover: Boolean = SettingSpec.MOTION.defBool,
+        val motionOnData: Boolean = SettingSpec.MOTION_ON_DATA.defBool,
+        /** Draw the big clock's colon on the styles that drop it. */
+        val forceColon: Boolean = SettingSpec.COLON.defBool,
+        /** Light the media card's progress bar the way the island's is lit (#49). On by default. */
+        val mediaBarGlow: Boolean = SettingSpec.SEEK_GLOW.defBool,
+        /**
+         * Lock screen lyrics, between the collapsed clock and the card. The master switch; the
+         * two-finger tap on the lock screen swaps cover and lyrics only while it is on.
+         */
+        val lyrics: Boolean = SettingSpec.LYRICS.defBool,
+        /** Keep the screen lit while lock screen lyrics are playing. */
+        val lyricsKeepOn: Boolean = SettingSpec.LYRIC_KEEP_ON.defBool,
+        /** Draw the singing words brighter than white on an HDR screen. */
+        val lyricsHdr: Boolean = SettingSpec.LYRIC_HDR.defBool,
+        /** Draw each line's translation under it. On unless the user turns it off. */
+        val lyricsTrans: Boolean = SettingSpec.LYRIC_TRANS.defBool,
+        /**
+         * The full-screen AOD shows the OEM's own clock instead of the cover's small one. The
+         * wire says it the other way round - `aodsmall`, "keep the small clock" - so this is the
+         * module's flag inverted, once, in the two places that name the key.
+         */
+        val aodBigClock: Boolean = !SettingSpec.AOD_SMALL.defBool,
+        /** Draw each line's romanisation under it, over the translation. Off by default. */
+        val lyricsRoma: Boolean = SettingSpec.LYRIC_ROMA.defBool,
+        /** Whether lyrics may be looked up on the network. On by default. */
+        val lyricsOnline: Boolean = SettingSpec.LYRIC_ONLINE.defBool,
+        /** Where the lines settle in their column: 0 left, 1 centre, 2 right. */
+        val lyricsAlign: Int = SettingSpec.LYRIC_ALIGN.defInt,
+        /** The lyric band's height as a share of the room between the clock and the card. */
+        val lyricFill: Float = SettingSpec.LYRIC_FILL.defFloat,
+        /** Where the band sits in the height it leaves: 0 top, 0.5 centre, 1 bottom. */
+        val lyricPos: Float = SettingSpec.LYRIC_POS.defFloat,
+        val lyricSideDp: Float = SettingSpec.LYRIC_SIDE.defFloat,
+        val lyricSizeSp: Float = SettingSpec.LYRIC_SIZE.defFloat,
+        val lyricWeight: Int = SettingSpec.LYRIC_WEIGHT.defInt,
+        /** The backing vocal's size, beside lyricSizeSp. */
+        val lyricBgSizeSp: Float = SettingSpec.LYRIC_BG_SIZE.defFloat,
+        /** Colours and opacity of the lead and the backing vocal, as LyricAppearance's JSON. */
+        val lyricAppearance: String = SettingSpec.LYRIC_APPEARANCE.defString,
+        /**
+         * A session has actually carried its own lyric since SystemUI started.
+         *
+         * Not the same question as whether a provider module is installed, and the difference is
+         * the one worth showing the user: LyricInfo is an LSPosed module, and one that is
+         * installed but not enabled - or enabled without the player in its scope - writes
+         * nothing while still being in the package list.
+         */
+        val sessionLyric: Boolean = false,
+        /**
+         * Which route the lyric on the lock screen came from, in the module's own words -
+         * "session", "lyricon", "local", "amll", "ttmlhub", "netease", "qq", "kugou", "kuwo",
+         * "lrclib" - or "none" when there is no lyric on screen at all.
+         *
+         * A word rather than an ordinal, and deliberately not translated here: what each one is
+         * called on the page is a table in the UI, and the module keeps adding routes. See
+         * LockLyrics.srcName.
+         */
+        val lyricSource: String = "none",
+        /**
+         * Whether a Lyricon central answered. Not a package check - see LyriconSource.installed -
+         * and the other half of the row above: with neither this nor the LyricInfo package
+         * installed, there is nothing on the phone that reads a player's lyric.
+         */
+        val lyriconInstalled: Boolean = false,
+        /** 0 system default, 1 never avoid the fingerprint icon, 2 always avoid it. */
+        val fpAvoid: Int = SettingSpec.FP_AVOID.defInt,
+        /** 「高德公交地铁」: the trip's island and lock screen page (Settings.TRANSIT). */
+        val transit: Boolean = SettingSpec.TRANSIT.defBool,
+        /** 取餐码: a 微信 order page's pickup code on the island (Settings.PICKUP). */
+        val pickup: Boolean = SettingSpec.PICKUP.defBool,
+        /**
+         * 取餐码云端名单的状态：ColorOS 那一份自己的更新日期（空字符串＝从未同步过），
+         * 和它有几个小程序。设置页那行「手动刷新取餐码云端规则」的副标题读的就是它。
+         */
+        val rulesDate: String = "",
+        val rulesCount: Int = 0,
+        /** 指纹快捷功能: the module's config JSON (FingerprintQuick.configJson), as it holds it. */
+        val fpQuick: String = "{}",
+        /** The system's own switch for the menu, Settings.Secure fod_quick_open. */
+        val fpQuickSystem: Boolean = true,
+        /** Whether the module found the quick-open menu on this phone. */
+        val fpQuickOk: Boolean = false,
+        /**
+         * The notification-shade settings, keyed exactly as the module's own CFG_KEYS.
+         *
+         * Read out of the reply by PREFIX rather than field by field. The module generates its
+         * half of this from one list - the same list its state file and its query reply are
+         * built from - so enumerating the bundle here means a knob added on that side appears in
+         * this map with nothing to change in this file. What the page does with each key is a
+         * table in the UI; what it means is the module's business.
+         */
+        val shade: Map<String, Int> = emptyMap(),
+        val miniConfig: String = MiniPlayerConfig.defaultJson(),
+        val miniConfigSchema: Int = 0,
+        /** The lock screen's torch and camera, in px; see MiniPlayerRuntime.shortcutGeometry. */
+        val miniShortcuts: FloatArray? = null,
+        val geometry: Geometry = Geometry(),
+    ) {
+        /** "Artist - Title" out of the module's packageName|song|artist key. */
+        val trackLabel: String
+            get() {
+                val parts = track.split("|")
+                if (parts.size < 3) return ""
+                val song = parts[1].takeIf { it.isNotBlank() && it != "null" } ?: return ""
+                val artist = parts[2].takeIf { it.isNotBlank() && it != "null" }
+                return if (artist == null) song else "$song — $artist"
+            }
+    }
+
+    /**
+     * The lock screen's own measurements, in screen pixels, so the preview on the features page
+     * can be drawn to scale.
+     *
+     * None of it is knowable from this side: the media card and the clock belong to SystemUI,
+     * every number is device- and clock-style-specific, and the card's position in particular is
+     * only meaningful while the keyguard is up. So the module measures and reports, and anything
+     * it has not measured yet comes back as zero for the preview to substitute for.
+     */
+    data class Geometry(
+        val screenW: Int = 0,
+        val screenH: Int = 0,
+        val cardL: Int = 0,
+        val cardT: Int = 0,
+        val cardW: Int = 0,
+        val cardH: Int = 0,
+        /**
+         * The collapsed clock's glyph box at scale 1, padded by [clockPad] on every side, and
+         * the screen y the GLYPHS' top is pinned to - the phone pivots the collapse there, so
+         * the pad sits above it and has to be scaled off with everything else.
+         */
+        val clockW: Float = 0f,
+        val clockH: Float = 0f,
+        val clockY: Float = 0f,
+        val clockPad: Float = 0f,
+        /**
+         * The box's left at scale 1, and the x the phone scales about. Not always the middle of
+         * the screen: the classic clock style is left-aligned under a left-aligned date, and it
+         * has to stay left as it shrinks.
+         */
+        val clockX: Float = 0f,
+        val clockPivotX: Float = 0f,
+        /**
+         * How many times the captured glyphs must be scaled to be the style's full clock - more
+         * than 1 when the OEM is squeezing them. 0 = not reported.
+         */
+        val clockFull: Float = 0f,
+    ) {
+        val hasScreen: Boolean get() = screenW > 0 && screenH > 0
+        val hasCard: Boolean get() = cardW > 0 && cardH > 0
+        val hasClock: Boolean get() = clockW > 0f && clockH > 0f
+    }
+
+    private fun intent(op: String): Intent = Intent(ACTION).apply {
+        setPackage(TARGET)
+        addFlags(Intent.FLAG_RECEIVER_FOREGROUND)
+        putExtra("op", op)
+    }
+
+    /**
+     * One setting, sent so that it cannot be lost.
+     *
+     * It goes out ordered and the module answers it with [OP_ACK]. A setting sent while SystemUI
+     * is down - or up, but before the module's receiver exists, which is seconds after a restart -
+     * still comes back, only with the 0 it left with, and a plain broadcast could not tell that
+     * from success. That was how a switch turned off on a page left open across a restart came
+     * back on: the page showed it off, the module never heard, and the file still said on.
+     *
+     * A setting that is not acknowledged is kept, newest per setting, and sent again by the next
+     * [query] that finds the module; [lost] ticks so an open page stops drawing values the module
+     * does not hold. A module from before the receipt never acknowledges anything, so for one of
+     * those this stays what it was - sent and hoped for.
+     *
+     * One setting has at most one broadcast in flight. A slider sends on every frame of a drag,
+     * and a queue of receipts backed up behind each other would run out the timeout and read as
+     * the module gone; values that arrive meanwhile collapse to the newest, sent when the one in
+     * flight comes back.
+     */
+    fun send(context: Context, op: String, extras: Intent.() -> Unit = {}) {
+        val app = context.applicationContext
+        val intent = intent(op).apply(extras)
+        scope.launch {
+            if (!moduleAcks) {
+                ProbeGuard.send(app, intent)
+                return@launch
+            }
+            val key = pendingKey(intent)
+            queued[key] = Pending(++sendSeq, intent)
+            if (inFlight.add(key)) {
+                try {
+                    pump(app, key)
+                } finally {
+                    inFlight.remove(key)
+                }
+            }
+        }
+    }
+
+    private suspend fun pump(app: Context, key: String) {
+        while (true) {
+            val p = queued.remove(key) ?: return
+            if (deliver(app, p.intent)) {
+                // A newer value that got through settles any older one still waiting.
+                if ((pending[key]?.seq ?: Long.MAX_VALUE) <= p.seq) pending.remove(key)
+            } else {
+                // Whatever arrived behind it would meet the same nobody; the newest waits instead.
+                val newest = queued.remove(key)?.takeIf { it.seq > p.seq } ?: p
+                if ((pending[key]?.seq ?: Long.MIN_VALUE) < newest.seq) pending[key] = newest
+                markLost()
+                return
+            }
+        }
+    }
+
+    /**
+     * Ticks whenever something shows the module has gone - an unacknowledged setting, a preview
+     * nobody answered. A page keyed on it greys itself out and asks again until it comes back.
+     */
+    val lost: StateFlow<Int> get() = lostFlow
+
+    /** Something saw the module go. It is most likely SystemUI restarting, so wait for it as for one. */
+    fun markLost() {
+        restartingSince = SystemClock.elapsedRealtime()
+        lostFlow.value = lostFlow.value + 1
+    }
+
+    /** What the module answers an op with. The app sends 0; see Main.OP_ACK. */
+    private const val OP_ACK = 1
+
+    private class Pending(val seq: Long, val intent: Intent)
+
+    // All of the below is only touched on the main thread: [scope] is the main dispatcher and
+    // [query] is called from composition.
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+    private val pending = LinkedHashMap<String, Pending>()
+    private val queued = HashMap<String, Pending>()
+    private val inFlight = HashSet<String>()
+    private var sendSeq = 0L
+    private val lostFlow = MutableStateFlow(0)
+
+    /** Whether the module that last answered acknowledges ops. Learned from [query]. */
+    @Volatile private var moduleAcks = false
+
+    /** The last answer [query] gave, good or bad, and null until someone asks in this process. */
+    @Volatile private var lastQuery: State? = null
+
+    /**
+     * The last answer any page got, or null while nobody has asked yet.
+     *
+     * A page the pager throws away and builds again (MainActivity's beyondViewportPageCount keeps
+     * one page either side, so the home page dies whenever the user is two tabs away) has nothing
+     * of its own to draw until a fresh answer lands - and the state it would otherwise start from
+     * says the module is dead, which is a red card for as long as the broadcast takes. KernelSU
+     * holds the same answer in a ViewModel its home page cannot take down with it (HomeViewModel);
+     * this is that idea without a ViewModel, in the one object every page already asks.
+     */
+    fun lastAnswer(): State? = lastQuery
+
+    /** When SystemUI was last restarted from here, or seen to go; see [queryAlive]. */
+    @Volatile private var restartingSince = 0L
+
+    /**
+     * Which setting an intent sets, so a newer value replaces an older one in [pending]. The op
+     * alone is not enough: shadecfg carries its setting as "key", and mediacard sets whichever
+     * of its switches it carries.
+     */
+    private fun pendingKey(intent: Intent): String {
+        val names = intent.extras?.keySet()?.sorted()?.joinToString(",") ?: ""
+        return intent.getStringExtra("op") + "|" + (intent.getStringExtra("key") ?: "") + "|" + names
+    }
+
+    private suspend fun deliver(app: Context, intent: Intent): Boolean =
+        broadcast(app, Intent(intent), OP_TIMEOUT_MS)?.code == OP_ACK
+
+    /**
+     * Longer than a query's: a query that misses is asked again anyway, where a setting that
+     * misses greys the page out, and SystemUI's main thread can be busy for a second on its own.
+     */
+    private const val OP_TIMEOUT_MS = 3000L
+
+    /** Sends what is waiting, oldest first. True if anything got through. */
+    private suspend fun flush(app: Context): Boolean {
+        var any = false
+        for ((key, p) in pending.entries.toList()) {
+            // A newer value for the same setting is on its way already; sending this one now
+            // could land after it.
+            if (key in inFlight || key in queued || pending[key]?.seq != p.seq) continue
+            if (!deliver(app, p.intent)) break
+            if (pending[key]?.seq == p.seq) pending.remove(key)
+            any = true
+        }
+        return any
+    }
+
+    fun setAuto(context: Context, on: Boolean) = send(context, "auto") { putExtra("on", on) }
+
+    fun setCoverFeature(context: Context, on: Boolean) =
+        send(context, "coverfeature") { putExtra("on", on) }
+
+    fun setCover(context: Context, on: Boolean) = send(context, "pushart") { putExtra("on", on) }
+
+    fun setBias(context: Context, v: Float) = send(context, "bias") { putExtra("v", v) }
+
+    fun setCoverStyle(context: Context, key: String, value: Float) =
+        send(context, "coverstyle") {
+            putExtra("key", key)
+            putExtra("v", value)
+        }
+
+
+    /**
+     * The ops behind settings that no longer have a row in the app: the clock's size, its offset
+     * and the height it used to be worked out from, the glass end, the spring, and the two media
+     * card switches.
+     *
+     * Kept rather than deleted, because the ops themselves are still there on the module side and
+     * still do something - they move the value for the rest of the session, and nothing writes it
+     * down, so a restart puts it back. Deleting these would leave the app unable to reach a
+     * protocol it is still party to. None of them is called from this app any more; the settings
+     * pages and [SettingsBackup] between them no longer offer the values.
+     */
+    fun setClockHeight(context: Context, dp: Float) =
+        send(context, "clockscale") { putExtra("v", dp) }
+
+    fun setClockSize(context: Context, fraction: Float) =
+        send(context, "clocksize") { putExtra("v", fraction) }
+
+    fun setClockOffset(context: Context, dp: Float) =
+        send(context, "clockoffset") { putExtra("v", dp) }
+
+    fun setGlassEnd(context: Context, v: Float) = send(context, "glassend") { putExtra("v", v) }
+
+    fun setClockResponse(context: Context, seconds: Float) =
+        send(context, "clockspring") { putExtra("v", seconds) }
+
+    fun setCardArtInLyrics(context: Context, on: Boolean) =
+        send(context, "mediacard") { putExtra("lyricart", on) }
+
+    fun setCardHideArt(context: Context, on: Boolean) =
+        send(context, "mediacard") { putExtra("hideart", on) }
+
+    fun setCardTitleTap(context: Context, on: Boolean) =
+        send(context, "mediacard") { putExtra("titletap", on) }
+
+    fun setCardPageButton(context: Context, on: Boolean) =
+        send(context, "mediacard") { putExtra("pagebtn", on) }
+
+    // Its own op rather than a third extra on "mediacard": the switch sits under the card
+    // options on screen, but it has nothing to do with the card, and grouping it there on the
+    // wire would make moving it later a protocol change.
+    fun setHideFingerprint(context: Context, on: Boolean) =
+        send(context, "hidefp") { putExtra("on", on) }
+
+    fun setMotionCover(context: Context, on: Boolean) =
+        send(context, "motion") { putExtra("on", on) }
+
+    fun setMotionOnData(context: Context, on: Boolean) =
+        send(context, "motion") { putExtra("data", on) }
+
+    /** See the note above [setClockHeight]: no row offers this any more, the op still works. */
+    fun setAodSmall(context: Context, on: Boolean) =
+        send(context, "aodclock") { putExtra("small", on) }
+
+    fun setForceColon(context: Context, on: Boolean) =
+        send(context, "colon") { putExtra("on", on) }
+
+    fun setMediaBarGlow(context: Context, on: Boolean) =
+        send(context, "seekglow") { putExtra("on", on) }
+
+    /** 启用锁屏歌词, the lyrics' master switch. Saved by the module as lyricmaster. */
+    fun setLyrics(context: Context, on: Boolean) =
+        send(context, "lyrics") { putExtra("on", on) }
+
+    fun setLyricsHdr(context: Context, on: Boolean) =
+        send(context, "lyrichdr") { putExtra("on", on) }
+
+    fun setLyricsKeepOn(context: Context, on: Boolean) =
+        send(context, "lyrickeep") { putExtra("on", on) }
+
+    fun setLyricsTrans(context: Context, on: Boolean) =
+        send(context, "lyrictrans") { putExtra("on", on) }
+
+    fun setAodBigClock(context: Context, on: Boolean) =
+        send(context, "aodclock") { putExtra("small", !on) }
+    fun setLyricsRoma(context: Context, on: Boolean) =
+        send(context, "lyricroma") { putExtra("on", on) }
+    fun setLyricsOnline(context: Context, on: Boolean) =
+        send(context, "lyriconline") { putExtra("on", on) }
+
+    fun setLyricsAlign(context: Context, mode: Int) =
+        send(context, "lyricalign") { putExtra("v", mode) }
+
+    /** LyricAppearance's JSON; the module parses and validates it. */
+    fun setLyricAppearance(context: Context, json: String) =
+        send(context, "lyricappearance") { putExtra("json", json) }
+
+    /**
+     * One of the values the lyric band and its type are made of. "size" and "bgsize" are the
+     * 歌词外观 page's and saved; the rest are fixed and move only for the session.
+     *
+     * The module validates every value, including imported settings and adb broadcasts.
+     */
+    fun setLyricStyle(context: Context, key: String, value: Float) =
+        send(context, "lyricstyle") {
+            putExtra("key", key)
+            putExtra("v", value)
+        }
+
+    fun setFingerprintAvoid(context: Context, mode: Int) =
+        send(context, "fpavoid") { putExtra("mode", mode) }
+
+    /** 「高德公交地铁」. SystemUI holds it and tells 高德, whose process posts the island. */
+    fun setTransit(context: Context, on: Boolean) =
+        send(context, "transitcfg") { putExtra("on", on) }
+
+    /** 取餐码. SystemUI reads the page and posts the island itself. */
+    fun setPickup(context: Context, on: Boolean) =
+        send(context, "pickup") { putExtra("on", on) }
+
+    /**
+     * 取餐码的云端名单，去 OPPO 那儿拉一次（settings 页那个按钮）。
+     *
+     * Answered rather than merely sent, because the answer is the point - it says how many mini
+     * programs came back and what date the cloud's copy carries, or why it did not. The fetch is a
+     * network round trip on SystemUI's side, so it is given longer than the usual query: the module
+     * answers it through goAsync once the request is done.
+     */
+    suspend fun refreshPickupRules(context: Context): PickupRefresh {
+        val reply = broadcast(context.applicationContext,
+            intent("cloud").apply { putExtra("do", "fetch") }, REFRESH_TIMEOUT_MS)
+            ?: return PickupRefresh(false, "同步超时：模块没有在 ${REFRESH_TIMEOUT_MS / 1000} 秒内回答")
+        return PickupRefresh(reply.extras?.getBoolean("ok", false) == true, reply.data.orEmpty())
+    }
+
+    /** 指纹快捷功能's whole config, as FingerprintQuick reads it: total, move, items. */
+    fun setFpQuick(context: Context, json: String) =
+        send(context, "fpquick") { putExtra("json", json) }
+
+    /** The system's own switch for the menu; only SystemUI may write it. */
+    fun setFpQuickSystem(context: Context, on: Boolean) =
+        send(context, "fpquick") { putExtra("sys", on) }
+
+    /** The packages that have shortcuts, asked of SystemUI; null when the module did not answer. */
+    suspend fun fpQuickShortcutApps(context: Context): Set<String>? =
+        ask(context, "fpquick") { putExtra("shortcutapps", true) }
+            ?.getStringArray("pkgs")?.toSet()
+
+    /** One of an app's launcher shortcuts, for the picker. */
+    class FpShortcut(val id: String, val label: String, val icon: Bitmap?)
+
+    /**
+     * An app's shortcuts, asked of SystemUI: LauncherApps answers only a launcher or a holder of
+     * ACCESS_SHORTCUTS, and this app is neither. Null when the module did not answer.
+     */
+    suspend fun fpQuickShortcuts(context: Context, pkg: String): List<FpShortcut>? {
+        val b = ask(context, "fpquick") { putExtra("shortcuts", pkg) } ?: return null
+        val ids = b.getStringArray("ids") ?: return null
+        val labels = b.getStringArray("labels") ?: return null
+        return ids.indices.map { i ->
+            val png = b.getByteArray("icon$i")
+            FpShortcut(ids[i], labels.getOrElse(i) { ids[i] },
+                png?.let { BitmapFactory.decodeByteArray(it, 0, it.size) })
+        }
+    }
+
+    /** A cloud refresh's outcome, and the module's sentence about it for the row's summary. */
+    data class PickupRefresh(val ok: Boolean, val said: String)
+
+    /**
+     * One shade setting, by the module's own key.
+     *
+     * A single op for the whole page rather than one per setting, so this side and the module
+     * cannot drift. The key is matched and the value clamped inside ShadeLayer.configure, so the
+     * settings page and an adb shell go through the same door.
+     */
+    fun setMiniConfig(context: Context, json: String) =
+        send(context, "minicfg") { putExtra("json", MiniPlayerConfig.normalizedJson(json)) }
+
+    fun setShade(context: Context, key: String, value: Int) =
+        send(context, "shadecfg") {
+            putExtra("key", key)
+            putExtra("v", value)
+        }
+
+    /**
+     * Asks the module for everything at once. Returns a dead State rather than throwing when the
+     * module is not there - "not installed" is a normal thing for this screen to display.
+     */
+    suspend fun query(context: Context): State {
+        val before = sendSeq
+        var b = ask(context, "query")
+        // A page can resume while its last config broadcast is still being delivered. Its first
+        // query may run ahead of that broadcast; do not paint the older settings over the ones
+        // the user just changed. Re-read after the outstanding write has settled.
+        val miniInFlight = { inFlight.any { it.startsWith("minicfg|") } ||
+            queued.keys.any { it.startsWith("minicfg|") } }
+        val wasSendingMini = miniInFlight()
+        if (wasSendingMini) {
+            kotlinx.coroutines.withTimeoutOrNull(OP_TIMEOUT_MS + 500L) {
+                while (miniInFlight()) kotlinx.coroutines.delay(20L)
+            }
+        }
+        if (wasSendingMini || sendSeq != before) b = ask(context, "query")
+        var state = fromBundle(b)
+        if (!state.alive) return state.also { lastQuery = it }
+        moduleAcks = b?.getBoolean("acks", false) == true
+        // Whatever was set while it was away goes first, and the answer is asked for again so
+        // the page shows those settings rather than the values they replaced.
+        if (pending.isNotEmpty() && flush(context.applicationContext)) {
+            state = fromBundle(ask(context, "query"))
+        }
+        lastQuery = state
+        return state
+    }
+
+    /**
+     * The same question, asked again until it is answered.
+     *
+     * One query is a 1.5s shot at a process that may be on its way up. "重启全部作用域" kills
+     * SystemUI, and the module's receiver is not registered until the keyguard's clock container
+     * attaches - seconds later, and not at all until the keyguard is built. A screen that asks
+     * once and keeps the answer therefore shows a DEAD module for as long as it stays open, with
+     * every value on it drawn from a default rather than from a setting, and the settings the
+     * user then appears to change go nowhere.
+     *
+     * Widening gaps and then it gives up: "the module is not installed" has to stay a state this
+     * settles into, not a poll that runs for as long as the screen is open. Except straight after
+     * a restart: SystemUI's keyguard can take 20s to come up cold, longer than those gaps add up
+     * to, and a page that gave up inside that told the user to go and restart SystemUI - which
+     * starts the wait over. So for [RESTART_WAIT_MS] after one it keeps asking, and only then
+     * counts down the gaps.
+     */
+    suspend fun queryAlive(context: Context, onFirst: (State) -> Unit = {}): State {
+        var state = query(context)
+        onFirst(state)
+        var tries = 0
+        // An inert SystemUI has answered: asking again only delays the card that says restart.
+        while (!state.alive && !state.inert) {
+            val gap = if (restarting()) RESTART_POLL_MS
+                      else RETRY_GAPS_MS.getOrNull(tries++) ?: return state
+            kotlinx.coroutines.delay(gap)
+            state = query(context)
+        }
+        return state
+    }
+
+    private fun restarting(): Boolean =
+        restartingSince != 0L && SystemClock.elapsedRealtime() - restartingSince < RESTART_WAIT_MS
+
+    /**
+     * The waits between [queryAlive]'s attempts. An attempt at a process with no receiver comes
+     * back at once; only one that is there and slow costs up to the timeout.
+     */
+    private val RETRY_GAPS_MS = longArrayOf(1000L, 2000L, 4000L, 8000L)
+    private const val RESTART_POLL_MS = 2000L
+    private const val RESTART_WAIT_MS = 60_000L
+
+    /**
+     * A picture of one of SystemUI's own views, with the screen rectangle it occupies.
+     *
+     * The preview paints these where they belong instead of drawing its own idea of them: the
+     * media card's text, seek bar, buttons and thumbnail are the real ones, and so are the torch
+     * and camera shortcuts, whose icons are whatever the user has assigned to them.
+     */
+    data class Shot(val bitmap: Bitmap, val l: Int, val t: Int, val w: Int, val h: Int)
+
+    /**
+     * Where the album art goes on the card and how rounded it is, as FRACTIONS of the card.
+     *
+     * The artwork is cut out of the captured card and painted back by the app - a software
+     * canvas does not apply a view's outline clip, so leaving it in the capture put a
+     * hard-cornered square where the OEM draws a rounded one.
+     *
+     * Fractions rather than pixels because the card is not always the size it is on the lock
+     * screen: pull the shade down over the app and the same view is laid out for the shade, and
+     * a capture taken there gets stretched to the lock screen's width when it is drawn.
+     */
+    data class ArtSlot(val l: Float, val t: Float, val w: Float, val h: Float, val radius: Float)
+
+    /**
+     * What the preview needs and cannot get for itself. [artUnchanged] means keep the artwork
+     * you already have; [shortcuts] are only filled in when they were asked for.
+     */
+    data class Preview(
+        /** False when nothing answered - the module is gone, not merely without a picture. */
+        val alive: Boolean = true,
+        /** False when no fields came back (a timeout, or the preview failing on the module's
+         *  side): everything below is a default, not the module's answer. */
+        val answered: Boolean = true,
+        val track: String = "",
+        val art: Bitmap? = null,
+        val artUnchanged: Boolean = false,
+        val card: Shot? = null,
+        val cardRadius: Float = 0f,
+        val artSlot: ArtSlot? = null,
+        /** The two clock trees: the hour is drawn in one, the minute in the other. */
+        val clockHour: Bitmap? = null,
+        val clockMinute: Bitmap? = null,
+        /** The date line above the clock, with the place cover mode pins it to. */
+        val date: Shot? = null,
+        /**
+         * The clock's geometry, carried with the pictures rather than only in a query: it
+         * changes whenever the lock screen clock style does, and a stale one leaves the app
+         * holding a clock it has nowhere to put.
+         */
+        val clockGeometry: Geometry? = null,
+        /** See State.clockHasGlass - a property of the style, so it rides with every reply. */
+        val clockHasGlass: Boolean = false,
+        /** See State.clockSize. */
+        val clockSize: Float = 0f,
+        /** See State.lyricSource. Carried with the pictures so the row keeps up mid-track. */
+        val lyricSource: String = "",
+        val left: Shot? = null,
+        val right: Shot? = null,
+    )
+
+    /**
+     * Asks the module for a picture of the lock screen's moving parts.
+     *
+     * [have] is the track whose artwork the caller already holds - a poller passes it and gets
+     * a few hundred bytes back instead of the same JPEG. [shortcuts] asks for the torch and
+     * camera buttons, which never change, so it is worth passing once and then not again.
+     * [shots] false asks for the state fields alone, with no picture drawn on SystemUI's side.
+     */
+    suspend fun preview(
+        context: Context,
+        have: String = "",
+        shortcuts: Boolean = false,
+        shots: Boolean = true,
+    ): Preview {
+        val reply = broadcast(context.applicationContext, intent("preview").apply {
+            putExtra("have", have)
+            putExtra("shortcuts", shortcuts)
+            putExtra("shots", shots)
+        })
+        // Back without extras is nobody there; not back at all is a SystemUI too busy to answer
+        // within the timeout, which is not a reason to grey the page out. Back with the receipt
+        // but no extras is the module there and the preview failing on its side: called gone,
+        // the page asked again, the query answered, and the poll sent the failing preview
+        // straight back - a loop with no delay on SystemUI's main thread.
+        val b = reply?.extras
+            ?: return Preview(alive = reply == null || reply.code == OP_ACK, answered = false)
+        val same = b.getBoolean("same", false)
+        return Preview(
+            track = if (same) have else (b.getString("track") ?: ""),
+            art = if (same) null else decode(b.getByteArray("jpg")),
+            artUnchanged = same,
+            card = shot(b, "card"),
+            cardRadius = b.getFloat("cardradius", 0f),
+            artSlot = artSlot(b),
+            clockHour = decode(b.getByteArray("clock0")),
+            clockMinute = decode(b.getByteArray("clock1")),
+            date = shot(b, "date"),
+            left = shot(b, "sl"),
+            right = shot(b, "sr"),
+            clockGeometry = if (b.getFloat("clockw", 0f) > 0f) clockGeometry(b) else null,
+            clockHasGlass = b.getBoolean("clockglass", false),
+            clockSize = sizeOf(b),
+            lyricSource = b.getString("lyricsrc") ?: "",
+        )
+    }
+
+    private fun clockGeometry(b: Bundle) = Geometry(
+        clockW = b.getFloat("clockw", 0f),
+        clockH = b.getFloat("clockh", 0f),
+        clockY = b.getFloat("clocky", 0f),
+        clockPad = b.getFloat("clockpad", 0f),
+        clockX = b.getFloat("clockx", 0f),
+        clockPivotX = b.getFloat("clockpivotx", 0f),
+        clockFull = fullOf(b),
+    )
+
+    private fun artSlot(b: Bundle): ArtSlot? {
+        val r = b.getFloatArray("artfrac") ?: return null
+        if (r.size != 4 || r[2] <= 0f || r[3] <= 0f) return null
+        return ArtSlot(r[0], r[1], r[2], r[3], b.getFloat("artradius", 0f))
+    }
+
+    private fun shot(b: Bundle, key: String): Shot? {
+        val bitmap = decode(b.getByteArray(key)) ?: return null
+        val r = b.getIntArray(key + "rect") ?: return null
+        if (r.size != 4 || r[2] <= 0 || r[3] <= 0) return null
+        return Shot(bitmap, r[0], r[1], r[2], r[3])
+    }
+
+    private fun decode(bytes: ByteArray?): Bitmap? {
+        if (bytes == null) return null
+        return try {
+            BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+        } catch (_: Throwable) {
+            null
+        }
+    }
+
+    /**
+     * One ordered broadcast, answered in the result extras. Returns null rather than throwing
+     * when nothing answers: "the module is not loaded" is a state this app displays, not an
+     * error it recovers from.
+     */
+    private suspend fun ask(
+        context: Context,
+        op: String,
+        extras: Intent.() -> Unit = {},
+    ): Bundle? = broadcast(context.applicationContext, intent(op).apply(extras))?.extras
+
+    /**
+     * Which of [pkg]'s processes say their module went inert after a hot reload (see
+     * [HotReloadPolicy.ACTION_INERT]). Only an inert generation has a receiver for it, so a
+     * healthy package answers at once with nothing; a package that does not answer in time is
+     * taken as healthy too - this adds to what LSPosed reports, it never takes away.
+     */
+    suspend fun inertIn(context: Context, pkg: String): List<String> {
+        val intent = Intent(HotReloadPolicy.ACTION_INERT).apply {
+            setPackage(pkg)
+            addFlags(Intent.FLAG_RECEIVER_FOREGROUND)
+        }
+        val reply = broadcast(context.applicationContext, intent, INERT_TIMEOUT_MS) ?: return emptyList()
+        return reply.extras?.getStringArrayList(HotReloadPolicy.KEY_INERT_PROCS).orEmpty()
+    }
+
+    private const val INERT_TIMEOUT_MS = 1500L
+
+    private class Reply(val code: Int, val extras: Bundle?, val data: String? = null)
+
+    /**
+     * The ordered broadcast under both [ask] and [send]. It comes back even when no receiver is
+     * registered - with the 0 it was sent with and no extras - so null here means only that the
+     * timeout ran out first.
+     */
+    private suspend fun broadcast(
+        app: Context,
+        intent: Intent,
+        timeoutMs: Long = QUERY_TIMEOUT_MS,
+    ): Reply? =
+        suspendCancellableCoroutine { cont ->
+            var done = false
+            val handler = Handler(Looper.getMainLooper())
+
+            val receiver = object : BroadcastReceiver() {
+                override fun onReceive(c: Context?, i: Intent?) {
+                    if (done) return
+                    done = true
+                    handler.removeCallbacksAndMessages(null)
+                    cont.resume(Reply(resultCode, getResultExtras(false), resultData))
+                }
+            }
+            // Nothing back within the timeout; do not leave the caller hanging on it.
+            handler.postDelayed({
+                if (!done) {
+                    done = true
+                    cont.resume(null)
+                }
+            }, timeoutMs)
+
+            try {
+                // With the app's identity: the module answers no one else (ProbeGuard).
+                app.sendOrderedBroadcast(intent, null, ProbeGuard.options(), receiver, handler,
+                    0, null, null)
+            } catch (_: Throwable) {
+                if (!done) {
+                    done = true
+                    cont.resume(null)
+                }
+            }
+        }
+
+    /** A subway commute 小爱建议's ride-code island has learned (MetroCommute). */
+    class CommuteRoute(val start: String, val changes: List<String>, val end: String, val trips: Int)
+
+    /** What 小爱建议 says it has learned; [reached] false when it did not answer (not running). */
+    data class Commute(
+        val reached: Boolean = false,
+        val learning: Boolean = false,
+        val trips: Int = 0,
+        val routes: List<CommuteRoute> = emptyList(),
+    )
+
+    /**
+     * Asks the ride-code island in 小爱建议 directly - the commutes live there, not in SystemUI -
+     * and, with [what] `learn` or `forget`, changes them first. [on] is for `learn`.
+     */
+    suspend fun commute(context: Context, what: String = "commute", on: Boolean = true): Commute {
+        val i = Intent(MetroCodeIsland.ACTION_TRIP).setPackage(MetroCodeIsland.PKG)
+            .putExtra("do", what)
+            .putExtra("on", on)
+        val r = broadcast(context.applicationContext, i) ?: return Commute()
+        val b = r.extras
+        if (r.code != 1 || b == null || !b.getBoolean("loaded")) return Commute()
+        val starts = b.getStringArray("starts").orEmpty()
+        val changes = b.getStringArray("changes").orEmpty()
+        val ends = b.getStringArray("ends").orEmpty()
+        val counts = b.getIntArray("counts") ?: IntArray(0)
+        val routes = starts.indices.mapNotNull { k ->
+            CommuteRoute(starts[k],
+                changes.getOrNull(k).orEmpty().split(',').filter { it.isNotEmpty() },
+                ends.getOrNull(k) ?: return@mapNotNull null, counts.getOrElse(k) { 0 })
+        }
+        return Commute(true, b.getBoolean("learning"), b.getInt("trips"), routes)
+    }
+
+    private fun fromBundle(b: Bundle?): State {
+        if (b == null || !b.getBoolean("alive", false)) {
+            return State(inert = b?.getBoolean("inert", false) == true)
+        }
+        return State(
+            alive = true,
+            cover = b.getBoolean("cover", false),
+            auto = b.getBoolean(SettingSpec.AUTO.key, false),
+            coverFeature = b.bool(SettingSpec.COVER_FEATURE),
+            bias = b.real(SettingSpec.BIAS),
+            coverStyle = b.int(SettingSpec.COVER_STYLE),
+            coverCardFill = b.real(SettingSpec.COVER_CARD_FILL),
+            coverCardPos = b.real(SettingSpec.COVER_CARD_POS),
+            clockHeightDp = b.real(SettingSpec.CLOCK_HEIGHT),
+            clockSize = sizeOf(b),
+            clockOffsetDp = b.real(SettingSpec.CLOCK_OFFSET),
+            clockResponse = b.real(SettingSpec.SPRING),
+            glassEnd = b.real(SettingSpec.GLASS_END),
+            cardShowing = b.getBoolean("card", false),
+            lockWallpaperOk = b.getBoolean("lockwp", false),
+            clockHasGlass = b.getBoolean("clockglass", false),
+            track = b.getString("track") ?: "",
+            player = b.getString("player") ?: "",
+            // The three fixed-on ones fall back to their fixed value here too: the defaults in
+            // the bundle are for a module too old to send the key, and there is no longer a
+            // version of this that would have them off by choice.
+            mcHideArt = b.bool(SettingSpec.MC_HIDE_ART),
+            mcArtInLyrics = b.bool(SettingSpec.MC_ART_IN_LYRICS),
+            mcTitleTap = b.bool(SettingSpec.MC_TITLE_TAP),
+            mcPageButton = b.bool(SettingSpec.MC_PAGE_BUTTON),
+            hideFingerprint = b.bool(SettingSpec.HIDE_FP),
+            motionCover = b.bool(SettingSpec.MOTION),
+            motionOnData = b.bool(SettingSpec.MOTION_ON_DATA),
+            forceColon = b.bool(SettingSpec.COLON),
+            mediaBarGlow = b.bool(SettingSpec.SEEK_GLOW),
+            lyrics = b.bool(SettingSpec.LYRICS),
+            lyricsKeepOn = b.bool(SettingSpec.LYRIC_KEEP_ON),
+            lyricsHdr = b.bool(SettingSpec.LYRIC_HDR),
+            // Defaults the other way: this one is on for anyone whose module predates the key.
+            lyricsTrans = b.bool(SettingSpec.LYRIC_TRANS),
+            // The module says whether it keeps its own clock; the row says whether the big one
+            // is wanted, so the answer is inverted here (see State.aodBigClock).
+            aodBigClock = !b.bool(SettingSpec.AOD_SMALL),
+            lyricsRoma = b.bool(SettingSpec.LYRIC_ROMA),
+            lyricsOnline = b.bool(SettingSpec.LYRIC_ONLINE),
+            lyricsAlign = b.int(SettingSpec.LYRIC_ALIGN),
+            lyricFill = b.real(SettingSpec.LYRIC_FILL),
+            lyricPos = b.real(SettingSpec.LYRIC_POS),
+            lyricSideDp = b.real(SettingSpec.LYRIC_SIDE),
+            lyricSizeSp = b.real(SettingSpec.LYRIC_SIZE),
+            lyricWeight = b.int(SettingSpec.LYRIC_WEIGHT),
+            lyricBgSizeSp = b.real(SettingSpec.LYRIC_BG_SIZE),
+            lyricAppearance = b.getString(SettingSpec.LYRIC_APPEARANCE.key) ?: SettingSpec.LYRIC_APPEARANCE.defString,
+            sessionLyric = b.getBoolean("sessionlyric", false),
+            lyricSource = b.getString("lyricsrc") ?: "none",
+            lyriconInstalled = b.getBoolean("lyricon", false),
+            fpAvoid = b.int(SettingSpec.FP_AVOID),
+            transit = b.bool(SettingSpec.TRANSIT),
+            fpQuick = b.getString("fpquick") ?: "{}",
+            fpQuickSystem = b.getBoolean("fpquicksys", true),
+            fpQuickOk = b.getBoolean("fpquickok", false),
+            pickup = b.bool(SettingSpec.PICKUP),
+            rulesDate = b.getString("rulesdate") ?: "",
+            rulesCount = b.getInt("rulescount", 0),
+            shade = b.keySet()
+                .filter { it.startsWith("shade_") }
+                .associate { it.removePrefix("shade_") to b.getInt(it, 0) },
+            miniConfig = MiniPlayerConfig.normalizedJson(b.getString("minicfg")),
+            miniConfigSchema = b.getInt("minicfgschema", 0),
+            miniShortcuts = b.getFloatArray("minishortcuts")?.takeIf { it.size == 9 },
+            geometry = Geometry(
+                screenW = b.getInt("sw", 0),
+                screenH = b.getInt("sh", 0),
+                cardL = b.getInt("cardl", 0),
+                cardT = b.getInt("cardt", 0),
+                cardW = b.getInt("cardw", 0),
+                cardH = b.getInt("cardh", 0),
+                clockW = b.getFloat("clockw", 0f),
+                clockH = b.getFloat("clockh", 0f),
+                clockY = b.getFloat("clocky", 0f),
+                clockPad = b.getFloat("clockpad", 0f),
+                clockX = b.getFloat("clockx", 0f),
+                clockPivotX = b.getFloat("clockpivotx", 0f),
+                clockFull = fullOf(b),
+            ),
+        )
+    }
+
+    /**
+     * A setting's answer under its query key, or the module's own default for a module too old to
+     * send the key. Both from SettingSpec, the one list the module answers from too.
+     */
+    private fun Bundle.bool(s: SettingSpec): Boolean = getBoolean(s.key, s.defBool)
+
+    private fun Bundle.real(s: SettingSpec): Float = getFloat(s.key, s.defFloat)
+
+    private fun Bundle.int(s: SettingSpec): Int = getInt(s.key, s.defInt)
+
+    /** The module sends NaN for a size it could not work out; that is 0 here. */
+    private fun sizeOf(b: Bundle): Float = b.getFloat(SettingSpec.CLOCK_SIZE.key, 0f).let { if (it > 0f) it else 0f }
+
+    private fun fullOf(b: Bundle): Float = b.getFloat("clockfull", 0f).let { if (it > 0f) it else 0f }
+
+    /** Restarting SystemUI is how most module changes are picked up. Needs root. */
+    fun restartSystemUi(): Boolean {
+        restartingSince = SystemClock.elapsedRealtime()
+        return kill("com.android.systemui")
+    }
+
+    /**
+     * The wallpaper process is the other half of the module and restarts independently. It is
+     * worth its own entry because the texture is read once when the GL surface is created: if a
+     * cover ever ends up wrong on screen, this is what re-reads it from disk.
+     */
+    fun restartWallpaper(): Boolean = kill("com.miui.miwallpaper")
+
+    /**
+     * Every process the module is loaded into, in one go.
+     *
+     * Asked of LSPosed first (LsposedService.runningTargets): the packages the user actually
+     * enabled, their sub-processes included, and nothing that is not running - a player or 高德
+     * the module is not enabled in is left alone.
+     *
+     * Without the service, the scope the APK ships, from META-INF/xposed/scope.list - the list
+     * LSPosed itself installs the module by. It was read from the legacy `xposedscope` array, which
+     * nothing kept in step: 高德 and 小爱建议 were added to scope.list only, so their processes went
+     * on running the old module after an update (2026-10-07). The array is the last fallback, and
+     * ScopeListTest holds the two equal.
+     *
+     * A package's own name is not enough any more. The lock screen editor runs as
+     * `com.miui.aod:keyguardeditor`, and `pidof` matches a process name exactly - so the entry
+     * that was added for the editor restarted everything except the editor, which is the one
+     * process the hooks on it had to be re-read into. [killTree] takes the sub-processes too.
+     */
+    fun restartScope(context: Context): Boolean {
+        restartingSince = SystemClock.elapsedRealtime()
+        val running = LsposedService.runningTargets()
+        if (!running.isNullOrEmpty()) return running.map { killPid(it.pid) }.all { it }
+        val scoped = shippedScope() ?: context.resources.getStringArray(R.array.xposedscope).toList()
+        var all = true
+        for (pkg in scoped) if (!killTree(pkg)) all = false
+        return all
+    }
+
+    /**
+     * Only the targets still on the old build, or whose hot reload failed - [set], the reading
+     * the home page's card counted when it offered this. A listed process is killed only if the
+     * framework still lists that pid under that name: one that has gone since needs nothing, and
+     * its pid may by now be someone else's.
+     *
+     * [restartScope] takes everything the module is loaded into and stays for the top bar's own
+     * entry, but an update leaves most of those processes already up to date, and killing a
+     * player that was never stale costs the user its playback and reloads a build that has
+     * nothing wrong with it.
+     *
+     * Nothing is killed without the service: there are no pids then, and the shipped scope is no
+     * substitute - it would restart exactly the processes this exists to leave alone. False
+     * rather than true, so a caller does not clear a card that is still telling the truth. An
+     * empty stale list is the opposite case: there is nothing left to restart, so it is a
+     * success.
+     */
+    fun restartStale(set: LsposedService.StaleSet): Boolean {
+        // An inert SystemUI answered the query itself, so it is known without the service and
+        // is counted then; it is killed by name when no pid lists it.
+        val stale = set.targets
+        if (stale == null) {
+            if (!set.sysuiInert) return false
+            restartingSince = SystemClock.elapsedRealtime()
+            return kill(TARGET)
+        }
+        if (stale.isEmpty() && !set.sysuiUnlisted) return true
+        // The service went between the count and the tap: nothing to check the pids against.
+        val running = LsposedService.runningTargets() ?: return false
+        val live = stale.filter { s ->
+            running.any { it.pid == s.pid && it.processName == s.processName }
+        }
+        restartingSince = SystemClock.elapsedRealtime()
+        val killed = live.map { killPid(it.pid) }.all { it }
+        return if (set.sysuiUnlisted) kill(TARGET) && killed else killed
+    }
+
+
+    /** The packages in the APK's own scope.list, one a line; null when it cannot be read. */
+    private fun shippedScope(): List<String>? = runCatching {
+        ModuleBridge::class.java.classLoader!!.getResourceAsStream("META-INF/xposed/scope.list")
+            .bufferedReader().useLines { lines ->
+                lines.map { it.trim() }.filter { it.isNotEmpty() && !it.startsWith("#") }.toList()
+            }
+    }.getOrNull()?.takeIf { it.isNotEmpty() }
+
+    /**
+     * The package's process and every `package:name` process under it.
+     *
+     * `pkill -f` matches the whole command line, which for an Android app is its process name,
+     * and the anchor stops `com.miui.aod` from also matching a package that merely ends with it.
+     * A package with nothing running is not a failure: pkill reports "no match" and the caller
+     * only wants to know that nothing refused to die.
+     */
+    private fun killTree(pkg: String): Boolean = try {
+        val p = Runtime.getRuntime().exec(
+            arrayOf("su", "-c", "pkill -f '^$pkg(\$|:)' ; true"),
+        )
+        p.waitFor() == 0
+    } catch (_: Throwable) {
+        false
+    }
+
+    private fun killPid(pid: Int): Boolean = try {
+        Runtime.getRuntime().exec(arrayOf("su", "-c", "kill $pid")).waitFor() == 0
+    } catch (_: Throwable) {
+        false
+    }
+
+    private fun kill(process: String): Boolean = try {
+        val p = Runtime.getRuntime().exec(arrayOf("su", "-c", "kill \$(pidof $process)"))
+        p.waitFor() == 0
+    } catch (_: Throwable) {
+        false
+    }
+}

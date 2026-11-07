@@ -1,8 +1,10 @@
 package com.os4.musiccover.ui.screen.features
 
+import com.os4.musiccover.ui.util.nextCard
+import com.os4.musiccover.ui.util.firstCard
+import com.os4.musiccover.ui.util.FoldUnder
 import android.content.Intent
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -21,15 +23,19 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.core.content.edit
-import com.os4.musiccover.CoverActivity
-import com.os4.musiccover.ModuleBridge
+import com.os4.musiccover.app.CoverActivity
+import com.os4.musiccover.island.MiniPlayerConfig
+import com.os4.musiccover.app.ModuleBridge
 import com.os4.musiccover.R
-import com.os4.musiccover.ShadeActivity
-import com.os4.musiccover.MiniPlayerActivity
+import com.os4.musiccover.app.ShadeActivity
+import com.os4.musiccover.app.MiniPlayerActivity
+import com.os4.musiccover.app.TransitActivity
+import com.os4.musiccover.app.FpQuickActivity
+import com.os4.musiccover.app.LyricStyleActivity
 import com.os4.musiccover.ui.util.PageScaffold
 import kotlinx.coroutines.delay
+import org.json.JSONObject
 import top.yukonga.miuix.kmp.basic.BasicComponent
 import top.yukonga.miuix.kmp.basic.BasicComponentDefaults
 import top.yukonga.miuix.kmp.basic.Card
@@ -92,36 +98,46 @@ private fun FeatureList(
         isBlurEnabled = isBlurEnabled,
         extraBottomPadding = extraBottomPadding,
     ) {
-        item {
+        item(key = "features") {
+            // A card per feature - each is a page of its own, and the user wants them read as
+            // four things, not as four rows of one list (2026-10-14: merged, then split again).
+            // The order is the user's (2026-09-30): the islands, the cover, the shade; 高德's trip
+            // went last when it got its switch (2026-10-07).
             Column {
-                // The 12dp under the bar that every other list page in this app leaves. It was
-                // missing on this one card, which put it flush against the title.
-                // The order is the user's (2026-09-30): the islands, the cover, the shade.
-                Card(
-                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 12.dp)
-                ) {
+                Card(modifier = Modifier.firstCard()) {
                     ArrowPreference(
                         title = stringResource(R.string.features_mini_title),
                         summary = stringResource(R.string.features_mini_summary),
                         onClick = { onOpen(MiniPlayerActivity::class.java) },
                     )
                 }
-                Card(
-                    modifier = Modifier.padding(horizontal = 12.dp).padding(bottom = 12.dp)
-                ) {
+                Card(modifier = Modifier.nextCard()) {
                     ArrowPreference(
                         title = stringResource(R.string.features_cover_title),
                         summary = stringResource(R.string.features_cover_summary),
                         onClick = { onOpen(CoverActivity::class.java) },
                     )
                 }
-                Card(
-                    modifier = Modifier.padding(horizontal = 12.dp).padding(bottom = 12.dp)
-                ) {
+                Card(modifier = Modifier.nextCard()) {
                     ArrowPreference(
                         title = stringResource(R.string.features_shade_title),
                         summary = stringResource(R.string.features_shade_summary),
                         onClick = { onOpen(ShadeActivity::class.java) },
+                    )
+                }
+                Card(modifier = Modifier.nextCard()) {
+                    ArrowPreference(
+                        title = stringResource(R.string.features_transit_title),
+                        summary = stringResource(R.string.features_transit_summary),
+                        onClick = { onOpen(TransitActivity::class.java) },
+                    )
+                }
+                // 指纹快捷功能 last, as the newest (2026-10-21).
+                Card(modifier = Modifier.nextCard()) {
+                    ArrowPreference(
+                        title = stringResource(R.string.features_fpquick_title),
+                        summary = stringResource(R.string.features_fpquick_summary),
+                        onClick = { onOpen(FpQuickActivity::class.java) },
                     )
                 }
             }
@@ -173,7 +189,13 @@ internal fun CoverPageView(
     // then only the last ones heard, and a switch moved on them would go nowhere.
     val lost by ModuleBridge.lost.collectAsState()
     LaunchedEffect(lost) { if (lost > 0) module = module.copy(alive = false) }
-    LaunchedEffect(refreshKey, lost) { module = ModuleBridge.queryAlive(context) }
+    // Whether a query has come back at all: until then "not answering" is not yet true, and the
+    // master switch says nothing rather than flashing the hint on every visit.
+    var asked by remember { mutableStateOf(false) }
+    LaunchedEffect(refreshKey, lost) {
+        module = ModuleBridge.queryAlive(context)
+        asked = true
+    }
     // Polled while the page is open for the three things the rows under the picture read and
     // that change without a settings change: whether the clock style has glass, which route the
     // lyric came from, and the clock's size while nothing has set it. The reply is the old live
@@ -187,6 +209,11 @@ internal fun CoverPageView(
             if (!reply.alive) {
                 ModuleBridge.markLost()
                 return@LaunchedEffect
+            }
+            // Nothing to read: the defaults would turn the glass row off and forget the artwork.
+            if (!reply.answered) {
+                delay(SHOT_POLL_MS)
+                continue
             }
             if (!reply.artUnchanged) artTrack = reply.track
             if (reply.clockHasGlass != module.clockHasGlass) {
@@ -208,6 +235,10 @@ internal fun CoverPageView(
     }
 
     val enabled = module.alive
+    // The lyrics tab greys out with the cover's master switch: they only exist inside the cover,
+    // but they are a tab away from the switch, and a tab that empties itself reads as broken.
+    // The card's rows and the colon stay: they are the OEM's card and clock in every mode.
+    val coverOn = enabled && module.coverFeature
     // The cover has one setting of its own, too few for a tab, and it is about the same picture
     // the clock sits on - so the two share one. The lyrics get the third.
     val groups = listOf(
@@ -221,38 +252,76 @@ internal fun CoverPageView(
         isBlurEnabled = isBlurEnabled,
         extraBottomPadding = extraBottomPadding,
         onBack = onBack,
-        pinned = {
-            Spacer(Modifier.height(8.dp))
+    ) {
+        item(key = "demo") {
             // Framed as the islands' page frames its demonstration: a card, three plays in it.
-            Card(Modifier.padding(horizontal = 12.dp)) {
+            //
+            // An item of the list rather than something pinned above it, which is what this page
+            // used to do and what no other page does: pinned, it never moved, and the list could
+            // not reach the bar - so an upward swipe collapsed nothing, on the one page whose
+            // picture is the tallest thing on it. The tab row below it scrolls with it for the
+            // same reason, as DonatePage's does.
+            Card(Modifier.firstCard()) {
                 CoverDemo(
                     coverStyle = module.coverStyle,
                     bias = module.bias,
                     clockSize = module.clockSize,
+                    aodBigClock = module.aodBigClock,
                     modifier = Modifier.padding(top = 16.dp),
                 )
             }
-            Spacer(Modifier.height(12.dp))
+        }
+        item(key = "tabs") {
             TabRow(
                 tabs = groups,
                 selectedTabIndex = group,
                 onTabSelected = { group = it },
-                modifier = Modifier.padding(horizontal = 12.dp).padding(bottom = 12.dp),
+                modifier = Modifier.nextCard(),
             )
-        },
-    ) {
-        item {
-            Card(
-                modifier = Modifier.padding(horizontal = 12.dp).padding(bottom = 12.dp)
-            ) {
+        }
+        item(key = "settings") {
+            Card(modifier = Modifier.nextCard()) {
                 when (group) {
                     0 -> Column {
-                        CoverGroup(enabled, module) { module = it }
-                        ClockGroup(enabled, module) { module = it }
+                        // miuix's own pattern (example SwitchSection): the master switch is the
+                        // first row of its card, and what hangs off it folds away under it
+                        // rather than greying out.
+                        SwitchPreference(
+                            title = stringResource(R.string.cover_enabled),
+                            // Why the whole page is grey, said where the eye goes first - as the
+                            // other pages' master switches say it.
+                            summary = if (asked && !module.alive) {
+                                stringResource(R.string.home_status_inactive_hint)
+                            } else {
+                                null
+                            },
+                            checked = module.coverFeature,
+                            enabled = enabled,
+                            onCheckedChange = {
+                                module = module.copy(coverFeature = it)
+                                ModuleBridge.setCoverFeature(context, it)
+                            },
+                        )
+                        FoldUnder(module.coverFeature, settled = module.alive) {
+                            CoverGroup(enabled, module) { module = it }
+                        }
+                        ClockGroup(enabled, module.coverFeature, module) { module = it }
                     }
                     1 -> CardGroup(enabled, module) { module = it }
-                    else -> LyricsGroup(enabled, module) { module = it }
+                    else -> LyricsGroup(coverOn, module) { module = it }
                 }
+            }
+        }
+        // How the lock screen asks for the lyrics: a gesture, not a setting, so it is said under
+        // the card in the small grey type of a note rather than as a row in it (user, 2026-10-23).
+        if (group == 2 && module.lyrics) {
+            item(key = "lyrics-hint") {
+                MiuixText(
+                    text = stringResource(R.string.lyrics_two_finger_tap),
+                    style = MiuixTheme.textStyles.footnote1,
+                    color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                    modifier = Modifier.padding(start = 28.dp, end = 28.dp, bottom = 12.dp),
+                )
             }
         }
     }
@@ -269,8 +338,9 @@ private fun CoverGroup(
         WindowDropdownPreference(
             title = stringResource(R.string.cover_style),
             items = listOf(stringResource(R.string.cover_style_full),
-                stringResource(R.string.cover_style_card)),
-            selectedIndex = module.coverStyle.coerceIn(0, 1),
+                stringResource(R.string.cover_style_card),
+                stringResource(R.string.cover_style_keep)),
+            selectedIndex = module.coverStyle.coerceIn(0, 2),
             enabled = enabled,
             onSelectedIndexChange = {
                 onChange(module.copy(coverStyle = it))
@@ -284,6 +354,30 @@ private fun CoverGroup(
         // The one slider left belongs to the full-screen cover alone, and it is the one that has
         // to stay a slider: where the cover sits vertically is a share of the screen, and the
         // screen is not the same on every phone.
+        // Both styles: the square plays it in the card, the full-screen cover in the wallpaper.
+        // No summary, like every row on this page.
+        // 保留壁纸 has no artwork to move. Hidden rather than greyed, like the bias below.
+        if (module.coverStyle != 2) SwitchPreference(
+            title = stringResource(R.string.cover_motion),
+            checked = module.motionCover,
+            enabled = enabled,
+            onCheckedChange = {
+                onChange(module.copy(motionCover = it))
+                ModuleBridge.setMotionCover(context, it)
+            },
+        )
+        // Off by default: a video is 5-15MB per album, and not everyone's plan is unlimited.
+        FoldUnder(module.coverStyle != 2 && module.motionCover, settled = module.alive) {
+            SwitchPreference(
+                title = stringResource(R.string.cover_motion_on_data),
+                checked = module.motionOnData,
+                enabled = enabled,
+                onCheckedChange = {
+                    onChange(module.copy(motionOnData = it))
+                    ModuleBridge.setMotionOnData(context, it)
+                },
+            )
+        }
         if (module.coverStyle == 0) {
             ValueSlider(
                 title = stringResource(R.string.cover_bias),
@@ -296,12 +390,37 @@ private fun CoverGroup(
                 },
             )
         }
+        // Moved here off the islands' page (2026-10-09): what it decides is when the cover opens
+        // by itself, which is this page's subject rather than the row's. The value is still the
+        // mini player's own config - the module reads it from that JSON, not from its state file -
+        // so it is read and written through the copy of it that State carries.
+        val mediaCollapsed = remember(module.miniConfig) {
+            JSONObject(module.miniConfig).optBoolean(MiniPlayerConfig.MEDIA_COLLAPSED_DEFAULT)
+        }
+        SwitchPreference(
+            title = stringResource(R.string.mini_media_collapsed),
+            summary = stringResource(R.string.mini_media_collapsed_summary),
+            checked = mediaCollapsed,
+            enabled = enabled,
+            onCheckedChange = { on ->
+                val next = MiniPlayerConfig.normalizedJson(
+                    JSONObject(module.miniConfig)
+                        .put(MiniPlayerConfig.MEDIA_COLLAPSED_DEFAULT, on)
+                        .toString(),
+                )
+                ModuleBridge.setMiniConfig(context, next)
+                // Answered here rather than left to the next query: the module's own copy comes
+                // back a broadcast later, and a switch that moves only then reads as stuck.
+                onChange(module.copy(miniConfig = next))
+            },
+        )
     }
 }
 
 @Composable
 private fun ClockGroup(
     enabled: Boolean,
+    coverOn: Boolean,
     module: ModuleBridge.State,
     onChange: (ModuleBridge.State) -> Unit,
 ) {
@@ -310,19 +429,22 @@ private fun ClockGroup(
         // A fraction of the style's own full clock, the one shown with cover mode off. The
         // collapse cannot make a clock bigger than that, so 100% is the top. Cut with the others
         // below on 2026-09-28 and put back on its own two days later (user).
-        ValueSlider(
-            title = stringResource(R.string.clock_size),
-            value = (if (module.clockSize > 0f) module.clockSize else DEFAULT_CLOCK_SIZE)
-                .coerceIn(CLOCK_SIZE_MIN, 1f),
-            valueRange = CLOCK_SIZE_MIN..1f,
-            enabled = enabled,
-            label = { "${(it * 100f).roundToInt()}%" },
-            onValueChange = {
-                val size = (it * 100f).roundToInt() / 100f
-                onChange(module.copy(clockSize = size))
-                ModuleBridge.setClockSize(context, size)
-            },
-        )
+        // The cover's clock: folds away with the cover's master switch.
+        FoldUnder(coverOn, settled = enabled) {
+            ValueSlider(
+                title = stringResource(R.string.clock_size),
+                value = (if (module.clockSize > 0f) module.clockSize else DEFAULT_CLOCK_SIZE)
+                    .coerceIn(CLOCK_SIZE_MIN, 1f),
+                valueRange = CLOCK_SIZE_MIN..1f,
+                enabled = enabled,
+                label = { "${(it * 100f).roundToInt()}%" },
+                onValueChange = {
+                    val size = (it * 100f).roundToInt() / 100f
+                    onChange(module.copy(clockSize = size))
+                    ModuleBridge.setClockSize(context, size)
+                },
+            )
+        }
         // Three rows were here and are gone: how far the date and the clock are moved together,
         // how solid the liquid-glass styles go, and the spring the whole transition runs on. All
         // three are fixed now - the first at the value cover mode has always been tuned to, the
@@ -392,8 +514,6 @@ private fun LyricsGroup(
         source == null -> stringResource(R.string.lyrics_source_none)
         else -> stringResource(R.string.lyrics_source, source)
     }
-    val summary = if (missingModule) R.string.lyrics_provider_missing
-                  else R.string.lyrics_provider_ready
     // Said twice, because once was not enough. The row standing at the top of the group is
     // always there; this is the interruption, and it is only worth interrupting for the one
     // state that asks for something to be done.
@@ -418,7 +538,7 @@ private fun LyricsGroup(
     WindowDialog(
         show = showNotice,
         title = title,
-        summary = stringResource(summary),
+        summary = stringResource(R.string.lyrics_provider_missing),
         // Held for fifteen seconds, and held means held: an outside tap and the back gesture
         // both come through here, so there is no way out of it before the button unlocks. A
         // notice asking for a module to be installed is read by nobody if it can be flicked
@@ -443,69 +563,63 @@ private fun LyricsGroup(
         )
     }
     Column {
-        // The standing half of the same statement. It never goes away and it never asks to be
-        // dismissed, which is what makes it useful on the visit after the notice was flicked
-        // away - or on a phone where the module had not answered yet when the notice was due.
-        BasicComponent(
-            title = title,
-            titleColor = BasicComponentDefaults.titleColor(
+        // The standing half of the notice, as the master switch's summary: where the words on
+        // the lock screen came from, or - in red - that nothing on the phone reads a player's own
+        // lyric. It never goes away and never asks to be dismissed, which is what makes it useful
+        // on the visit after the notice was flicked away (a row of its own until 2026-10-23).
+        SwitchPreference(
+            title = stringResource(R.string.lyrics_enabled),
+            summary = title,
+            summaryColor = BasicComponentDefaults.summaryColor(
                 color = if (missingModule) MiuixTheme.colorScheme.error
-                        else MiuixTheme.colorScheme.onBackground,
+                        else MiuixTheme.colorScheme.onSurfaceVariantSummary,
             ),
-            summary = stringResource(summary),
-        )
-        // The one way the lock screen is asked for the cover instead, now that the lyrics have no
-        // switch of their own. A row rather than a summary on one of the switches below: none of
-        // them is about the cover, and this is not a description of any of them.
-        BasicComponent(title = stringResource(R.string.lyrics_two_finger_tap))
-        // The lyrics themselves are not a setting any more: they are drawn whenever the track has
-        // a lyric, and the two-finger tap on the lock screen is how the cover is asked for
-        // instead. Neither is the band they are drawn in - its height, its place in the room, the
-        // margin the lines are held inside and the size and weight of the main line are all fixed
-        // now (see LyricStyle). The one thing about where the words go that is still the user's
-        // is where they settle between those margins; the switches below are about the words
-        // themselves, so all three stay.
-        val alignModes = listOf(
-            stringResource(R.string.lyrics_align_left),
-            stringResource(R.string.lyrics_align_center),
-            stringResource(R.string.lyrics_align_right),
-        )
-        WindowDropdownPreference(
-            title = stringResource(R.string.lyrics_align),
-            items = alignModes,
-            selectedIndex = module.lyricsAlign.coerceIn(0, alignModes.lastIndex),
-            enabled = enabled,
-            onSelectedIndexChange = {
-                onChange(module.copy(lyricsAlign = it))
-                ModuleBridge.setLyricsAlign(context, it)
-            },
-        )
-        SwitchPreference(
-            title = stringResource(R.string.lyrics_trans),
-            checked = module.lyricsTrans,
+            checked = module.lyrics,
             enabled = enabled,
             onCheckedChange = {
-                onChange(module.copy(lyricsTrans = it))
-                ModuleBridge.setLyricsTrans(context, it)
+                onChange(module.copy(lyrics = it))
+                ModuleBridge.setLyrics(context, it)
             },
         )
+        // Every row under here is about the words the master switch turns off, so they fold
+        // away with it, as miuix's own example does. How they look comes first (user, 2026-10-23);
+        // what is left decides whether there are lyrics and where they come from.
+        FoldUnder(module.lyrics, settled = module.alive) {
+            Column {
+                ArrowPreference(
+                    title = stringResource(R.string.lyrics_style_title),
+                    enabled = enabled,
+                    onClick = { context.startActivity(Intent(context, LyricStyleActivity::class.java)) },
+                )
+                SwitchPreference(
+                    title = stringResource(R.string.lyrics_online),
+                    checked = module.lyricsOnline,
+                    enabled = enabled,
+                    onCheckedChange = {
+                        onChange(module.copy(lyricsOnline = it))
+                        ModuleBridge.setLyricsOnline(context, it)
+                    },
+                )
+                SwitchPreference(
+                    title = stringResource(R.string.lyrics_keep_on),
+                    checked = module.lyricsKeepOn,
+                    enabled = enabled,
+                    onCheckedChange = {
+                        onChange(module.copy(lyricsKeepOn = it))
+                        ModuleBridge.setLyricsKeepOn(context, it)
+                    },
+                )
+            }
+        }
+        // The cover's clock in the AOD, not the words: outside the fold, it follows the cover
+        // switch alone.
         SwitchPreference(
-            title = stringResource(R.string.lyrics_hdr),
-            summary = stringResource(R.string.lyrics_hdr_summary),
-            checked = module.lyricsHdr,
+            title = stringResource(R.string.clock_aod_big),
+            checked = module.aodBigClock,
             enabled = enabled,
             onCheckedChange = {
-                onChange(module.copy(lyricsHdr = it))
-                ModuleBridge.setLyricsHdr(context, it)
-            },
-        )
-        SwitchPreference(
-            title = stringResource(R.string.lyrics_keep_on),
-            checked = module.lyricsKeepOn,
-            enabled = enabled,
-            onCheckedChange = {
-                onChange(module.copy(lyricsKeepOn = it))
-                ModuleBridge.setLyricsKeepOn(context, it)
+                onChange(module.copy(aodBigClock = it))
+                ModuleBridge.setAodBigClock(context, it)
             },
         )
     }
@@ -527,7 +641,7 @@ private fun CardGroup(
         // Two switches were here and are gone: hiding the card's thumbnail, and bringing it back
         // while the lyrics are up. Both are on and neither is a setting - the artwork is the
         // wallpaper in this mode, so the thumbnail is a second copy of it, and the exception that
-        // shows it again is what the lyrics being up is for. See Main.sMcHideArt.
+        // shows it again is what the lyrics being up is for. See Settings.MC_HIDE_ART.
         //
         // Requested for a reason of its own: on this card the real play/pause button sits over
         // the fingerprint sensor, so a thumb aiming for it unlocks the phone instead. The title
@@ -539,6 +653,30 @@ private fun CardGroup(
             onCheckedChange = {
                 onChange(module.copy(mcTitleTap = it))
                 ModuleBridge.setCardTitleTap(context, it)
+            },
+        )
+        // A visible way to the switch the two-finger tap already is. Only drawn in cover mode
+        // for a track with lyrics - see Settings.MC_PAGE_BUTTON. The one row here with a summary: it
+        // takes the player's own button to the right of "next", and that has to be said.
+        SwitchPreference(
+            title = stringResource(R.string.card_page_button),
+            summary = stringResource(R.string.card_page_button_summary),
+            checked = module.mcPageButton,
+            enabled = enabled,
+            onCheckedChange = {
+                onChange(module.copy(mcPageButton = it))
+                ModuleBridge.setCardPageButton(context, it)
+            },
+        )
+        // The progress bar's glow, the island's look on the card's own bar (#49). Not tied to
+        // cover mode either: it is the OEM's card in every mode.
+        SwitchPreference(
+            title = stringResource(R.string.media_bar_glow),
+            checked = module.mediaBarGlow,
+            enabled = enabled,
+            onCheckedChange = {
+                onChange(module.copy(mediaBarGlow = it))
+                ModuleBridge.setMediaBarGlow(context, it)
             },
         )
         // Sits here because that is where it was asked for, but it is not a card setting and does
@@ -607,6 +745,7 @@ internal fun ValueSlider(
     detent: Float? = null,
     label: (Float) -> String = ::format,
     onValueChange: (Float) -> Unit,
+    onValueChangeFinished: (() -> Unit)? = null,
 ) {
     Column(Modifier.fillMaxWidth()) {
         BasicComponent(
@@ -616,7 +755,7 @@ internal fun ValueSlider(
             endActions = {
                 MiuixText(
                     text = label(value),
-                    fontSize = 15.sp,
+                    style = MiuixTheme.textStyles.body2,
                     fontWeight = FontWeight.Medium,
                     color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
                 )
@@ -628,6 +767,7 @@ internal fun ValueSlider(
                 .padding(start = 16.dp, end = 16.dp, bottom = 16.dp),
             value = value,
             onValueChange = onValueChange,
+            onValueChangeFinished = onValueChangeFinished,
             valueRange = valueRange,
             enabled = enabled,
             // Step is what makes a key point produce a tick at all; the default effect only fires

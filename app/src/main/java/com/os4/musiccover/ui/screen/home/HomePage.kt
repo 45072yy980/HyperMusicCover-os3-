@@ -7,10 +7,13 @@
  */
 package com.os4.musiccover.ui.screen.home
 
+import com.os4.musiccover.ui.util.nextCard
+import com.os4.musiccover.ui.util.firstCard
 import android.annotation.SuppressLint
 import android.content.Intent
 import android.os.Build
 import android.provider.Settings
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.IntrinsicSize
@@ -22,6 +25,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.CheckCircleOutline
 import androidx.compose.material.icons.rounded.ErrorOutline
@@ -29,6 +33,7 @@ import androidx.compose.material.icons.rounded.Favorite
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -44,8 +49,9 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.os4.musiccover.BuildConfig
-import com.os4.musiccover.DonateActivity
-import com.os4.musiccover.ModuleBridge
+import com.os4.musiccover.app.DonateActivity
+import com.os4.musiccover.app.LsposedService
+import com.os4.musiccover.app.ModuleBridge
 import com.os4.musiccover.R
 import com.os4.musiccover.ui.component.DropdownItem
 import com.os4.musiccover.ui.component.MenuPopupDefaults
@@ -55,6 +61,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import top.yukonga.miuix.kmp.basic.BasicComponent
+import top.yukonga.miuix.kmp.basic.ButtonDefaults
+import top.yukonga.miuix.kmp.basic.TextButton
 import top.yukonga.miuix.kmp.basic.Card
 import top.yukonga.miuix.kmp.basic.CardDefaults
 import top.yukonga.miuix.kmp.basic.Icon
@@ -65,8 +73,10 @@ import top.yukonga.miuix.kmp.basic.PopupPositionProvider
 import top.yukonga.miuix.kmp.basic.Scaffold
 import top.yukonga.miuix.kmp.overlay.OverlayListPopup
 import top.yukonga.miuix.kmp.preference.ArrowPreference
+import top.yukonga.miuix.kmp.theme.LocalDismissState
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 import top.yukonga.miuix.kmp.utils.PressFeedbackType
+import top.yukonga.miuix.kmp.window.WindowDialog
 import top.yukonga.miuix.kmp.basic.Text as MiuixText
 
 @SuppressLint("LocalContext")
@@ -74,6 +84,7 @@ import top.yukonga.miuix.kmp.basic.Text as MiuixText
 fun HomePageView(
     isBlurEnabled: Boolean,
     isCurrent: () -> Boolean,
+    resumeKey: Int = 0,
     extraBottomPadding: Dp = 0.dp,
 ) {
     val context = LocalContext.current
@@ -103,21 +114,70 @@ fun HomePageView(
     // build and it costs nothing, where the package manager had to be asked every time.
     val moduleVersion = "v" + BuildConfig.VERSION_NAME
 
-    var state by remember { mutableStateOf(ModuleBridge.State()) }
-    var checked by remember { mutableStateOf(false) }
+    // Where the card starts. This page is thrown away and built again whenever the pager takes it
+    // more than one page from where the user is standing (MainActivity's beyondViewportPageCount),
+    // so nothing here survives a trip to About - and the state a rebuilt page would otherwise
+    // begin from says the module is dead, which is the red card that used to flash before the
+    // answer landed. It starts from the last answer instead, in the same frame the query is sent,
+    // and the query's own answer replaces it a broadcast later.
+    val last = remember { ModuleBridge.lastAnswer() }
+    var state by remember { mutableStateOf(last ?: ModuleBridge.State()) }
+    var checked by remember { mutableStateOf(last != null) }
 
+    // Not cleared while a query is in flight: there is an answer on screen either way, and
+    // blanking the second line to say so would be the flicker this page already refuses to show.
+    //
+    // Asked until answered, like every other page: an update kills this app and the system
+    // starts it again at once, and its first question lands while SystemUI's module is between
+    // two generations - no receiver for most of a second - so a single shot read "not active"
+    // until the card was tapped.
+    //
+    // Checked from the first answer, though: a module that is not installed answers nothing
+    // every time, and waiting out the retries kept the hint off the card for fifteen seconds.
     suspend fun refresh() {
-        checked = false
-        state = ModuleBridge.query(context)
+        state = ModuleBridge.queryAlive(context) { checked = true }
         checked = true
     }
 
-    // The module can be enabled, disabled or restarted behind the app's back, so ask again every
-    // time this page comes to the front rather than caching the answer from launch. Keyed on the
-    // answer rather than on the pager: while this page is not the one on screen the effect is
-    // simply not running, so swiping past it does not cost a query into SystemUI.
+    // Asked when this page first comes to the front, and again when the app is resumed with it
+    // up - KernelSU's home page does the same (HomeViewModel + HomeScreen: hasActivated, then a
+    // refresh on resume). Not on every visit: the answer already held is the one the module would
+    // give, the card's own tap re-asks, and a module restarted behind the app's back is what the
+    // resume is for. Keyed on the answer rather than on the pager: while this page is not the one
+    // on screen the effect is not running, so swiping past it does not cost a query into SystemUI.
     val current = isCurrent()
-    LaunchedEffect(current) { if (current) refresh() }
+    var activated by remember { mutableStateOf(last != null) }
+    LaunchedEffect(current) {
+        if (current && !activated) {
+            activated = true
+            refresh()
+        }
+    }
+    // The first run of this effect is the composition, not a resume - it is there to arm the one
+    // after it, which is what KernelSU's own flag of the same name does (initialResumeHandled).
+    // Without it the page would ask twice on the way in, once from each effect.
+    var resumed by remember { mutableStateOf(false) }
+    LaunchedEffect(resumeKey) {
+        if (resumed && activated && current) refresh()
+        resumed = true
+    }
+
+    // Processes still on the build before this one: installing does not reload a module, and
+    // the old one goes on running until its process restarts. Asked with the status, and again
+    // once LSPosed's service binds, which can be after the page is up.
+    val service by LsposedService.service.collectAsState()
+    // Held whole rather than as a count: the restart acts on the set the card counted.
+    var stale by remember { mutableStateOf(LsposedService.StaleSet.NONE) }
+    // A restart blanks the screen and stops whatever the scoped apps were doing, so it asks.
+    // Asked from the status card, which is the whole width of the page and where a scroll starts.
+    var confirmRestart by remember { mutableStateOf(false) }
+    LaunchedEffect(current, resumeKey, service, state.inert) {
+        if (current) stale = withContext(Dispatchers.IO) {
+            // The other processes' inert answer first: LSPosed lists them as up to date.
+            LsposedService.refreshInert(context)
+            LsposedService.staleSet(state.inert)
+        }
+    }
 
     PageScaffold(
         title = title,
@@ -125,40 +185,54 @@ fun HomePageView(
         extraBottomPadding = extraBottomPadding,
         actions = { RestartMenu() },
     ) {
-        item {
+        item(key = "status") {
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 12.dp)
-                    .padding(top = 12.dp)
+                    .firstCard()
             ) {
                 val darkTheme = isInDarkTheme()
                 val dynamicColor = MiuixTheme.isDynamicColor
-                val ok = state.alive
-                val statusColor = if (ok) {
-                    when {
-                        dynamicColor -> MiuixTheme.colorScheme.secondaryContainer
-                        darkTheme -> Color(0xFF1A3825)
-                        else -> Color(0xFFDFFAE4)
-                    }
-                } else {
+                // An inert SystemUI is not a missing module: it is one more process to restart.
+                val ok = state.alive || state.inert
+                // Processes left on the build before this one. An answer about the module rather
+                // than about this app, so it can be true while the module is not answering at
+                // all - and then the card says the more urgent of the two things.
+                //
+                // An inert SystemUI is one of those whatever the count says: the count needs
+                // LSPosed's service and arrives after the answer, and green in the meantime - or
+                // for good, without the service - would call a module that does nothing active.
+                val staleHere = ok && (stale.count > 0 || state.inert)
+                val staleShown = if (state.inert) maxOf(stale.count, 1) else stale.count
+                // The card is one card with three things to say, and two of them are the same
+                // news: the module is not answering, or it is answering in some processes as the
+                // version before. Both are red, both wear the cross, and only the words and what
+                // tapping it does are different.
+                val problem = !ok || staleHere
+                val statusColor = if (problem) {
                     when {
                         dynamicColor -> MiuixTheme.colorScheme.errorContainer
                         darkTheme -> Color(0xFF3D1C1C)
                         else -> Color(0xFFFDE8E8)
                     }
-                }
-                val iconTint = if (ok) {
-                    if (dynamicColor) MiuixTheme.colorScheme.primary.copy(alpha = 0.8f)
-                    else Color(0xFF36D167)
                 } else {
+                    when {
+                        dynamicColor -> MiuixTheme.colorScheme.secondaryContainer
+                        darkTheme -> Color(0xFF1A3825)
+                        else -> Color(0xFFDFFAE4)
+                    }
+                }
+                val iconTint = if (problem) {
                     if (dynamicColor) MiuixTheme.colorScheme.error.copy(alpha = 0.8f)
                     else Color(0xFFDC3545)
-                }
-                val titleText = if (ok) {
-                    stringResource(R.string.home_status_active)
                 } else {
-                    stringResource(R.string.home_status_inactive)
+                    if (dynamicColor) MiuixTheme.colorScheme.primary.copy(alpha = 0.8f)
+                    else Color(0xFF36D167)
+                }
+                val titleText = when {
+                    !ok -> stringResource(R.string.home_status_inactive)
+                    staleHere -> stringResource(R.string.home_stale_title)
+                    else -> stringResource(R.string.home_status_active)
                 }
                 // When it is working there is nothing to instruct the user about, so
                 // the lines say what is running instead; when it is not, the hint is the
@@ -168,20 +242,20 @@ fun HomePageView(
                 // used to blank this one to "loading", and since a re-check keeps the
                 // previous answer until the new one arrives, that was a flicker showing
                 // nothing the previous answer had not already said.
-                val lineTwo = if (checked && !ok) {
-                    stringResource(R.string.home_status_inactive_hint)
-                } else {
-                    moduleVersion
+                val lineTwo = when {
+                    checked && !ok -> stringResource(R.string.home_status_inactive_hint)
+                    staleHere -> stringResource(R.string.home_stale_summary, staleShown)
+                    else -> moduleVersion
                 }
                 // The card's bottom-left corner names the app, not the layout: there is
                 // only one layout, so a line saying which one it is told the reader
                 // nothing, while the name is what someone looking at a stranger's lock
                 // screen would want to read off it. Null while the module is not live,
                 // because then the hint above is the only line worth having.
-                val workingMode = if (ok) {
-                    stringResource(R.string.app_name)
-                } else {
-                    null
+                val workingMode = when {
+                    !ok -> null
+                    staleHere -> stringResource(R.string.home_stale_action)
+                    else -> stringResource(R.string.app_name)
                 }
 
                 // Laid out the way KernelSU's HomeMiuix card is: three boxes stacked
@@ -204,7 +278,13 @@ fun HomePageView(
                     Card(
                         modifier = Modifier.fillMaxWidth(),
                         colors = CardDefaults.defaultColors(color = statusColor),
-                        onClick = { scope.launch { refresh() } },
+                        // A card naming processes to restart restarts them, and asks first: a
+                        // restart blanks the screen and stops whatever the scoped apps were
+                        // doing. Every other answer this card gives is a report, and tapping a
+                        // report asks the module again.
+                        onClick = {
+                            if (staleHere) confirmRestart = true else scope.launch { refresh() }
+                        },
                         showIndication = true,
                         pressFeedbackType = PressFeedbackType.Tilt
                     ) {
@@ -217,8 +297,8 @@ fun HomePageView(
                             ) {
                                 Icon(
                                     modifier = Modifier.size(110.dp),
-                                    imageVector = if (ok) Icons.Rounded.CheckCircleOutline
-                                    else Icons.Rounded.ErrorOutline,
+                                    imageVector = if (problem) Icons.Rounded.ErrorOutline
+                                    else Icons.Rounded.CheckCircleOutline,
                                     tint = iconTint,
                                     contentDescription = null
                                 )
@@ -232,7 +312,7 @@ fun HomePageView(
                                 ) {
                                     MiuixText(
                                         text = workingMode,
-                                        fontSize = 16.sp,
+                                        style = MiuixTheme.textStyles.body1,
                                         fontWeight = FontWeight.Medium,
                                     )
                                 }
@@ -246,13 +326,13 @@ fun HomePageView(
                                 Column {
                                     MiuixText(
                                         text = titleText,
-                                        fontSize = 22.sp,
+                                        style = MiuixTheme.textStyles.title3,
                                         fontWeight = FontWeight.SemiBold
                                     )
                                     Spacer(Modifier.height(1.dp))
                                     MiuixText(
                                         text = lineTwo,
-                                        fontSize = 15.sp,
+                                        style = MiuixTheme.textStyles.body2,
                                     )
                                 }
                             }
@@ -263,16 +343,13 @@ fun HomePageView(
             }
         }
 
-        // No heading over this one. The five rows say what they are - a heading reading
+        // No heading over this one. The four rows say what they are - a heading reading
         // "device information" over a list of device facts only repeated them - and the gap it
         // used to hold is now the card's own, so the card sits exactly where it always did.
-        item {
-            Card(
-                modifier = Modifier
-                    .padding(top = 12.dp)
-                    .padding(horizontal = 12.dp)
-                    .padding(bottom = 12.dp)
-            ) {
+        // The module's own version was a fifth row and is gone: the status card above already
+        // carries it, and the same number twice on one page is one of them to read.
+        item(key = "device") {
+            Card(modifier = Modifier.nextCard()) {
                 Column {
                     BasicComponent(
                         title = stringResource(R.string.home_device_name),
@@ -290,10 +367,6 @@ fun HomePageView(
                         title = stringResource(R.string.home_android_version),
                         summary = systemVersion,
                     )
-                    BasicComponent(
-                        title = stringResource(R.string.home_module_version),
-                        summary = moduleVersion,
-                    )
                 }
             }
         }
@@ -303,12 +376,8 @@ fun HomePageView(
         // the user can tap in this app is a row, and a lone button here would read as a demand.
         //
         // No top padding of its own: the device card above already carries 12dp underneath it.
-        item {
-            Card(
-                modifier = Modifier
-                    .padding(horizontal = 12.dp)
-                    .padding(bottom = 12.dp)
-            ) {
+        item(key = "donate") {
+            Card(modifier = Modifier.nextCard()) {
                 ArrowPreference(
                     title = stringResource(R.string.donate_title),
                     summary = stringResource(R.string.donate_home_summary),
@@ -330,6 +399,51 @@ fun HomePageView(
                     },
                 )
             }
+        }
+    }
+
+    WindowDialog(
+        show = confirmRestart,
+        title = stringResource(R.string.restart_stale),
+        summary = stringResource(R.string.restart_confirm_summary),
+        onDismissRequest = { confirmRestart = false },
+    ) {
+        val dismiss = LocalDismissState.current
+        Row(horizontalArrangement = Arrangement.SpaceBetween) {
+            TextButton(
+                modifier = Modifier.weight(1f),
+                text = stringResource(R.string.update_cancel),
+                onClick = { dismiss?.invoke() },
+            )
+            Spacer(Modifier.width(20.dp))
+            TextButton(
+                modifier = Modifier.weight(1f),
+                text = stringResource(R.string.restart_menu),
+                onClick = {
+                    confirmRestart = false
+                    scope.launch {
+                        val taken = stale
+                        val restarted = withContext(Dispatchers.IO) {
+                            ModuleBridge.restartStale(taken)
+                        }
+                        // Cleared rather than asked again on a success: re-reading the moment
+                        // the kills return races the processes' own death and would put the card
+                        // back up for a restart that has just worked. A refusal is the opposite
+                        // case - something is still on the old build, and the page should go on
+                        // saying so.
+                        stale = if (restarted) LsposedService.StaleSet.NONE
+                        else withContext(Dispatchers.IO) { LsposedService.staleSet(state.inert) }
+                        // The inert answer belonged to the SystemUI that was just killed; held
+                        // on to, it kept the card red over a module that had come back. Asked
+                        // again - queryAlive keeps polling through the restart - for the new one's.
+                        if (restarted && state.inert) {
+                            state = state.copy(inert = false)
+                            refresh()
+                        }
+                    }
+                },
+                colors = ButtonDefaults.textButtonColorsPrimary(),
+            )
         }
     }
 }
