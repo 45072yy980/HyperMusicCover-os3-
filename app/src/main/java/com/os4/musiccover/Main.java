@@ -839,58 +839,6 @@ public class Main extends XposedModule {
         Gen.markInstallScope();
     }
 
-    /** The hook map this generation writes to Download, once; see Diagnostics.clockHookMap. */
-    private static volatile boolean sHookMapWritten;
-
-    /**
-     * Writes the clock/notification hook map to Download the first time the container attaches,
-     * so the answer to "what does this SystemUI actually declare" does not need an adb round trip
-     * on a phone that has no way to send one. Runs off the main thread: it walks reflection on
-     * the clock and panel classes and must not sit in the attach path.
-     */
-    private static void writeHookMapOnce() {
-        if (sHookMapWritten) return;
-        sHookMapWritten = true;
-        final Context c = sAppCtx;
-        Gen.thread("MCHookMap", new Runnable() {
-            @Override
-            public void run() {
-                try {
-                    String report = Diagnostics.clockHookMap();
-                    String path = Diagnostics.writeProbeFile(c, "mc_hookmap.txt", report);
-                    Xp.log(TAG + "hookmap written: " + (path == null ? "FAILED" : path));
-                } catch (Throwable t) {
-                    Xp.w(TAG + "hookmap write failed: " + t);
-                }
-                // The clock report is only worth reading once the keyguard has settled and a
-                // cover has had its chance to enter, so it is written again a little later.
-                // Same reason as the hook map: no adb channel on the phone itself.
-                Gen.handler().postDelayed(new Runnable() {
-                    @Override
-                    public void run() {
-                        try {
-                            String state = Diagnostics.clockReport();
-                            String path = Diagnostics.writeProbeFile(c, "mc_clock.txt", state);
-                            Xp.log(TAG + "clock report written: " + (path == null ? "FAILED" : path));
-                        } catch (Throwable t) {
-                            Xp.w(TAG + "clock report failed: " + t);
-                        }
-                        try {
-                            // The island's material, as the pill was dressed when this was taken:
-                            // which recipe it copied, what the row's own background was, and
-                            // whether the fallback was used because a half was missing.
-                            String material = MiniPlayerRuntime.describe();
-                            String path = Diagnostics.writeProbeFile(c, "mc_mini.txt", material);
-                            Xp.log(TAG + "mini report written: " + (path == null ? "FAILED" : path));
-                        } catch (Throwable t) {
-                            Xp.w(TAG + "mini report failed: " + t);
-                        }
-                    }
-                }, 12_000L);
-            }
-        });
-    }
-
     private static void hookContainerAttach() {
         try {
             Xp.hookAll("sysui.clock.container_attach", sContainerCls, "onAttachedToWindow", chain -> {
@@ -915,7 +863,6 @@ public class Main extends XposedModule {
         CoverMorphLayer.cancel();
         sContainer = container;
         captureScreenSize(sContainer);
-        writeHookMapOnce();
         // The clock container attach is the first reliably-fired event after both
         // modules' onPackageLoaded, so arming the HyperLight counter-hook here - not
         // from setGlassColor, which this build never calls on the all_in_one clock -
