@@ -785,6 +785,12 @@ public class Main extends XposedModule {
         } else {
             Xp.log(TAG + "no notifStateChange(float, boolean, enum) on " + CLS_CONTAINER
                     + " - the clock squeeze cannot be driven on this build");
+            // Said in the report too, not just in the log: 16.03 keeps the notification collapse
+            // inside each clock style's own animation (doAnimationToNotification(boolean, boolean)
+            // and friends - no Y anywhere), so there is no request to coerce here. The cover keeps
+            // its own clock and the OEM's squeeze is left alone.
+            HyperTweaks.note("clock-squeeze",
+                    "not available on this build (no setNotifY / notifStateChange)");
         }
 
         hookContainerAttach();

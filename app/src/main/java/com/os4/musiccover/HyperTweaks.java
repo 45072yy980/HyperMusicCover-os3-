@@ -48,6 +48,12 @@ final class HyperTweaks {
     private static final java.util.Map<String, String> STATUS =
             java.util.Collections.synchronizedMap(new java.util.LinkedHashMap<String, String>());
 
+    /** Records a status line for a hook that is not attempted at all on this build, for `op tweaks`. */
+    static void note(String what, String why) {
+        STATUS.put(what, why);
+        Xp.log(TAG + what + ": " + why);
+    }
+
     private static void ok(String what) {
         STATUS.put(what, "ok");
         Xp.log(TAG + what + " ok");
@@ -187,8 +193,24 @@ final class HyperTweaks {
         try {
             Class<?> cls = Xp.findClass(
                     "com.android.keyguard.wallpaper.MiuiKeyguardWallPaperManager", cl);
-            Method m = cls.getDeclaredMethod("updateKeyguardWallpaperStateAnim", boolean.class,
-                    boolean.class, int.class, boolean.class, boolean.class, Runnable.class);
+            // By shape, not by the last parameter's exact type: OS4's sixth is a Runnable, and
+            // 16.03's is KeyguardViewMediatorInjector$startKeyguardExitAnimationByInteractiveOr
+            // FullAODUnlockAnimation$1 - same call, same meaning, private class. Only the first
+            // five are read below, and those five are the same on both builds.
+            Method m = null;
+            for (Method candidate : cls.getDeclaredMethods()) {
+                if (!candidate.getName().equals("updateKeyguardWallpaperStateAnim")) continue;
+                Class<?>[] ps = candidate.getParameterTypes();
+                if (ps.length == 6 && ps[0] == boolean.class && ps[1] == boolean.class
+                        && ps[2] == int.class && ps[3] == boolean.class
+                        && ps[4] == boolean.class) {
+                    m = candidate;
+                    break;
+                }
+            }
+            if (m == null) {
+                throw new NoSuchMethodException("updateKeyguardWallpaperStateAnim(Z,Z,I,Z,Z,*)");
+            }
             Xp.hook("sysui.wallpaper.unlock_fade", m, chain -> {
                 Object[] args = chain.getArgs().toArray();
                 boolean show = (Boolean) args[0];
