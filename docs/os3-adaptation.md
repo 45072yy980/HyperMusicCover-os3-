@@ -51,6 +51,18 @@ It stays off by default: `SettingSpec.COVER_FEATURE` is `false`, so a fresh inst
 rest of the module and a clock that behaves. To try it, turn 封面 on in the app and restart the
 SystemUI scope; the switch is unchanged.
 
+## Two more that only showed up on device
+
+- The island painted its own disc over the torch and the camera, dressed from the notification
+  row's material - a flat dark fill here, so both buttons were solid black circles over their
+  icons, and a press on the camera swelled the torch's disc because the hit test takes the first
+  visible disc whose button or `_layout` holds the point. The overlay is off (`DISC_OVERLAY`);
+  the buttons are the lock screen's own.
+- `UnlockSwipeRegion` installed only its panel half (`isInScrollableRegion` is gone from
+  `NotificationStackScrollLayoutInjector`), and answered for a touch path the stack never asked
+  about: a swipe-up on a notification was read as blank space, the gesture went to the unlock,
+  and the notification could not be promoted into the island. It now installs both or neither.
+
 ## Diagnostics that ship with this fork
 
 On the first keyguard attach of every SystemUI process, twelve seconds in, three reports are
