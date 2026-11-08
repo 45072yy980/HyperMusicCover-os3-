@@ -47,6 +47,7 @@ public final class UnlockSwipeRegion {
     private static volatile String sLast = "-";
 
     static void install(ClassLoader cl) {
+        boolean stackHooked = false;
         try {
             Class<?> injector = Xp.findClass(CLS_INJECTOR, cl);
             Xp.hookAll("sysui.unlock_region.scrollable", injector, "isInScrollableRegion", chain -> {
@@ -64,8 +65,19 @@ public final class UnlockSwipeRegion {
                     return result;
                 }
             });
+            stackHooked = true;
         } catch (Throwable t) {
             Xp.w(Main.TAG + "unlock region (stack) hook failed: " + t);
+        }
+        if (!stackHooked) {
+            // Half of this feature is not on this build: NotificationStackScrollLayoutInjector
+            // has no isInScrollableRegion in 16.03.251211.r, so the panel half would be the only
+            // cut, and it answers for a touch path the stack never asked about. Left in place it
+            // swallowed the swipe-up that promotes a notification into the island - the
+            // notification stayed put and the gesture went to the unlock instead. A restriction
+            // that cannot be asked on both paths is left out whole.
+            Xp.log(Main.TAG + "unlock region: not installed, the stack half is missing on this build");
+            return;
         }
         try {
             Class<?> panel = Xp.findClass(CLS_PANEL, cl);
