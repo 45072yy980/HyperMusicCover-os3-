@@ -6998,6 +6998,17 @@ internal class MiniPlayerController(
 
     // ------------------------------------------------------------ the shortcut discs
 
+    /**
+     * Whether the module paints its own disc over the torch and the camera.
+     *
+     * Off on this fork. The disc is dressed from the notification row's material, and on
+     * HyperOS 3 that material comes out as a flat dark fill - the two buttons were drawn as
+     * solid black circles over their own icons (reported 2026-11-07, with a screenshot), and a
+     * press on the camera swelled the torch's disc. The buttons are the lock screen's own; the
+     * disc was only ever the island's decoration on top of them, so it is left off.
+     */
+    private val DISC_OVERLAY = false
+
     private val discs = arrayOfNulls<ShortcutDisc>(2)
 
     /** The lock screen is locked with the mini player on: the discs go behind the buttons. updateVisibility. */
@@ -9285,7 +9296,8 @@ internal class MiniPlayerController(
         // The discs are the lock screen's, not the row's: with no island at all - no music, no
         // notification, or the last one pulled out as its row - the torch and camera kept losing
         // their glass (2026-09-25, and #10/#17 after it). They stay wherever the row could be.
-        discsWanted = enabled && !MiniPlayerScene.keyguardGoingAway && Main.keyguardLocked()
+        discsWanted = enabled && !MiniPlayerScene.keyguardGoingAway && Main.keyguardLocked() &&
+            DISC_OVERLAY
         rowWanted = keyguardOwned || discsWanted && LockIslands.releasedKeys().isNotEmpty()
         // The control centre stands in for the lock screen's scene block, not for the row being
         // presentable at all. Tapped into the cover, the music is still the pill's choice - the
