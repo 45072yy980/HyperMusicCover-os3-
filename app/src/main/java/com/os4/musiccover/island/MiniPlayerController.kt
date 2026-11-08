@@ -7086,7 +7086,8 @@ internal class MiniPlayerController(
         val placed = followHost.invert(hostInverse) && discToScreen.invert(discInverse)
         for (side in 0..1) {
             val button = button(side)
-            val shown = placed && discsWanted && button.isShown && button.width > 0 && button.height > 0
+            val shown = DISC_OVERLAY && placed && discsWanted
+                && button.isShown && button.width > 0 && button.height > 0
             var disc = discs[side]
             if (!shown) {
                 if (disc != null && disc.visibility != View.GONE) disc.visibility = View.GONE
@@ -9296,8 +9297,11 @@ internal class MiniPlayerController(
         // The discs are the lock screen's, not the row's: with no island at all - no music, no
         // notification, or the last one pulled out as its row - the torch and camera kept losing
         // their glass (2026-09-25, and #10/#17 after it). They stay wherever the row could be.
-        discsWanted = enabled && !MiniPlayerScene.keyguardGoingAway && Main.keyguardLocked() &&
-            DISC_OVERLAY
+        // NOT gated on DISC_OVERLAY: this also feeds rowWanted below, and with it false the row
+        // stopped existing for the notifications pulled out of it - a swipe-up on an ordinary
+        // row had nowhere to go (regression, 2026-11-08). The overlay itself is gated where it
+        // is drawn, in updateDiscs.
+        discsWanted = enabled && !MiniPlayerScene.keyguardGoingAway && Main.keyguardLocked()
         rowWanted = keyguardOwned || discsWanted && LockIslands.releasedKeys().isNotEmpty()
         // The control centre stands in for the lock screen's scene block, not for the row being
         // presentable at all. Tapped into the cover, the music is still the pill's choice - the
